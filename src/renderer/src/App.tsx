@@ -1,4 +1,3 @@
-import { delegationSignInOffered, delegationSignInResultText, delegationStatusText, type DelegationStatus } from "./delegation-status";
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
@@ -47,6 +46,7 @@ import { isTranscriptAtBottom } from "./transcript-scroll";
 import { finalAssistantIndices } from "./transcript-actions";
 import { isComposerTypingKey } from "./type-to-focus";
 import { appendCommandOutputDelta, closeFinishedAutoOpenedPanels, commandStatusAfterEvent, settleTurnSteps, settleUnconfirmedSteps, showsCommandOutputPanel } from "./transcript-command-status";
+import { delegationSignInOffered, delegationSignInResultText, delegationStatusText, type DelegationStatus } from "./delegation-status";
 import { dayMarkerIndices, formatConversationDayMarker, formatConversationTime, hydrateTranscriptTimes } from "../../shared/conversation-time";
 import { visualFenceContent } from "./openui-visual";
 import { validateUserInput, withoutUserInputDefaults, type UserInputRequest, type UserInputValue } from "../../shared/user-input";
@@ -15895,15 +15895,19 @@ function SettingsView({
   // The proxy's credential state, polled while the Account tab shows a proxy:
   // declared, or why not — and the sign-in button when a sign-in would fix it.
   const [delegationStatus, setDelegationStatus] = useState<DelegationStatus | null>(null);
+  const [delegationSignInNote, setDelegationSignInNote] = useState<string | null>(null);
   useEffect(() => {
     if (tab !== "account" || !delegationSaved) return;
     let live = true;
-    const poll = () => void window.unbiased.delegationStatus().then((s) => { if (live) setDelegationStatus(s); });
+    const poll = () => void window.unbiased.delegationStatus().then((s) => {
+      if (!live) return;
+      setDelegationStatus(s);
+      if (s?.reachable && s.declared) setDelegationSignInNote(null);   // the sign-in completed: the note has served
+    });
     poll();
     const timer = setInterval(poll, 30_000);
     return () => { live = false; clearInterval(timer); };
   }, [tab, delegationSaved]);
-  const [delegationSignInNote, setDelegationSignInNote] = useState<string | null>(null);
   async function delegationSignIn() {
     const r = await window.unbiased.delegationSignIn();
     setDelegationSignInNote(delegationSignInResultText(r.result) ?? (r.result === "no_signin" ? "This proxy holds an API key; there is no ChatGPT sign-in to redo." : null));
