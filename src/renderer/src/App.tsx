@@ -7218,6 +7218,7 @@ function buildMdComponents(
 ) {
   return {
     table: (props: { children?: React.ReactNode }) => <MarkdownTable>{props.children}</MarkdownTable>,
+    img: (props: { src?: string; alt?: string }) => <MdImage src={props.src} alt={props.alt} chat />,
     code: (props: { className?: string; children?: React.ReactNode }) => {
       const text = extractText(props.children);
       // Block code: the surrounding <pre> (CodeBlock) owns the chrome. A
@@ -7714,11 +7715,17 @@ function TerminalPane() {
   );
 }
 
-/** An image inside a markdown preview. Relative srcs resolve against the
- *  markdown file's own directory and load through the main process (the
- *  CSP forbids file:// URLs); http(s) srcs are left alone and simply
- *  won't load under the CSP — the alt text shows instead. */
-function MdImage({ src, alt, baseDir }: { src?: string; alt?: string; baseDir: string }) {
+/** Markdown images load through the main process because CSP forbids file://.
+ *  File previews resolve relative to their own directory; chat resolves
+ *  relative to the selected thread's working directory. */
+function MdImage({
+  src, alt, baseDir, chat = false,
+}: {
+  src?: string;
+  alt?: string;
+  baseDir?: string;
+  chat?: boolean;
+}) {
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -7729,7 +7736,7 @@ function MdImage({ src, alt, baseDir }: { src?: string; alt?: string; baseDir: s
       setUrl(src);
       return;
     }
-    const resolved = src.startsWith("/") ? src : `${baseDir}/${src}`;
+    const resolved = src.startsWith("/") || !baseDir ? src : `${baseDir}/${src}`;
     void (async () => {
       if (/\.svg$/i.test(resolved)) {
         const r = await window.unbiased.readFile(resolved);
@@ -7745,7 +7752,13 @@ function MdImage({ src, alt, baseDir }: { src?: string; alt?: string; baseDir: s
   }, [src, baseDir]);
 
   if (!url) return <span style={{ color: colors.dim, fontSize: 12.5 }}>[image: {alt || src}]</span>;
-  return <img src={url} alt={alt} style={{ maxWidth: "100%", borderRadius: 8 }} />;
+  return (
+    <img
+      src={url}
+      alt={alt}
+      style={{ display: "block", maxWidth: "100%", maxHeight: chat ? 720 : undefined, borderRadius: 8 }}
+    />
+  );
 }
 
 /** Codex-style file view: breadcrumb, line numbers, Prism highlighting.
