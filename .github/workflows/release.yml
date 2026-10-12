@@ -64,9 +64,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: circuitandchisel/unbiased-app-engine
-          # Merged engine PR #11; includes app-server 0.1.3 and the context
-          # usage protocol updates.
-          ref: d31a76ecea24bf55dc57d2543ee4319280430446
+          # Merged engine PR #12; pins app-server 0.1.4.
+          ref: cfa896ba2602f31138fa742a2461a1b16bc86706
           token: ${{ steps.app-token.outputs.token }}
           path: unbiased-app-engine
 
