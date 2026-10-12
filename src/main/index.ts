@@ -186,6 +186,10 @@ function productionBuild(): boolean {
   return isProductionBuild({ isPackaged: app.isPackaged, devAppName: process.env.UNBIASED_DEV_APP_NAME });
 }
 
+if (!productionBuild() && process.env.UNBIASED_DEV_HOME_DIR) {
+  app.setPath("home", process.env.UNBIASED_DEV_HOME_DIR);
+}
+
 const engine = new EngineClient();
 let win: BrowserWindow | null = null;
 let lastStatus: EngineStatus = { state: "starting" };
