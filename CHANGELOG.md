@@ -6,6 +6,13 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
+## 1.13.15 — October 12, 2026
+
+### Fixed
+
+- **Local images appear in chat.** Images referenced in replies render inline, including paths relative to the conversation folder.
+- **Long image conversations are less likely to get stuck.** When earlier images make a request too large, the app can use a reopenable local file reference where one exists, while keeping the newest images available.
+
 ## 1.13.14 — October 7, 2026
 
 ### New
