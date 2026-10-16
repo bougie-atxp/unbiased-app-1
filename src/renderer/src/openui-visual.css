@@ -51,6 +51,79 @@
   font-family: var(--font-code);
 }
 
+.iui-openui.app-openui-visual .iui-explainer {
+  --iui-bg: var(--panel);
+  --iui-panel: var(--panel-2);
+  --iui-fg: var(--fg-msg);
+  --iui-muted: var(--dim);
+  --iui-line: var(--border);
+  --iui-accent: var(--accent);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.iui-openui.app-openui-visual .iui-explainer__header {
+  padding: 20px 24px 16px;
+}
+
+.iui-openui.app-openui-visual .iui-explainer__eyebrow {
+  letter-spacing: 0;
+}
+
+.iui-openui.app-openui-visual .iui-explainer__header h2 {
+  font-size: 22px;
+}
+
+.iui-openui.app-openui-visual .iui-explainer__steps {
+  padding: 0 20px;
+}
+
+.iui-openui.app-openui-visual .iui-explainer__step.is-active .iui-explainer__step-number,
+.iui-openui.app-openui-visual .iui-explainer__controls button:last-child {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.iui-openui.app-openui-visual .iui-explainer__controls button:last-child {
+  border-color: var(--accent);
+}
+
+.iui-openui.app-openui-visual .iui-explainer__visual,
+.iui-openui.app-openui-visual .iui-explainer__visual-fallback {
+  background: var(--panel-2);
+  color: var(--fg-msg);
+}
+
+.iui-openui.app-openui-visual .iui-explainer__story {
+  padding: 24px;
+}
+
+.iui-openui.app-openui-visual .iui-explainer__story h3 {
+  font-size: 20px;
+}
+
+.iui-openui.app-openui-visual .iui-explainer__visual-fallback span {
+  font-size: 48px;
+}
+
+.iui-openui.app-openui-visual .iui-explainer__visual-fallback strong {
+  font-size: 20px;
+}
+
+@media (max-width: 760px) {
+  .iui-openui.app-openui-visual .iui-explainer__header {
+    padding: 18px 16px 14px;
+  }
+
+  .iui-openui.app-openui-visual .iui-explainer__steps {
+    padding: 0 12px;
+  }
+
+  .iui-openui.app-openui-visual .iui-explainer__story {
+    padding: 18px;
+  }
+}
+
 .app-openui-visual--bare {
   padding: 0;
   border: 0;
