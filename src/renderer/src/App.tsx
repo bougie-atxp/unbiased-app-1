@@ -3171,7 +3171,7 @@ export function App() {
           zIndex: 32,
         }}
       >
-        <div style={{ width: windowWidth < 480 ? 140 : 150, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
+        <div style={{ width: navOpen ? sidebarWidth - 10 : windowWidth < 480 ? 140 : 150, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
         <SidebarRailButton compact label="Back" disabled={!navigationTarget(navHistory, -1) || navigatingHistory} onClick={() => void moveInHistory(-1)}>
           <ChevronLeft size={20} strokeWidth={1.8} />
         </SidebarRailButton>
@@ -3181,9 +3181,11 @@ export function App() {
         <SidebarRailButton compact label={navOpen ? "Collapse sidebar" : "Expand sidebar"} onClick={toggleNav}>
           <PanelIcon />
         </SidebarRailButton>
-        <SidebarRailButton compact label="New chat" onClick={() => void newChat()}>
-          <NewChatIcon size={18} />
-        </SidebarRailButton>
+        {!navOpen && (
+          <SidebarRailButton compact label="New chat" onClick={() => void newChat()}>
+            <NewChatIcon size={18} />
+          </SidebarRailButton>
+        )}
         </div>
         <span aria-hidden="true" style={{ width: 1, height: 22, background: colors.border }} />
         {!pageOpen && (
@@ -3277,6 +3279,9 @@ export function App() {
         </div>
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
           <div style={{ padding: "15px 14px 8px" }}>
+          <SidebarAction onClick={() => void newChat()} disabled={false} icon={<NewChatIcon size={18} />}>
+            New chat
+          </SidebarAction>
           <SidebarAction onClick={() => void openProjectDialog()} disabled={false} icon={<FolderPlusIcon />}>
             Open project…
           </SidebarAction>
