@@ -1201,6 +1201,7 @@ export function App() {
   }, [theme.surface]);
   const [showSettings, setShowSettings] = useState(false);
   const [showChangelog, setShowChangelog] = useState(false);
+  const [toolbarActionsEl, setToolbarActionsEl] = useState<HTMLSpanElement | null>(null);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [connectorsPanelOpen, setConnectorsPanelOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
@@ -3169,7 +3170,7 @@ export function App() {
           zIndex: 32,
         }}
       >
-        <div style={{ width: windowWidth < 480 ? 158 : 260, flexShrink: 0, display: "flex", alignItems: "center", gap: windowWidth < 480 ? 6 : 22 }}>
+        <div style={{ width: windowWidth < 480 ? 164 : 260, flexShrink: 0, display: "flex", alignItems: "center", gap: windowWidth < 480 ? 0 : 22 }}>
         <SidebarRailButton label="Back" disabled={!navigationTarget(navHistory, -1) || navigatingHistory} onClick={() => void moveInHistory(-1)}>
           <ChevronLeft size={20} strokeWidth={1.8} />
         </SidebarRailButton>
@@ -3179,14 +3180,21 @@ export function App() {
         <SidebarRailButton label={navOpen ? "Collapse sidebar" : "Expand sidebar"} onClick={toggleNav}>
           <PanelIcon />
         </SidebarRailButton>
+        <SidebarRailButton label="New chat" onClick={() => void newChat()}>
+          <NewChatIcon />
+        </SidebarRailButton>
         </div>
         <span aria-hidden="true" style={{ width: 1, height: 26, background: colors.border }} />
-        <div style={{ marginLeft: windowWidth < 480 ? 6 : 12 }}>
-          <SidebarRailButton label="New chat" onClick={() => void newChat()}>
-            <NewChatIcon />
-          </SidebarRailButton>
-        </div>
+        {!pageOpen && (
+          <span
+            title={mainTitle}
+            style={{ marginLeft: windowWidth < 480 ? 10 : 16, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, fontWeight: 500 }}
+          >
+            {mainTitle}
+          </span>
+        )}
         <span style={{ flex: 1 }} />
+        <span ref={setToolbarActionsEl} style={{ display: "flex", flexShrink: 0 }} />
         {(!pageOpen || sideVisible) && (
           <IconButton title={sideOpen ? "Close side panel" : "Open side panel"} onClick={toggleSidePanel}>
             <SideChatIcon />
@@ -3746,45 +3754,7 @@ export function App() {
           />
         ) : (
           <>
-        <header
-          style={{
-            padding: "10px 16px",
-            minHeight: 52,
-            boxSizing: "border-box",
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            flexShrink: 0,
-            // Deliberately NOT translucent. This bar is a flex sibling of the
-            // transcript, not a layer above it, so nothing ever passes behind
-            // it — a backdrop-filter here blurs the parent background and
-            // costs a compositing pass to render something identical to an
-            // opaque fill. Translucency is applied where surfaces genuinely
-            // overlap content instead (the modal scrims).
-            //
-            // Separation comes from HeaderEdge, which needs this element to be
-            // a positioned stacking context so its overflow is not painted
-            // over by the transcript that follows it.
-            position: "relative",
-            zIndex: 2,
-          }}
-        >
-          <HeaderEdge />
-          <span
-            style={{
-              fontSize: 14,
-              fontWeight: 500,
-              color: colors.fg,
-              letterSpacing: "var(--track-body)",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-            }}
-          >
-            {mainTitle}
-          </span>
-          <span style={{ flex: 1 }} />
-          {mainStarted && (
+          {mainStarted && toolbarActionsEl && createPortal(
             <span ref={envRef} style={{ position: "relative", display: "flex" }}>
               <IconButton title="Environment" onClick={() => (envOpen ? setEnvOpen(false) : void openEnvMenu())}>
                 <EnvIcon />
@@ -4146,9 +4116,9 @@ export function App() {
                   )}
                 </div>
               )}
-            </span>
+            </span>,
+            toolbarActionsEl,
           )}
-        </header>
         <ChatPane
           paneId="main"
           canTypeToFocus={() => composerTypingAvailable &&
