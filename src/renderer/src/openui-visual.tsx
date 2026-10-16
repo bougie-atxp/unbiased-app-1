@@ -1,4 +1,4 @@
-import { Component, createContext, useContext, useEffect, useRef, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import { Component, createContext, useContext, useEffect, useRef, type ReactElement, type ReactNode } from "react";
 import { createLibrary, createParser, defineComponent, Renderer, type ActionEvent } from "@openuidev/react-lang";
 import { iuiOpenUILibrary } from "@unbiased/iui/openui";
 import { choiceGroupIssue, choiceGroupSchema, choiceOptionSchema, gridSchema, guidedExplainerSchema, hotspotSchema, hotspotVisualIssue, hotspotVisualSchema, imageAssetSchema, milestoneSchema, paletteSceneSchema, sceneSchema, sequenceSlideSchema, sliderSchema, stateCaseSchema, stateSceneSchema, stateScopeSchema, timelineSchema } from "@unbiased/iui";
@@ -6,6 +6,7 @@ import { isInteractiveVisualSource, visualHtmlSchema } from "../../shared/intera
 import { InteractiveHtmlVisual } from "./interactive-html-visual";
 import { FocusedSequenceComponent } from "./focused-sequence";
 import { GeneratedVisualViewport } from "./generated-visual-viewport";
+import { openUIThemeStyle } from "./openui-theme";
 import { Whiteboard } from "./whiteboard";
 import { whiteboardSchema } from "./whiteboard-model";
 import { VisualReadyContext } from "./visual-ready-context";
@@ -224,28 +225,7 @@ function OpenUIVisualSurface({ source, selfFramed, streaming = false }: { source
       ref={surfaceRef}
       className={`iui-openui app-openui-visual${selfFramed ? " app-openui-visual--bare" : ""}`}
       aria-label="Interactive visual"
-      style={{
-        "--openui-background": "var(--panel)",
-        "--openui-foreground": "var(--panel-2)",
-        "--openui-popover-background": "var(--panel-2)",
-        "--openui-sunk": "var(--bg)",
-        "--openui-elevated": "var(--chip-raised)",
-        "--openui-elevated-strong": "var(--gutter)",
-        "--openui-text-neutral-primary": "var(--fg-msg)",
-        "--openui-text-neutral-secondary": "var(--fg-soft)",
-        "--openui-text-neutral-tertiary": "var(--dim)",
-        "--openui-text-neutral-link": "var(--accent)",
-        "--openui-text-brand": "var(--accent)",
-        "--openui-border-default": "var(--border)",
-        "--openui-border-interactive": "var(--gutter)",
-        "--openui-border-interactive-emphasis": "var(--fg-soft)",
-        "--openui-interactive-accent-default": "var(--accent)",
-        "--openui-interactive-accent-hover": "color-mix(in srgb, var(--accent) 80%, var(--fg))",
-        "--openui-font-body": "var(--font-ui)",
-        "--openui-font-heading": "var(--font-ui)",
-        "--openui-font-label": "var(--font-ui)",
-        "--openui-font-numbers": "var(--font-ui)",
-      } as CSSProperties}
+      style={openUIThemeStyle}
     >
       <Renderer response={source} library={appOpenUILibrary} isStreaming={streaming} toolProvider={toolProvider}
         onAction={(event) => host?.onAction(event)} publishObservability={false} />
