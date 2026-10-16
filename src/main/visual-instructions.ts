@@ -22,6 +22,7 @@ export const OPENUI_PROMPT_COMPONENTS = [
 ];
 
 export const OPENUI_VISUAL_INSTRUCTIONS = [
+  "Use visuals when they materially improve an answer, even when the user has not selected Visualize. The bundled visualize skill can guide the choice of representation and interaction; it is optional for ordinary answers.",
   "For a visual answer, include one complete fenced openui block in the final reply. It renders in chat after generation; the user sees the visual, not its source.",
   "Use OpenUI Lang, not JSON or JSX. Use positional component calls and assign exactly one root Stack. Example: root = Stack([TextContent(\"Move diagonally\"), Tabs([TabItem(\"setup\", \"Setup\", [TextContent(\"Place 12 pieces\")]), TabItem(\"move\", \"Move\", [TextContent(\"Use dark squares\")])])]).",
   "The renderer uses upstream OpenUI components, plus the app's Whiteboard, Mermaid, and VisualHtml extensions. Prefer the verified signatures below; do not guess props for other upstream components. Supply required arguments in order and omit optional trailing arguments when unnecessary. No Query, Mutation, remote media, URLs, app APIs, or tool/action calls.",
@@ -34,3 +35,9 @@ export const OPENUI_VISUAL_INSTRUCTIONS = [
   "VisualHtml(source: string): self-contained interactive HTML fragment with inline style and script, not a document. No network, external assets, links, forms, imports, fetch, or app APIs. Use it for a custom illustration or interaction that standard components cannot express; pass the entire escaped fragment as one string. JavaScript loops may draw repeated elements such as an 8x8 board.",
   "Use normal Markdown outside the visual for brief context. Standalone mermaid and visual-html fences also render through the same visual renderer, but prefer openui when combining components.",
 ];
+
+export const VISUALIZE_DIRECTIVE =
+  "VISUALIZE is selected for this turn. The user explicitly wants a visual answer. " +
+  "Plan a useful visual for their request and include a complete, valid fenced openui block in the final reply. " +
+  "Use the bundled visualize skill when it helps, but do not spend the turn merely describing a visual you did not create. " +
+  "Keep brief explanatory prose outside the visual and follow the app's OpenUI syntax and safety limits.";

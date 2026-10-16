@@ -25,7 +25,7 @@ import { fileActionError, localFileForAction, saveLocalFileCopy } from "./file-a
 import { resolveEngineDir } from "./engine-path";
 import { agentBrowserCandidates, chromeCandidates } from "./browser-binaries";
 import { agentStyleInstructions, DEFAULT_AGENT_STYLE, parseAgentStylePrefs, type AgentStylePrefs } from "../shared/agent-style";
-import { OPENUI_VISUAL_INSTRUCTIONS } from "./visual-instructions";
+import { OPENUI_VISUAL_INSTRUCTIONS, VISUALIZE_DIRECTIVE } from "./visual-instructions";
 import { epochMillis } from "../shared/conversation-time";
 import { INTERACTIVE_VISUAL_CSP, INTERACTIVE_VISUAL_SCHEME, interactiveVisualDocument, interactiveVisualId, isInteractiveVisualSource } from "../shared/interactive-visual";
 import { agentInputFields, codexInputResponse, mcpInputFields, mcpInputResponse, validateUserInput, type UserInputRequest, type UserInputValue } from "../shared/user-input";
@@ -8129,8 +8129,9 @@ app.whenReady().then(async () => {
     text: string;
     attachments?: { name: string; path: string; kind?: "image" }[];
     computer?: boolean;
+    visualize?: boolean;
   }) => {
-    const { paneId, text, attachments, computer } = payload;
+    const { paneId, text, attachments, computer, visualize } = payload;
     for (const attachment of attachments ?? []) {
       if (!isAbsolute(attachment.path)) throw new Error(`Invalid attachment path: ${attachment.name}`);
       const info = statSync(attachment.path);
@@ -8250,6 +8251,7 @@ app.whenReady().then(async () => {
       }
     }
     if (computer) input.unshift({ type: "text", text: COMPUTER_DIRECTIVE });
+    if (visualize) input.unshift({ type: "text", text: VISUALIZE_DIRECTIVE });
     if (planMode) input.unshift({ type: "text", text: PLAN_DIRECTIVE });
     const turnCwd = paneId.startsWith("side") && pane.threadId
       ? threadCwds.get(pane.threadId) ?? mainCwd

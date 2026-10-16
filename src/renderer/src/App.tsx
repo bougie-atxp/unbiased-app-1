@@ -35,7 +35,7 @@ import { UserMessageMarkdown } from "./user-message-markdown";
 import { MarkdownComposer, type MarkdownComposerHandle } from "./markdown-composer";
 import "./markdown-composer.css";
 import "./user-input-card.css";
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, MessageSquare, MoreHorizontal, RefreshCw } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, MessageSquare, MoreHorizontal, RefreshCw, Sparkles } from "lucide-react";
 import { ConversationDrafts } from "./conversation-drafts";
 import { SettingsRoute } from "./settings-route";
 import { parseAgentStylePrefs, type AgentStylePrefs } from "../../shared/agent-style";
@@ -149,6 +149,7 @@ type QueuedMsg = {
   text: string; // display text for the transcript entry
   wire: string; // what actually goes to the engine
   computer?: boolean; // explicitly prefer desktop tools for this turn
+  visualize?: boolean; // explicitly request a visual for this turn
   attachments: Attachment[];
   annotations?: SentAnnotation[];
 };
@@ -595,7 +596,7 @@ declare global {
         paneId: PaneId,
         text: string,
         attachments?: Attachment[],
-        options?: { computer?: boolean },
+        options?: { computer?: boolean; visualize?: boolean },
       ) => Promise<{ turnId: string | null; threadId: string; created: boolean }>;
       chooseAttachments: () => Promise<{ attachments: Attachment[]; errors?: string[] }>;
       attachPaths: (paths: string[]) => Promise<{ attachments: Attachment[]; errors?: string[] }>;
@@ -8636,6 +8637,7 @@ function ChatPane({
   // tools remain registered for every thread so natural-language desktop
   // requests still work without explicitly selecting this first.
   const [computerSelected, setComputerSelected] = useState(false);
+  const [visualizeSelected, setVisualizeSelected] = useState(false);
   const composerRef = useRef<MarkdownComposerHandle | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>(() => drafts.current().attachments);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -9143,6 +9145,7 @@ function ChatPane({
       setPendingComment(null);
       setQueue([]);
       setComputerSelected(false);
+      setVisualizeSelected(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reset.nonce]);
@@ -9670,7 +9673,7 @@ function ChatPane({
       return next;
     });
     try {
-      const res = await window.unbiased.sendMessage(paneId, q.wire, q.attachments, { computer: q.computer });
+      const res = await window.unbiased.sendMessage(paneId, q.wire, q.attachments, { computer: q.computer, visualize: q.visualize });
       threadIdRef.current = res.threadId;
       onThreadCreated?.(res.threadId, res.created, q.text);
     } catch (err) {
@@ -9709,6 +9712,7 @@ function ChatPane({
       text,
       wire,
       computer: computerSelected,
+      visualize: visualizeSelected,
       attachments: sentAttachments,
       annotations:
         anns.length > 0
@@ -9747,6 +9751,7 @@ function ChatPane({
     changeAttachments(q.attachments);
     if (q.annotations) setAnnotations(q.annotations);
     setComputerSelected(!!q.computer);
+    setVisualizeSelected(!!q.visualize);
   }
 
   async function decide(itemId: string, requestId: string, decision: ApprovalDecision) {
@@ -10609,6 +10614,16 @@ function ChatPane({
                 }}
               />
               <MenuItem
+                icon={<Sparkles size={17} aria-hidden="true" />}
+                label="Visualize"
+                desc="Create an interactive visual"
+                trailing={<StatePill on={visualizeSelected} />}
+                onClick={() => {
+                  setVisualizeSelected((selected) => !selected);
+                  setPlusOpen(false);
+                }}
+              />
+              <MenuItem
                 icon={<SkillIcon />}
                 label="Skills"
                 desc="What Pareto knows how to do"
@@ -11009,6 +11024,29 @@ function ChatPane({
                 >
                   <DesktopIcon />
                   Computer
+                  <CloseIcon />
+                </button>
+              )}
+              {visualizeSelected && (
+                <button
+                  onClick={() => setVisualizeSelected(false)}
+                  title="Create a visual for the next message. Click to remove."
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 7,
+                    background: "var(--chip)",
+                    border: "none",
+                    borderRadius: 999,
+                    padding: "4px 10px",
+                    color: colors.accent,
+                    fontSize: 13.5,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <Sparkles size={15} aria-hidden="true" />
+                  Visualize
                   <CloseIcon />
                 </button>
               )}
