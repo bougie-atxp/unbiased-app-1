@@ -190,6 +190,12 @@ function productionBuild(): boolean {
 if (!productionBuild() && process.env.UNBIASED_DEV_HOME_DIR) {
   app.setPath("home", process.env.UNBIASED_DEV_HOME_DIR);
 }
+if (!productionBuild() && process.env.UNBIASED_DEV_USER_DATA_DIR) {
+  const userDataDir = process.env.UNBIASED_DEV_USER_DATA_DIR;
+  if (!isAbsolute(userDataDir)) throw new Error("UNBIASED_DEV_USER_DATA_DIR must be absolute");
+  mkdirSync(userDataDir, { recursive: true });
+  app.setPath("userData", userDataDir);
+}
 
 const engine = new EngineClient();
 let win: BrowserWindow | null = null;
