@@ -92,21 +92,10 @@
         transform: none;
       }
 
-      /* Sidebar material and interaction language. The navigation is a
-         structural layer, so it uses a denser material than floating menus:
-         enough translucency to keep depth, enough pigment to preserve text
-         contrast. Selection stays neutral and quiet; the accent is reserved
-         for status and actions instead of drawing a red stripe through every
-         active destination. */
+      /* The rail and expanded navigation share the toolbar's solid chrome.
+         Selection stays neutral; the accent is for status and actions. */
       .u-sidebar {
-        background:
-          linear-gradient(180deg, color-mix(in srgb, var(--fg) 2.8%, transparent), transparent 24%),
-          color-mix(in srgb, var(--nav-bg) 94%, transparent);
-        -webkit-backdrop-filter: blur(28px) saturate(1.18);
-        backdrop-filter: blur(28px) saturate(1.18);
-        box-shadow:
-          inset -1px 0 color-mix(in srgb, var(--fg) 8%, transparent),
-          10px 0 30px rgba(0, 0, 0, 0.08);
+        background: var(--nav-bg);
       }
       .u-sidebar-row {
         background: transparent;
@@ -292,18 +281,9 @@
         100% { background-position: -200% 0; }
       }
 
-      /* Reduced transparency. The translucent chrome exists to let content
-         show through and to signal which layer floats; when the user has asked
-         for less of that, the honest answer is a solid surface with a defined
-         edge, not a weaker blur. Paired with the materials above — this block
-         only earns its place now that the app actually uses backdrop-filter. */
+      /* Reduced transparency removes the blur behind modal scrims. */
       @media (prefers-reduced-transparency: reduce) {
         :root { --scrim-blur: none; }
-        .u-sidebar {
-          background: var(--nav-bg);
-          -webkit-backdrop-filter: none;
-          backdrop-filter: none;
-        }
       }
       /* Higher contrast wants a heavier, more definite dim behind a modal
          rather than a see-through one. */

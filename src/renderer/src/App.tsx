@@ -1040,7 +1040,7 @@ function themeVars(t: ThemeConfig): Record<string, string> {
     "--fg": t.ink,
     "--accent": t.accent,
     "--accent-fg": bestInkOn(t.accent),
-    "--nav-bg": mixHex(t.surface, "#000000", 0.14),
+    "--nav-bg": m(0.05),
     "--code-bg": mixHex(t.surface, "#000000", 0.3),
     "--code-fg": mixHex(t.ink, t.surface, 0.14),
     "--panel": m(0.05),
@@ -3152,7 +3152,7 @@ export function App() {
         display: "flex",
         flexDirection: "column",
         position: "relative",
-        background: colors.bg,
+        background: "var(--nav-bg)",
         color: colors.fg,
         fontFamily: "var(--font-ui)",
       }}
@@ -3167,7 +3167,6 @@ export function App() {
           alignItems: "center",
           padding: windowWidth < 480 ? "0 10px" : "0 20px 0 10px",
           background: "var(--nav-bg)",
-          borderBottom: `1px solid ${colors.border}`,
           zIndex: 32,
         }}
       >
@@ -3204,7 +3203,7 @@ export function App() {
           </IconButton>
         )}
       </header>
-      <div style={{ display: "flex", flex: 1, minHeight: 0, position: "relative" }}>
+      <div style={{ display: "flex", flex: 1, minHeight: 0, position: "relative", background: "var(--nav-bg)", padding: "0 4px 4px 0" }}>
       <nav
         className="u-sidebar"
         aria-label="Sidebar shortcuts"
@@ -3739,6 +3738,8 @@ export function App() {
           minWidth: 320,
           display: "flex",
           flexDirection: "column",
+          background: colors.bg,
+          borderRadius: 12,
         }}
       >
         {/* Scheduled tasks lives in the content area, not over it and not
