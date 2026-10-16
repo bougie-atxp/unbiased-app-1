@@ -3159,7 +3159,7 @@ export function App() {
       <header
         aria-label="Navigation toolbar"
         style={{
-          height: 52,
+          height: 44,
           boxSizing: "border-box",
           flexShrink: 0,
           display: "flex",
@@ -3170,7 +3170,7 @@ export function App() {
           zIndex: 32,
         }}
       >
-        <div style={{ width: windowWidth < 480 ? 164 : 260, flexShrink: 0, display: "flex", alignItems: "center", gap: windowWidth < 480 ? 0 : 22 }}>
+        <div style={{ width: windowWidth < 480 ? 164 : 210, flexShrink: 0, display: "flex", alignItems: "center", gap: windowWidth < 480 ? 0 : 8 }}>
         <SidebarRailButton label="Back" disabled={!navigationTarget(navHistory, -1) || navigatingHistory} onClick={() => void moveInHistory(-1)}>
           <ChevronLeft size={20} strokeWidth={1.8} />
         </SidebarRailButton>
