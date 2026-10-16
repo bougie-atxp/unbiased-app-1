@@ -2139,11 +2139,12 @@ export function App() {
   // going in the engine and the sidebar shows it as active. Only genuinely
   // destructive actions still wait.
   async function newChat(project?: { name: string; path: string }, record = true) {
-    ++openSeqRef.current;
+    const seq = ++openSeqRef.current;
     setScheduledOpen(false);
     setConnectorsOpen(false);
     snapshotSideView();
     await window.unbiased.detachThread(project?.path);
+    if (openSeqRef.current !== seq) return;
     if (record) visit(project ? { kind: "project", path: project.path, name: project.name } : { kind: "home" });
     setActiveProject(project ?? null);
     setActiveThreadId(null);
