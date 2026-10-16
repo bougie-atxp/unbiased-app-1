@@ -17434,10 +17434,26 @@ function SidebarSectionPreview({
             <SidebarPreviewRow icon={<PlugIcon />} title="Browse connectors" onClick={onOpenConnectors} />
             <SidebarPreviewRow icon={<SkillIcon />} title="Skills" onClick={onOpenSkills} />
             <SidebarPreviewLabel>Installed</SidebarPreviewLabel>
-            {installed.map((connector) => <SidebarPreviewRow key={connector.name} title={connector.displayName} detail={connector.category} onClick={onOpenConnectors} />)}
+            {installed.map((connector) => (
+              <SidebarPreviewRow
+                key={connector.name}
+                icon={connector.icon ? <img src={connector.icon} alt="" style={{ width: 17, height: 17, objectFit: "contain" }} /> : <PlugIcon />}
+                title={connector.displayName}
+                detail={connector.category}
+                onClick={onOpenConnectors}
+              />
+            ))}
             {connectors !== null && installed.length === 0 && <SidebarPreviewEmpty>No installed connectors</SidebarPreviewEmpty>}
             {available.length > 0 && <SidebarPreviewLabel>Available</SidebarPreviewLabel>}
-            {available.map((connector) => <SidebarPreviewRow key={connector.name} title={connector.displayName} detail={connector.comingSoon ? "Coming soon" : connector.category} onClick={onOpenConnectors} />)}
+            {available.map((connector) => (
+              <SidebarPreviewRow
+                key={connector.name}
+                icon={connector.icon ? <img src={connector.icon} alt="" style={{ width: 17, height: 17, objectFit: "contain" }} /> : <PlugIcon />}
+                title={connector.displayName}
+                detail={connector.comingSoon ? "Coming soon" : connector.category}
+                onClick={onOpenConnectors}
+              />
+            ))}
             {connectors === null && !loadError && <SidebarPreviewEmpty>Loading connectors...</SidebarPreviewEmpty>}
             {loadError && <SidebarPreviewEmpty>Connectors unavailable</SidebarPreviewEmpty>}
           </>
