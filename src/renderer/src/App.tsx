@@ -36,7 +36,7 @@ import { UserMessageMarkdown } from "./user-message-markdown";
 import { MarkdownComposer, type MarkdownComposerHandle } from "./markdown-composer";
 import "./markdown-composer.css";
 import "./user-input-card.css";
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, MessageSquare, MoreHorizontal, RefreshCw } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Home, MessageSquare, MoreHorizontal, RefreshCw } from "lucide-react";
 import { ConversationDrafts } from "./conversation-drafts";
 import { SettingsRoute } from "./settings-route";
 import { parseAgentStylePrefs, type AgentStylePrefs } from "../../shared/agent-style";
@@ -1855,8 +1855,10 @@ export function App() {
   }
 
   const [navOpen, setNavOpen] = useState(() => localStorage.getItem("navOpen") !== "false");
-  const NAV_RAIL_WIDTH = 60;
-  // Nav width is user-draggable within [180, 400]px, persisted.
+  const [navPeekOpen, setNavPeekOpen] = useState(false);
+  const navPeekCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const NAV_RAIL_WIDTH = 88;
+  // The panel beside the fixed icon rail is user-draggable and persisted.
   const NAV_MIN = 180;
   const NAV_MAX = 400;
   const [navWidth, setNavWidth] = useState(() => {
@@ -1883,11 +1885,43 @@ export function App() {
   navWidthRef.current = navWidth;
 
   function toggleNav() {
+    setNavPeekOpen(false);
     setNavOpen((o) => {
       localStorage.setItem("navOpen", String(!o));
       return !o;
     });
   }
+
+  function showNavPeek() {
+    if (navPeekCloseTimer.current) clearTimeout(navPeekCloseTimer.current);
+    navPeekCloseTimer.current = null;
+    if (!navOpen) setNavPeekOpen(true);
+  }
+
+  function hideNavPeekSoon() {
+    if (navPeekCloseTimer.current) clearTimeout(navPeekCloseTimer.current);
+    navPeekCloseTimer.current = setTimeout(() => setNavPeekOpen(false), 180);
+  }
+
+  useEffect(() => {
+    if (!navPeekOpen) return;
+    function dismissPeek(e: PointerEvent) {
+      if (!(e.target as Element).closest(".u-sidebar")) setNavPeekOpen(false);
+    }
+    function dismissPeekOnEscape(e: KeyboardEvent) {
+      if (e.key === "Escape") setNavPeekOpen(false);
+    }
+    document.addEventListener("pointerdown", dismissPeek);
+    document.addEventListener("keydown", dismissPeekOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissPeek);
+      document.removeEventListener("keydown", dismissPeekOnEscape);
+    };
+  }, [navPeekOpen]);
+
+  useEffect(() => () => {
+    if (navPeekCloseTimer.current) clearTimeout(navPeekCloseTimer.current);
+  }, []);
 
   // Divider drag: the fraction follows the cursor within the content area
   // (everything right of the nav), clamped so neither pane collapses into
@@ -1895,11 +1929,11 @@ export function App() {
   useEffect(() => {
     function onMove(e: MouseEvent) {
       if (navDraggingRef.current) {
-        setNavWidth(Math.min(Math.max(e.clientX, NAV_MIN), NAV_MAX));
+        setNavWidth(Math.min(Math.max(e.clientX - NAV_RAIL_WIDTH, NAV_MIN), NAV_MAX));
         return;
       }
       if (!draggingRef.current) return;
-      const contentLeft = navOpenRef.current ? navWidthRef.current : NAV_RAIL_WIDTH;
+      const contentLeft = NAV_RAIL_WIDTH + (navOpenRef.current ? navWidthRef.current : 0);
       const contentWidth = Math.max(window.innerWidth - contentLeft, 1);
       const frac = (window.innerWidth - e.clientX) / contentWidth;
       setSideFrac(Math.min(Math.max(frac, 0.25), 0.7));
@@ -2896,8 +2930,9 @@ export function App() {
    *  watching that run happen is the reason to be on the Scheduled page at
    *  all (the mirror is already wired to the running task's thread). */
   const sideVisible = sideOpen && (!pageOpen || panelMode === "agentmirror");
-  const sideOverlay = sideVisible && windowWidth < (navOpen ? navWidth : NAV_RAIL_WIDTH) + 320 + 300 + 8;
-  const sideOverlayWidth = Math.min(420, Math.max(300, (windowWidth - (navOpen ? navWidth : NAV_RAIL_WIDTH)) * 0.65));
+  const sidebarWidth = NAV_RAIL_WIDTH + (navOpen ? navWidth : 0);
+  const sideOverlay = sideVisible && windowWidth < sidebarWidth + 320 + 300 + 8;
+  const sideOverlayWidth = Math.min(420, Math.max(300, (windowWidth - sidebarWidth) * 0.65));
   const typingPaneRef = useRef<PaneId>("main");
   useEffect(() => {
     typingPaneRef.current = sideVisible && sideChats.includes(panelMode) ? panelMode : "main";
@@ -3065,24 +3100,86 @@ export function App() {
         fontFamily: "var(--font-ui)",
       }}
     >
-      {navOpen && (
       <nav
         className="u-sidebar"
+        aria-label="Sidebar shortcuts"
+        style={{ width: NAV_RAIL_WIDTH, flexShrink: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 31 }}
+      >
+        <div style={{ padding: "16px 2px 0", display: "flex", alignItems: "center", gap: 4 }}>
+          <SidebarRailButton label={navOpen ? "Collapse sidebar" : "Expand sidebar"} onClick={toggleNav}>
+            <PanelIcon />
+          </SidebarRailButton>
+          {!navOpen && (
+            <SidebarRailButton label="New chat" onClick={() => void newChat()}>
+              <NewChatIcon />
+            </SidebarRailButton>
+          )}
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "15px 10px 12px" }}>
+          <div onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek}>
+            <SidebarRailButton label="Home" active={!pageOpen || navPeekOpen} onClick={showNavPeek}>
+              <Home size={18} />
+            </SidebarRailButton>
+          </div>
+          <SidebarRailButton label="Open project" onClick={() => void openProjectDialog()}>
+            <FolderPlusIcon />
+          </SidebarRailButton>
+          <SidebarRailButton label="Connectors" active={connectorsOpen} onClick={() => { setScheduledOpen(false); setConnectorsOpen(true); }}>
+            <PlugIcon />
+          </SidebarRailButton>
+          <SidebarRailButton label="Scheduled" active={scheduledOpen} badge={missedCount} onClick={() => { setConnectorsOpen(false); setScheduledOpen(true); }}>
+            <ClockIcon />
+          </SidebarRailButton>
+        </div>
+        <div className="u-sidebar-bottom" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "8px 10px" }}>
+          {update && (
+            <SidebarRailButton
+              label={updateStaged ? "Install update" : "Download update"}
+              onClick={() => void (updateStaged ? window.unbiased.applyUpdate() : window.unbiased.downloadUpdate())}
+            >
+              <DownloadIcon />
+            </SidebarRailButton>
+          )}
+          <SidebarRailButton
+            label="What's new"
+            badge={changelogUnread}
+            onClick={() => {
+              localStorage.setItem("changelogSeen", releases[0]?.version ?? "");
+              setChangelogUnread(false);
+              setShowChangelog(true);
+            }}
+          >
+            <BellIcon />
+          </SidebarRailButton>
+          <SidebarRailButton label="Settings" onClick={() => setShowSettings(true)}>
+            <GearIcon />
+          </SidebarRailButton>
+        </div>
+      </nav>
+      {(navOpen || navPeekOpen) && (
+      <nav
+        className="u-sidebar"
+        aria-label={navOpen ? "Sidebar" : "Sidebar preview"}
+        onMouseEnter={showNavPeek}
+        onMouseLeave={hideNavPeekSoon}
         style={{
-          width: navWidth,
+          width: navOpen ? navWidth : Math.min(navWidth, Math.max(0, windowWidth - NAV_RAIL_WIDTH - 8)),
           flexShrink: 0,
           display: "flex",
           flexDirection: "column",
-          position: "relative",
-          zIndex: 2,
+          position: navOpen ? "relative" : "fixed",
+          left: navOpen ? undefined : NAV_RAIL_WIDTH,
+          top: navOpen ? undefined : 8,
+          bottom: navOpen ? undefined : 8,
+          zIndex: navOpen ? 2 : 30,
+          borderRadius: navOpen ? 0 : 12,
+          border: navOpen ? undefined : "1px solid color-mix(in srgb, var(--fg) 12%, transparent)",
+          boxShadow: navOpen ? undefined : "0 20px 50px rgba(0, 0, 0, 0.35)",
         }}
       >
         <div style={{ padding: "16px 14px 0" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 2px" }}>
+          <div style={{ display: "flex", alignItems: "center", padding: "2px 2px", height: 40 }}>
             <Wordmark height={15} />
-            <IconButton title="Hide sidebar" onClick={toggleNav}>
-              <PanelIcon />
-            </IconButton>
           </div>
         </div>
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
@@ -3500,57 +3597,6 @@ export function App() {
           </button>
         </div>
       </nav>
-      )}
-      {!navOpen && (
-        <nav
-          className="u-sidebar"
-          aria-label="Collapsed sidebar"
-          style={{ width: NAV_RAIL_WIDTH, flexShrink: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 2 }}
-        >
-          <div style={{ padding: "16px 10px 0" }}>
-            <SidebarRailButton label="Expand sidebar" onClick={toggleNav}>
-              <SideChatIcon size={16} />
-            </SidebarRailButton>
-          </div>
-          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "15px 10px 12px" }}>
-            <SidebarRailButton label="New chat" onClick={() => void newChat()}>
-              <NewChatIcon />
-            </SidebarRailButton>
-            <SidebarRailButton label="Open project" onClick={() => void openProjectDialog()}>
-              <FolderPlusIcon />
-            </SidebarRailButton>
-            <SidebarRailButton label="Connectors" active={connectorsOpen} onClick={() => { setScheduledOpen(false); setConnectorsOpen(true); }}>
-              <PlugIcon />
-            </SidebarRailButton>
-            <SidebarRailButton label="Scheduled" active={scheduledOpen} badge={missedCount} onClick={() => { setConnectorsOpen(false); setScheduledOpen(true); }}>
-              <ClockIcon />
-            </SidebarRailButton>
-          </div>
-          <div className="u-sidebar-bottom" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "8px 10px" }}>
-            {update && (
-              <SidebarRailButton
-                label={updateStaged ? "Install update" : "Download update"}
-                onClick={() => void (updateStaged ? window.unbiased.applyUpdate() : window.unbiased.downloadUpdate())}
-              >
-                <DownloadIcon />
-              </SidebarRailButton>
-            )}
-            <SidebarRailButton
-              label="What's new"
-              badge={changelogUnread}
-              onClick={() => {
-                localStorage.setItem("changelogSeen", releases[0]?.version ?? "");
-                setChangelogUnread(false);
-                setShowChangelog(true);
-              }}
-            >
-              <BellIcon />
-            </SidebarRailButton>
-            <SidebarRailButton label="Settings" onClick={() => setShowSettings(true)}>
-              <GearIcon />
-            </SidebarRailButton>
-          </div>
-        </nav>
       )}
       {navOpen && (
         <div
