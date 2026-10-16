@@ -3210,18 +3210,16 @@ export function App() {
         style={{ width: NAV_RAIL_WIDTH, boxSizing: "border-box", flexShrink: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 31 }}
       >
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "15px 2px 12px" }}>
-          <div onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek}>
-            <SidebarRailButton label="Home" active={!pageOpen || navPeekOpen} onClick={showNavPeek}>
-              <Home size={18} />
-            </SidebarRailButton>
-          </div>
-          <SidebarRailButton label="Open project" onClick={() => void openProjectDialog()}>
+          <SidebarRailButton label="Home" active={!pageOpen} onClick={showNavPeek} onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek} onBlur={hideNavPeekSoon}>
+            <Home size={18} />
+          </SidebarRailButton>
+          <SidebarRailButton label="Open project" onClick={() => { setNavPeekOpen(false); void openProjectDialog(); }} onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek} onBlur={hideNavPeekSoon}>
             <FolderPlusIcon />
           </SidebarRailButton>
-          <SidebarRailButton label="Connectors" active={connectorsOpen} onClick={() => showConnectorsPage()}>
+          <SidebarRailButton label="Connectors" active={connectorsOpen} onClick={() => { setNavPeekOpen(false); showConnectorsPage(); }} onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek} onBlur={hideNavPeekSoon}>
             <PlugIcon />
           </SidebarRailButton>
-          <SidebarRailButton label="Scheduled" active={scheduledOpen} badge={missedCount} onClick={() => showScheduledPage()}>
+          <SidebarRailButton label="Scheduled" active={scheduledOpen} badge={missedCount} onClick={() => { setNavPeekOpen(false); showScheduledPage(); }} onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek} onBlur={hideNavPeekSoon}>
             <ClockIcon />
           </SidebarRailButton>
         </div>
@@ -3229,7 +3227,11 @@ export function App() {
           {update && (
             <SidebarRailButton
               label={updateStaged ? "Install update" : "Download update"}
-              onClick={() => void (updateStaged ? window.unbiased.applyUpdate() : window.unbiased.downloadUpdate())}
+              onClick={() => { setNavPeekOpen(false); void (updateStaged ? window.unbiased.applyUpdate() : window.unbiased.downloadUpdate()); }}
+              onMouseEnter={showNavPeek}
+              onMouseLeave={hideNavPeekSoon}
+              onFocus={showNavPeek}
+              onBlur={hideNavPeekSoon}
             >
               <DownloadIcon />
             </SidebarRailButton>
@@ -3237,7 +3239,12 @@ export function App() {
           <SidebarRailButton
             label="What's new"
             badge={changelogUnread}
+            onMouseEnter={showNavPeek}
+            onMouseLeave={hideNavPeekSoon}
+            onFocus={showNavPeek}
+            onBlur={hideNavPeekSoon}
             onClick={() => {
+              setNavPeekOpen(false);
               localStorage.setItem("changelogSeen", releases[0]?.version ?? "");
               setChangelogUnread(false);
               setShowChangelog(true);
@@ -3245,7 +3252,7 @@ export function App() {
           >
             <BellIcon />
           </SidebarRailButton>
-          <SidebarRailButton label="Settings" onClick={() => setShowSettings(true)}>
+          <SidebarRailButton label="Settings" onClick={() => { setNavPeekOpen(false); setShowSettings(true); }} onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek} onBlur={hideNavPeekSoon}>
             <GearIcon />
           </SidebarRailButton>
         </div>
@@ -3256,6 +3263,8 @@ export function App() {
         aria-label={navOpen ? "Sidebar" : "Sidebar preview"}
         onMouseEnter={showNavPeek}
         onMouseLeave={hideNavPeekSoon}
+        onFocusCapture={showNavPeek}
+        onBlurCapture={hideNavPeekSoon}
         style={{
           width: navOpen ? navWidth : Math.min(navWidth, Math.max(0, windowWidth - NAV_RAIL_WIDTH - 8)),
           flexShrink: 0,
@@ -17167,6 +17176,10 @@ function SidebarAction({
 function SidebarRailButton({
   label,
   onClick,
+  onMouseEnter,
+  onMouseLeave,
+  onFocus,
+  onBlur,
   active = false,
   badge = false,
   disabled = false,
@@ -17175,6 +17188,10 @@ function SidebarRailButton({
 }: {
   label: string;
   onClick: () => void;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
   active?: boolean;
   badge?: number | boolean;
   disabled?: boolean;
@@ -17187,6 +17204,10 @@ function SidebarRailButton({
       title={label}
       aria-label={label}
       onClick={onClick}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onFocus={onFocus}
+      onBlur={onBlur}
       disabled={disabled}
       className="u-sidebar-row"
       data-active={active}
