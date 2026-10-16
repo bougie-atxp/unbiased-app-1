@@ -56,6 +56,20 @@ test("hides source while streaming and after validation failure", () => {
   assert.ok(visualFenceContent("mermaid", "flowchart LR\nA-->B", false));
 });
 
+test("renders a standalone VisualHtml root without relaxing other OpenUI validation", () => {
+  const html = '<div id="odyssey-map">Map</div><script>document.getElementById("odyssey-map").textContent="Ready"</script>';
+  const source = `root = VisualHtml(${JSON.stringify(html)})`;
+  assert.deepEqual(inspectOpenUI(source), { valid: false, reason: "parse" });
+  const markup = renderToStaticMarkup(visualFenceContent("openui", source, false)!);
+  assert.match(markup, /app-openui-visual--bare/);
+  assert.doesNotMatch(markup, /couldn&#x27;t be displayed|odyssey-map/);
+
+  const extraStatement = renderToStaticMarkup(visualFenceContent("openui", `${source}\nother = TextContent("extra")`, false)!);
+  assert.match(extraStatement, /couldn&#x27;t be displayed/);
+  const invalidFragment = renderToStaticMarkup(visualFenceContent("openui", `root = VisualHtml(${JSON.stringify('<html><body>Not a fragment</body></html>')})`, false)!);
+  assert.match(invalidFragment, /couldn&#x27;t be displayed/);
+});
+
 test("renders a library component through OpenUI", async () => {
   const dom = new JSDOM("<!doctype html><div id='root'></div>", { url: "http://localhost" });
   Object.assign(globalThis, {

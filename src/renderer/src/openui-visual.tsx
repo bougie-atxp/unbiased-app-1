@@ -93,6 +93,21 @@ export function inspectOpenUI(source: string): { valid: boolean; reason?: string
   }
 }
 
+function normalizeStandaloneVisualHtml(source: string): string {
+  if (!source.trim() || source.length > MAX_PROGRAM_LENGTH) return source;
+  try {
+    const result = parser.parse(source);
+    if (result.root?.typeName !== "VisualHtml" || result.meta.incomplete ||
+        result.meta.errors.length || result.meta.unresolved.length || result.meta.statementCount !== 1 ||
+        result.queryStatements.length || result.mutationStatements.length) return source;
+    const props = visualHtmlSchema.safeParse(result.root.props);
+    if (!props.success) return source;
+    return `root = Stack([VisualHtml(${JSON.stringify(props.data.source)})])`;
+  } catch {
+    return source;
+  }
+}
+
 class VisualRenderBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
 
@@ -133,12 +148,13 @@ function VisualFenceStatus({ pending = false }: { pending?: boolean }) {
 
 function renderProgram(source: string, streaming: boolean): ReactElement {
   if (streaming) return <VisualFenceStatus pending />;
-  const inspected = inspectOpenUI(source);
+  const program = normalizeStandaloneVisualHtml(source);
+  const inspected = inspectOpenUI(program);
   if (!inspected.valid) {
     console.warn("[visual] OpenUI source rejected:", inspected.reason);
     return <VisualFenceStatus />;
   }
-  return <OpenUIVisualSurface source={source} selfFramed={Boolean(inspected.selfFramed)} />;
+  return <OpenUIVisualSurface source={program} selfFramed={Boolean(inspected.selfFramed)} />;
 }
 
 export function visualFenceContent(language: string, source: string, streaming: boolean): ReactElement | null {
