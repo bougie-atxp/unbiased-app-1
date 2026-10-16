@@ -3184,7 +3184,7 @@ export function App() {
           <NewChatIcon size={18} />
         </SidebarRailButton>
         </div>
-        <span aria-hidden="true" style={{ width: 1, height: 18, background: colors.border }} />
+        <span aria-hidden="true" style={{ width: 1, height: 22, background: colors.border }} />
         {!pageOpen && (
           <span
             title={mainTitle}
