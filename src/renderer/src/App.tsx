@@ -3170,17 +3170,17 @@ export function App() {
           zIndex: 32,
         }}
       >
-        <div style={{ width: windowWidth < 480 ? 164 : 210, flexShrink: 0, display: "flex", alignItems: "center", gap: windowWidth < 480 ? 0 : 8 }}>
-        <SidebarRailButton label="Back" disabled={!navigationTarget(navHistory, -1) || navigatingHistory} onClick={() => void moveInHistory(-1)}>
+        <div style={{ width: windowWidth < 480 ? 140 : 150, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
+        <SidebarRailButton compact label="Back" disabled={!navigationTarget(navHistory, -1) || navigatingHistory} onClick={() => void moveInHistory(-1)}>
           <ChevronLeft size={20} strokeWidth={1.8} />
         </SidebarRailButton>
-        <SidebarRailButton label="Forward" disabled={!navigationTarget(navHistory, 1) || navigatingHistory} onClick={() => void moveInHistory(1)}>
+        <SidebarRailButton compact label="Forward" disabled={!navigationTarget(navHistory, 1) || navigatingHistory} onClick={() => void moveInHistory(1)}>
           <ChevronRight size={20} strokeWidth={1.8} />
         </SidebarRailButton>
-        <SidebarRailButton label={navOpen ? "Collapse sidebar" : "Expand sidebar"} onClick={toggleNav}>
+        <SidebarRailButton compact label={navOpen ? "Collapse sidebar" : "Expand sidebar"} onClick={toggleNav}>
           <PanelIcon />
         </SidebarRailButton>
-        <SidebarRailButton label="New chat" onClick={() => void newChat()}>
+        <SidebarRailButton compact label="New chat" onClick={() => void newChat()}>
           <NewChatIcon />
         </SidebarRailButton>
         </div>
@@ -17163,6 +17163,7 @@ function SidebarRailButton({
   active = false,
   badge = false,
   disabled = false,
+  compact = false,
   children,
 }: {
   label: string;
@@ -17170,6 +17171,7 @@ function SidebarRailButton({
   active?: boolean;
   badge?: number | boolean;
   disabled?: boolean;
+  compact?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -17186,8 +17188,8 @@ function SidebarRailButton({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        width: 40,
-        height: 40,
+        width: compact ? 32 : 40,
+        height: compact ? 32 : 40,
         flexShrink: 0,
         padding: 0,
         border: "none",
@@ -17196,7 +17198,7 @@ function SidebarRailButton({
         cursor: disabled ? "default" : "pointer",
       }}
     >
-      <span style={{ display: "flex", transform: "scale(1.15)" }}>{children}</span>
+      <span style={{ display: "flex", transform: compact ? undefined : "scale(1.15)" }}>{children}</span>
       {badge && (
         <span
           aria-hidden="true"
