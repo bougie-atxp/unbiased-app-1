@@ -61,8 +61,12 @@ export function interactiveVisualDocument(source: string): string {
       document.documentElement.style.colorScheme = event.data.scheme;
   });
   addEventListener('DOMContentLoaded', () => {
-    const report = () => parent.postMessage({ type: 'unbiased-visual-height', height: Math.ceil(document.documentElement.scrollHeight) }, '*');
-    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(report).observe(document.documentElement);
+    const report = () => parent.postMessage({ type: 'unbiased-visual-height', height: Math.ceil(document.body.scrollHeight) }, '*');
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(report);
+      observer.observe(document.body);
+      observer.observe(document.documentElement);
+    }
     report();
     parent.postMessage({ type: 'unbiased-visual-ready' }, '*');
   });
