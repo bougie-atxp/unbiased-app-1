@@ -36,7 +36,7 @@ import { UserMessageMarkdown } from "./user-message-markdown";
 import { MarkdownComposer, type MarkdownComposerHandle } from "./markdown-composer";
 import "./markdown-composer.css";
 import "./user-input-card.css";
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Home, MessageSquare, MoreHorizontal, RefreshCw } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Home, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search } from "lucide-react";
 import { ConversationDrafts } from "./conversation-drafts";
 import { SettingsRoute } from "./settings-route";
 import { parseAgentStylePrefs, type AgentStylePrefs } from "../../shared/agent-style";
@@ -308,6 +308,7 @@ type ProjectInfo = {
   folders?: string[];
   threads: ThreadSummary[];
 };
+type RailPeekSection = "home" | "projects" | "connectors" | "scheduled" | "updates" | "whats-new" | "settings";
 /** A thread we know exists because we just created it, but which the engine
  *  will not return from thread/list yet — verified: a list issued straight
  *  after thread/start does not include the new id. Without a stand-in row, a
@@ -1859,6 +1860,8 @@ export function App() {
 
   const [navOpen, setNavOpen] = useState(() => localStorage.getItem("navOpen") !== "false");
   const [navPeekOpen, setNavPeekOpen] = useState(false);
+  const [navPeekSection, setNavPeekSection] = useState<RailPeekSection>("home");
+  const [scheduledCreateRequested, setScheduledCreateRequested] = useState(false);
   const [navHistory, setNavHistory] = useState(initialNavigationHistory);
   const [navigatingHistory, setNavigatingHistory] = useState(false);
   const navPeekCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1917,15 +1920,27 @@ export function App() {
     if (record) visit({ kind: "scheduled" });
   }
 
-  function showNavPeek() {
+  function showNavPeek(section: RailPeekSection) {
     if (navPeekCloseTimer.current) clearTimeout(navPeekCloseTimer.current);
     navPeekCloseTimer.current = null;
-    if (!navOpen) setNavPeekOpen(true);
+    if (!navOpen) {
+      setNavPeekSection(section);
+      setNavPeekOpen(true);
+    }
   }
 
   function hideNavPeekSoon() {
     if (navPeekCloseTimer.current) clearTimeout(navPeekCloseTimer.current);
     navPeekCloseTimer.current = setTimeout(() => setNavPeekOpen(false), 180);
+  }
+
+  function railPeekHandlers(section: RailPeekSection) {
+    return {
+      onMouseEnter: () => showNavPeek(section),
+      onMouseLeave: hideNavPeekSoon,
+      onFocus: () => showNavPeek(section),
+      onBlur: hideNavPeekSoon,
+    };
   }
 
   useEffect(() => {
@@ -3210,16 +3225,16 @@ export function App() {
         style={{ width: NAV_RAIL_WIDTH, boxSizing: "border-box", flexShrink: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 31 }}
       >
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "15px 2px 12px" }}>
-          <SidebarRailButton label="Home" active={!pageOpen} onClick={showNavPeek} onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek} onBlur={hideNavPeekSoon}>
+          <SidebarRailButton label="Home" active={!pageOpen} onClick={() => showNavPeek("home")} {...railPeekHandlers("home")}>
             <Home size={18} />
           </SidebarRailButton>
-          <SidebarRailButton label="Open project" onClick={() => { setNavPeekOpen(false); void openProjectDialog(); }} onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek} onBlur={hideNavPeekSoon}>
+          <SidebarRailButton label="Open project" onClick={() => { setNavPeekOpen(false); void openProjectDialog(); }} {...railPeekHandlers("projects")}>
             <FolderPlusIcon />
           </SidebarRailButton>
-          <SidebarRailButton label="Connectors" active={connectorsOpen} onClick={() => { setNavPeekOpen(false); showConnectorsPage(); }} onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek} onBlur={hideNavPeekSoon}>
+          <SidebarRailButton label="Connectors" active={connectorsOpen} onClick={() => { setNavPeekOpen(false); showConnectorsPage(); }} {...railPeekHandlers("connectors")}>
             <PlugIcon />
           </SidebarRailButton>
-          <SidebarRailButton label="Scheduled" active={scheduledOpen} badge={missedCount} onClick={() => { setNavPeekOpen(false); showScheduledPage(); }} onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek} onBlur={hideNavPeekSoon}>
+          <SidebarRailButton label="Scheduled" active={scheduledOpen} badge={missedCount} onClick={() => { setNavPeekOpen(false); showScheduledPage(); }} {...railPeekHandlers("scheduled")}>
             <ClockIcon />
           </SidebarRailButton>
         </div>
@@ -3228,10 +3243,7 @@ export function App() {
             <SidebarRailButton
               label={updateStaged ? "Install update" : "Download update"}
               onClick={() => { setNavPeekOpen(false); void (updateStaged ? window.unbiased.applyUpdate() : window.unbiased.downloadUpdate()); }}
-              onMouseEnter={showNavPeek}
-              onMouseLeave={hideNavPeekSoon}
-              onFocus={showNavPeek}
-              onBlur={hideNavPeekSoon}
+              {...railPeekHandlers("updates")}
             >
               <DownloadIcon />
             </SidebarRailButton>
@@ -3239,10 +3251,7 @@ export function App() {
           <SidebarRailButton
             label="What's new"
             badge={changelogUnread}
-            onMouseEnter={showNavPeek}
-            onMouseLeave={hideNavPeekSoon}
-            onFocus={showNavPeek}
-            onBlur={hideNavPeekSoon}
+            {...railPeekHandlers("whats-new")}
             onClick={() => {
               setNavPeekOpen(false);
               localStorage.setItem("changelogSeen", releases[0]?.version ?? "");
@@ -3252,18 +3261,18 @@ export function App() {
           >
             <BellIcon />
           </SidebarRailButton>
-          <SidebarRailButton label="Settings" onClick={() => { setNavPeekOpen(false); setShowSettings(true); }} onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek} onBlur={hideNavPeekSoon}>
+          <SidebarRailButton label="Settings" onClick={() => { setNavPeekOpen(false); setShowSettings(true); }} {...railPeekHandlers("settings")}>
             <GearIcon />
           </SidebarRailButton>
         </div>
       </nav>
-      {(navOpen || navPeekOpen) && (
+      {(navOpen || (navPeekOpen && navPeekSection === "home")) && (
       <nav
         className="u-sidebar"
         aria-label={navOpen ? "Sidebar" : "Sidebar preview"}
-        onMouseEnter={showNavPeek}
+        onMouseEnter={() => showNavPeek("home")}
         onMouseLeave={hideNavPeekSoon}
-        onFocusCapture={showNavPeek}
+        onFocusCapture={() => showNavPeek("home")}
         onBlurCapture={hideNavPeekSoon}
         style={{
           width: navOpen ? navWidth : Math.min(navWidth, Math.max(0, windowWidth - NAV_RAIL_WIDTH - 8)),
@@ -3695,6 +3704,58 @@ export function App() {
         </div>
       </nav>
       )}
+      {!navOpen && navPeekOpen && navPeekSection !== "home" && (
+        <nav
+          className="u-sidebar"
+          aria-label={`${navPeekSection} preview`}
+          onMouseEnter={() => showNavPeek(navPeekSection)}
+          onMouseLeave={hideNavPeekSoon}
+          onFocusCapture={() => showNavPeek(navPeekSection)}
+          onBlurCapture={hideNavPeekSoon}
+          style={{
+            width: Math.min(navWidth, Math.max(0, windowWidth - NAV_RAIL_WIDTH - 8)),
+            display: "flex",
+            flexDirection: "column",
+            position: "fixed",
+            left: NAV_RAIL_WIDTH,
+            top: NAV_BAR_SIZE + 8,
+            bottom: 8,
+            zIndex: 30,
+            borderRadius: 12,
+            border: "1px solid color-mix(in srgb, var(--fg) 12%, transparent)",
+            boxShadow: "0 20px 50px rgba(0, 0, 0, 0.35)",
+          }}
+        >
+          <SidebarSectionPreview
+            key={navPeekSection}
+            section={navPeekSection}
+            projects={sidebarView.projects}
+            updateVersion={update?.version ?? null}
+            latestRelease={releases[0]?.version ?? null}
+            onOpenProject={() => { setNavPeekOpen(false); void openProjectDialog(); }}
+            onCreateProject={() => {
+              setNavPeekOpen(false);
+              setEditProj({ mode: "create", path: "", name: "", folders: [], primary: "", icon: "folder", color: null, pickerOpen: false, error: null });
+            }}
+            onStartProjectChat={(project) => { setNavPeekOpen(false); void newChat({ name: project.name, path: project.path }); }}
+            onOpenConnectors={() => { setNavPeekOpen(false); showConnectorsPage(); }}
+            onOpenSkills={() => { setNavPeekOpen(false); setSkillsOpen(true); }}
+            onOpenScheduled={(key) => { setNavPeekOpen(false); showScheduledPage(key); }}
+            onNewTask={() => { setNavPeekOpen(false); setScheduledCreateRequested(true); showScheduledPage(); }}
+            onOpenUpdates={() => {
+              setNavPeekOpen(false);
+              void (updateStaged ? window.unbiased.applyUpdate() : window.unbiased.downloadUpdate());
+            }}
+            onOpenWhatsNew={() => {
+              setNavPeekOpen(false);
+              localStorage.setItem("changelogSeen", releases[0]?.version ?? "");
+              setChangelogUnread(false);
+              setShowChangelog(true);
+            }}
+            onOpenSettings={() => { setNavPeekOpen(false); setShowSettings(true); }}
+          />
+        </nav>
+      )}
       {navOpen && (
         <div
           onMouseDown={() => {
@@ -3762,6 +3823,8 @@ export function App() {
             projects={sidebar.projects}
             focusKey={scheduledFocus}
             onFocusHandled={() => setScheduledFocus(null)}
+            createRequested={scheduledCreateRequested}
+            onCreateHandled={() => setScheduledCreateRequested(false)}
             onOpenThread={(id) => {
               setScheduledOpen(false);
               setConnectorsOpen(false);
@@ -12939,12 +13002,16 @@ function ScheduledView({
   onOpenThread,
   focusKey,
   onFocusHandled,
+  createRequested,
+  onCreateHandled,
 }: {
   defaultProject: string | null;
   projects: ProjectInfo[];
   onOpenThread: (threadId: string) => void;
   focusKey?: string | null;
   onFocusHandled?: () => void;
+  createRequested?: boolean;
+  onCreateHandled?: () => void;
 }) {
   const [tasks, setTasks] = useState<ScheduledTaskView[]>([]);
   const [engineReady, setEngineReady] = useState(true);
@@ -13047,6 +13114,12 @@ function ScheduledView({
     setFProject(defaultProject);
     setFormError(null);
   }
+
+  useEffect(() => {
+    if (!createRequested) return;
+    openNew();
+    onCreateHandled?.();
+  }, [createRequested]);
 
   function openEdit(t: ScheduledTaskView) {
     setEditing(t.key);
@@ -17171,6 +17244,224 @@ function SidebarAction({
       {children}
     </button>
   );
+}
+
+function SidebarPreviewRow({
+  icon,
+  title,
+  detail,
+  onClick,
+}: {
+  icon?: React.ReactNode;
+  title: string;
+  detail?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="u-sidebar-row"
+      onClick={onClick}
+      title={title}
+      style={{
+        width: "100%",
+        minWidth: 0,
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 10,
+        padding: "8px 9px",
+        border: 0,
+        borderRadius: 8,
+        background: "transparent",
+        color: "var(--fg-soft)",
+        textAlign: "left",
+        font: "inherit",
+        cursor: "pointer",
+      }}
+    >
+      {icon && <span style={{ display: "flex", flexShrink: 0, marginTop: 2 }}>{icon}</span>}
+      <span style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14 }}>{title}</span>
+        {detail && <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, color: colors.dim }}>{detail}</span>}
+      </span>
+    </button>
+  );
+}
+
+function SidebarSectionPreview({
+  section,
+  projects,
+  updateVersion,
+  latestRelease,
+  onOpenProject,
+  onCreateProject,
+  onStartProjectChat,
+  onOpenConnectors,
+  onOpenSkills,
+  onOpenScheduled,
+  onNewTask,
+  onOpenUpdates,
+  onOpenWhatsNew,
+  onOpenSettings,
+}: {
+  section: Exclude<RailPeekSection, "home">;
+  projects: ProjectInfo[];
+  updateVersion: string | null;
+  latestRelease: string | null;
+  onOpenProject: () => void;
+  onCreateProject: () => void;
+  onStartProjectChat: (project: ProjectInfo) => void;
+  onOpenConnectors: () => void;
+  onOpenSkills: () => void;
+  onOpenScheduled: (key?: string) => void;
+  onNewTask: () => void;
+  onOpenUpdates: () => void;
+  onOpenWhatsNew: () => void;
+  onOpenSettings: () => void;
+}) {
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [tasks, setTasks] = useState<ScheduledTaskView[] | null>(null);
+  const [connectors, setConnectors] = useState<ConnectorInfo[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
+
+  useEffect(() => {
+    if (section !== "scheduled") return;
+    let active = true;
+    void window.unbiased.scheduledList()
+      .then((result) => { if (active) { setTasks(result.tasks ?? []); setLoadError(false); } })
+      .catch(() => { if (active) setLoadError(true); });
+    const unsubscribe = window.unbiased.onScheduledUpdated((result) => {
+      if (active) { setTasks(result.tasks ?? []); setLoadError(false); }
+    });
+    return () => { active = false; unsubscribe(); };
+  }, [section]);
+
+  useEffect(() => {
+    if (section !== "connectors") return;
+    let active = true;
+    const refresh = () => {
+      void window.unbiased.connectorsList()
+        .then((result) => { if (active) { setConnectors(result.connectors ?? []); setLoadError(false); } })
+        .catch(() => { if (active) setLoadError(true); });
+    };
+    refresh();
+    const unsubscribe = window.unbiased.onConnectorsChanged(refresh);
+    return () => { active = false; unsubscribe(); };
+  }, [section]);
+
+  const title = {
+    projects: "Projects",
+    connectors: "Connectors",
+    scheduled: "Scheduled",
+    updates: "Update",
+    "whats-new": "What's new",
+    settings: "Settings",
+  }[section];
+  const searchable = section === "projects" || section === "connectors" || section === "scheduled";
+  const matches = (value: string) => value.toLowerCase().includes(query.trim().toLowerCase());
+  const projectRows = projects.filter((project) => matches(`${project.name} ${project.path}`));
+  const taskRows = (tasks ?? [])
+    .filter((task) => matches(`${task.name} ${task.prompt}`))
+    .sort((a, b) => Number(b.enabled) - Number(a.enabled) || (a.nextDueAt ?? "9999").localeCompare(b.nextDueAt ?? "9999") || a.name.localeCompare(b.name));
+  const installed = (connectors ?? []).filter((connector) => connector.added && matches(connector.displayName));
+  const available = (connectors ?? []).filter((connector) => !connector.added && matches(connector.displayName));
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 12px 20px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 32, padding: "0 8px" }}>
+        <h2 style={{ margin: 0, fontSize: 19, fontWeight: 600, color: colors.fg }}>{title}</h2>
+        {searchable && (
+          <button
+            type="button"
+            className="u-sidebar-icon-button"
+            title={searchOpen ? "Close search" : `Search ${title.toLowerCase()}`}
+            aria-label={searchOpen ? "Close search" : `Search ${title.toLowerCase()}`}
+            onClick={() => { setSearchOpen((open) => !open); setQuery(""); }}
+            style={{ width: 30, height: 30, display: "grid", placeItems: "center", background: "transparent", border: 0, borderRadius: 8, color: colors.dim, cursor: "pointer" }}
+          >
+            <Search size={17} />
+          </button>
+        )}
+      </div>
+      {searchOpen && (
+        <input
+          autoFocus
+          aria-label={`Search ${title.toLowerCase()}`}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={`Search ${title.toLowerCase()}`}
+          style={{ width: "calc(100% - 16px)", margin: "10px 8px 2px", boxSizing: "border-box", padding: "8px 9px", border: `1px solid ${colors.border}`, borderRadius: 7, background: "var(--panel-2)", color: colors.fg, font: "inherit", fontSize: 13 }}
+        />
+      )}
+      <div style={{ marginTop: 18 }}>
+        {section === "projects" && (
+          <>
+            <SidebarPreviewRow icon={<FolderPlusIcon />} title="Open project..." onClick={onOpenProject} />
+            <SidebarPreviewRow icon={<Plus size={16} />} title="Create project" onClick={onCreateProject} />
+            <SidebarPreviewLabel>Projects</SidebarPreviewLabel>
+            {projectRows.map((project) => (
+              <SidebarPreviewRow
+                key={project.path}
+                icon={<ProjectIcon icon={project.icon} color={project.color} />}
+                title={project.name}
+                detail={`${project.threads.length} ${project.threads.length === 1 ? "chat" : "chats"}`}
+                onClick={() => onStartProjectChat(project)}
+              />
+            ))}
+            {projectRows.length === 0 && <SidebarPreviewEmpty>{query ? "No matching projects" : "No projects yet"}</SidebarPreviewEmpty>}
+          </>
+        )}
+        {section === "scheduled" && (
+          <>
+            <SidebarPreviewRow icon={<Plus size={17} />} title="New task" onClick={onNewTask} />
+            <SidebarPreviewLabel>Upcoming</SidebarPreviewLabel>
+            {taskRows.map((task) => (
+              <SidebarPreviewRow
+                key={task.key}
+                title={task.name}
+                detail={`${task.running ? "Running" : task.enabled ? "Active" : "Paused"} · ${describeSchedule(task.schedule)}`}
+                onClick={() => onOpenScheduled(task.key)}
+              />
+            ))}
+            {tasks === null && !loadError && <SidebarPreviewEmpty>Loading tasks...</SidebarPreviewEmpty>}
+            {loadError && <SidebarPreviewEmpty>Tasks unavailable</SidebarPreviewEmpty>}
+            {tasks !== null && taskRows.length === 0 && <SidebarPreviewEmpty>{query ? "No matching tasks" : "No scheduled tasks yet"}</SidebarPreviewEmpty>}
+          </>
+        )}
+        {section === "connectors" && (
+          <>
+            <SidebarPreviewRow icon={<PlugIcon />} title="Browse connectors" onClick={onOpenConnectors} />
+            <SidebarPreviewRow icon={<SkillIcon />} title="Skills" onClick={onOpenSkills} />
+            <SidebarPreviewLabel>Installed</SidebarPreviewLabel>
+            {installed.map((connector) => <SidebarPreviewRow key={connector.name} title={connector.displayName} detail={connector.category} onClick={onOpenConnectors} />)}
+            {connectors !== null && installed.length === 0 && <SidebarPreviewEmpty>No installed connectors</SidebarPreviewEmpty>}
+            {available.length > 0 && <SidebarPreviewLabel>Available</SidebarPreviewLabel>}
+            {available.map((connector) => <SidebarPreviewRow key={connector.name} title={connector.displayName} detail={connector.comingSoon ? "Coming soon" : connector.category} onClick={onOpenConnectors} />)}
+            {connectors === null && !loadError && <SidebarPreviewEmpty>Loading connectors...</SidebarPreviewEmpty>}
+            {loadError && <SidebarPreviewEmpty>Connectors unavailable</SidebarPreviewEmpty>}
+          </>
+        )}
+        {section === "updates" && (
+          <SidebarPreviewRow icon={<Download size={17} />} title={updateVersion ? `Version ${updateVersion}` : "Check for update"} detail="Install the available update" onClick={onOpenUpdates} />
+        )}
+        {section === "whats-new" && (
+          <SidebarPreviewRow icon={<BellIcon />} title={latestRelease ? `Version ${latestRelease}` : "Release notes"} detail="View what's new" onClick={onOpenWhatsNew} />
+        )}
+        {section === "settings" && (
+          <SidebarPreviewRow icon={<GearIcon />} title="Open settings" onClick={onOpenSettings} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SidebarPreviewLabel({ children }: { children: React.ReactNode }) {
+  return <div style={{ padding: "20px 9px 7px", color: colors.dim, fontSize: 12.5, fontWeight: 500 }}>{children}</div>;
+}
+
+function SidebarPreviewEmpty({ children }: { children: React.ReactNode }) {
+  return <div style={{ padding: "9px", color: colors.dim, fontSize: 12.5 }}>{children}</div>;
 }
 
 function SidebarRailButton({
