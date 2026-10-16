@@ -1862,7 +1862,7 @@ export function App() {
   const [navHistory, setNavHistory] = useState(initialNavigationHistory);
   const [navigatingHistory, setNavigatingHistory] = useState(false);
   const navPeekCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const NAV_RAIL_WIDTH = 88;
+  const NAV_RAIL_WIDTH = 44;
   // The panel beside the fixed icon rail is user-draggable and persisted.
   const NAV_MIN = 180;
   const NAV_MAX = 400;
@@ -3164,7 +3164,7 @@ export function App() {
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
-          padding: windowWidth < 480 ? "0 10px" : "0 20px",
+          padding: windowWidth < 480 ? "0 10px 0 6px" : "0 20px 0 6px",
           background: "var(--nav-bg)",
           borderBottom: `1px solid ${colors.border}`,
           zIndex: 32,
@@ -3207,7 +3207,7 @@ export function App() {
         aria-label="Sidebar shortcuts"
         style={{ width: NAV_RAIL_WIDTH, flexShrink: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 31 }}
       >
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "15px 10px 12px" }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "15px 2px 12px" }}>
           <div onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek}>
             <SidebarRailButton label="Home" active={!pageOpen || navPeekOpen} onClick={showNavPeek}>
               <Home size={18} />
@@ -3223,7 +3223,7 @@ export function App() {
             <ClockIcon />
           </SidebarRailButton>
         </div>
-        <div className="u-sidebar-bottom" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "8px 10px" }}>
+        <div className="u-sidebar-bottom" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "8px 2px" }}>
           {update && (
             <SidebarRailButton
               label={updateStaged ? "Install update" : "Download update"}
@@ -3261,7 +3261,7 @@ export function App() {
           flexDirection: "column",
           position: navOpen ? "relative" : "fixed",
           left: navOpen ? undefined : NAV_RAIL_WIDTH,
-          top: navOpen ? undefined : 60,
+          top: navOpen ? undefined : 52,
           bottom: navOpen ? undefined : 8,
           zIndex: navOpen ? 2 : 30,
           borderRadius: navOpen ? 0 : 12,
