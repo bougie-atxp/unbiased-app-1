@@ -24,6 +24,18 @@ test("registers every published component in the app's single renderer", () => {
   for (const name of ["FlowDiagram", "Mermaid"]) assert.equal(appOpenUILibrary.components[name], undefined);
 });
 
+test("standard OpenUI chrome uses the host theme tokens", () => {
+  const markup = renderToStaticMarkup(visualFenceContent("openui", 'root = Stack([TextContent("Theme")])', false)!);
+  for (const token of [
+    "--openui-background", "--openui-foreground", "--openui-popover-background", "--openui-sunk",
+    "--openui-elevated", "--openui-elevated-strong", "--openui-text-neutral-primary",
+    "--openui-text-neutral-secondary", "--openui-text-neutral-tertiary", "--openui-text-neutral-link",
+    "--openui-text-brand", "--openui-border-default", "--openui-border-interactive",
+    "--openui-border-interactive-emphasis", "--openui-interactive-accent-default", "--openui-font-body",
+  ]) assert.match(markup, new RegExp(`${token}:var\\(--`), token);
+  assert.match(markup, /--openui-interactive-accent-hover:color-mix\(in srgb, var\(--accent\)/);
+});
+
 test("validates complete programs and rejects unsupported or unsafe content", () => {
   assert.equal(inspectOpenUI('root = Stack([TextContent("Hello")])').valid, true);
   assert.equal(inspectOpenUI('root = Stack([Table([Col("Name", ["Ada"])])])').valid, true);

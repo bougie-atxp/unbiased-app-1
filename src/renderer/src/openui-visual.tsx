@@ -227,10 +227,24 @@ function OpenUIVisualSurface({ source, selfFramed, streaming = false }: { source
       style={{
         "--openui-background": "var(--panel)",
         "--openui-foreground": "var(--panel-2)",
+        "--openui-popover-background": "var(--panel-2)",
+        "--openui-sunk": "var(--bg)",
+        "--openui-elevated": "var(--chip-raised)",
+        "--openui-elevated-strong": "var(--gutter)",
         "--openui-text-neutral-primary": "var(--fg-msg)",
-        "--openui-text-neutral-secondary": "var(--dim)",
+        "--openui-text-neutral-secondary": "var(--fg-soft)",
+        "--openui-text-neutral-tertiary": "var(--dim)",
+        "--openui-text-neutral-link": "var(--accent)",
+        "--openui-text-brand": "var(--accent)",
         "--openui-border-default": "var(--border)",
+        "--openui-border-interactive": "var(--gutter)",
+        "--openui-border-interactive-emphasis": "var(--fg-soft)",
         "--openui-interactive-accent-default": "var(--accent)",
+        "--openui-interactive-accent-hover": "color-mix(in srgb, var(--accent) 80%, var(--fg))",
+        "--openui-font-body": "var(--font-ui)",
+        "--openui-font-heading": "var(--font-ui)",
+        "--openui-font-label": "var(--font-ui)",
+        "--openui-font-numbers": "var(--font-ui)",
       } as CSSProperties}
     >
       <Renderer response={source} library={appOpenUILibrary} isStreaming={streaming} toolProvider={toolProvider}
