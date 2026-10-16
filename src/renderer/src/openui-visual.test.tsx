@@ -4,9 +4,11 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { JSDOM } from "jsdom";
+import Markdown from "react-markdown";
 import { openuiLibrary } from "@openuidev/react-ui/genui-lib";
 import { appOpenUILibrary, inspectOpenUI, visualFenceContent } from "./openui-visual";
 import { openUIThemeStyle } from "./openui-theme";
+import { isClosedVisualFence } from "./visual-fence";
 
 test("registers the upstream OpenUI catalogue in the app's single renderer", () => {
   assert.ok(Object.keys(openuiLibrary.components).length > 50);
@@ -45,15 +47,79 @@ test("validates complete programs and rejects unsupported or unsafe content", ()
   assert.equal(inspectOpenUI('root = Stack([GuidedExplainer("Journey")])').valid, false);
 });
 
-test("hides source while streaming and after validation failure", () => {
+test("renders valid OpenUI before turn completion but hides partial source and validation failures", () => {
   const source = 'root = Stack([TextContent("private visual source")])';
-  const pending = renderToStaticMarkup(visualFenceContent("openui", source, true)!);
+  const pending = renderToStaticMarkup(visualFenceContent("openui", 'root = Stack([TextContent("private visual source"', true)!);
   assert.match(pending, /Preparing visual/);
   assert.doesNotMatch(pending, /private visual source/);
+  const early = renderToStaticMarkup(visualFenceContent("openui", source, true)!);
+  assert.match(early, /aria-label="Interactive visual"/);
+  assert.match(early, /private visual source/);
+  assert.doesNotMatch(early, /Preparing visual|root = Stack/);
   const failed = renderToStaticMarkup(visualFenceContent("openui", "root = Stack([", false)!);
   assert.match(failed, /couldn&#x27;t be displayed/);
   assert.equal(visualFenceContent("json", source, false), null);
   assert.ok(visualFenceContent("mermaid", "flowchart LR\nA-->B", false));
+});
+
+test("recognizes a closed Markdown fence without mistaking content for the closer", () => {
+  const position = (markdown: string) => ({ start: { offset: 0 }, end: { offset: markdown.length } });
+  const open = '```openui\nroot = Stack([TextContent("Ready")])';
+  assert.equal(isClosedVisualFence(open, position(open)), false);
+  const closed = `${open}\n\`\`\``;
+  assert.equal(isClosedVisualFence(closed, position(closed)), true);
+  const longer = '~~~~visual-html\n<div>Ready</div>\n~~~';
+  assert.equal(isClosedVisualFence(longer, position(longer)), false);
+  assert.equal(isClosedVisualFence(closed, { start: { offset: 0 }, end: { offset: open.length } }), false);
+  const actualFenceState = (source: string) => {
+    let result = false;
+    renderToStaticMarkup(<Markdown components={{ pre: ({ node }) => {
+      result = isClosedVisualFence(source, node?.position);
+      return <div />;
+    } }}>{source}</Markdown>);
+    return result;
+  };
+  assert.equal(actualFenceState(open), false);
+  assert.equal(actualFenceState(`${closed}\nMore prose`), true);
+});
+
+test("standalone HTML and Mermaid wait for a closed fence, not the end of the turn", () => {
+  const html = "<div>Ready</div>";
+  assert.match(renderToStaticMarkup(visualFenceContent("visual-html", html, true, false)!), /Preparing visual/);
+  assert.match(renderToStaticMarkup(visualFenceContent("visual-html", html, true, true)!), /aria-label="Interactive visual"/);
+  const diagram = "flowchart LR\nA-->B";
+  assert.match(renderToStaticMarkup(visualFenceContent("mermaid", diagram, true, false)!), /Preparing visual/);
+  assert.match(renderToStaticMarkup(visualFenceContent("mermaid", diagram, true, true)!), /aria-label="Interactive visual"/);
+});
+
+test("holds the last validated visual across incomplete streaming updates", async () => {
+  const dom = new JSDOM("<!doctype html><div id='root'></div>", { url: "http://localhost" });
+  Object.assign(globalThis, {
+    window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement,
+    MutationObserver: dom.window.MutationObserver, IS_REACT_ACT_ENVIRONMENT: true,
+    ResizeObserver: class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  });
+  const root = createRoot(dom.window.document.getElementById("root")!);
+  const render = async (source: string, streaming = true) => {
+    await act(async () => root.render(visualFenceContent("openui", source, streaming)));
+    return dom.window.document.body.textContent ?? "";
+  };
+  try {
+    assert.match(await render('root = Stack([TextContent("First"'), /Preparing visual/);
+    assert.match(await render('root = Stack([TextContent("First")])'), /First/);
+    assert.match(await render('root = Stack([TextContent("First"), TextContent("Second"'), /First/);
+    assert.doesNotMatch(dom.window.document.body.textContent ?? "", /Second/);
+    assert.match(await render('root = Stack([TextContent("First"), TextContent("Second")])'), /Second/);
+    assert.match(await render('root = Stack([TextContent("First"), TextContent("Second")])', false), /Second/);
+    assert.match(await render('root = Stack([', false), /couldn.t be displayed/);
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+  }
 });
 
 test("renders a standalone VisualHtml root without relaxing other OpenUI validation", () => {

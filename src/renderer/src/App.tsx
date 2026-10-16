@@ -48,6 +48,7 @@ import { isComposerTypingKey } from "./type-to-focus";
 import { appendCommandOutputDelta, closeFinishedAutoOpenedPanels, commandStatusAfterEvent, settleTurnSteps, settleUnconfirmedSteps, showsCommandOutputPanel } from "./transcript-command-status";
 import { dayMarkerIndices, formatConversationDayMarker, formatConversationTime, hydrateTranscriptTimes } from "../../shared/conversation-time";
 import { visualFenceContent } from "./openui-visual";
+import { isClosedVisualFence } from "./visual-fence";
 import { validateUserInput, withoutUserInputDefaults, type UserInputRequest, type UserInputValue } from "../../shared/user-input";
 import { firstInvalidQuestionIndex, validateQuestion } from "./user-input-navigation";
 
@@ -1089,7 +1090,7 @@ function parseThemeImport(raw: string): ThemeConfig | null {
 }
 
 const REMARK_PLUGINS = [remarkGfm];
-const StreamingVisualContext = createContext(false);
+const StreamingVisualContext = createContext({ streaming: false, markdown: "" });
 // File previews render embedded HTML (chat markdown stays text-only).
 // Scripts can't run regardless — the CSP has no unsafe-inline.
 const REHYPE_PLUGINS = [rehypeRaw];
@@ -7240,7 +7241,8 @@ function buildMdComponents(
         </InlineCodeChip>
       );
     },
-    pre: (props: { children?: React.ReactNode }) => <CodeBlock>{props.children}</CodeBlock>,
+    pre: (props: { children?: React.ReactNode; node?: { position?: { start?: { offset?: number }; end?: { offset?: number } } } }) =>
+      <CodeBlock position={props.node?.position}>{props.children}</CodeBlock>,
     a: (props: { href?: string; children?: React.ReactNode }) => {
       const host = linkHost(props.href);
       return (
@@ -7463,7 +7465,7 @@ function SubAgentPane({ threadId, status }: { threadId: string; status: string }
         })}
         {tail !== "" && (
           <div style={{ margin: "12px 0", lineHeight: 1.65, fontSize: 14, color: "var(--fg-msg)" }}>
-            <StreamingVisualContext.Provider value={true}>
+            <StreamingVisualContext.Provider value={{ streaming: true, markdown: tail }}>
               <Markdown remarkPlugins={REMARK_PLUGINS} components={mdComponents}>{tail}</Markdown>
             </StreamingVisualContext.Provider>
           </div>
@@ -10164,7 +10166,7 @@ function ChatPane({
             letterSpacing: "var(--track-body)",
           }}
         >
-          <StreamingVisualContext.Provider value={busy && block.key >= (turnStartIndexRef.current ?? entries.length)}>
+          <StreamingVisualContext.Provider value={{ streaming: busy && block.key >= (turnStartIndexRef.current ?? entries.length), markdown: e.text }}>
             <Markdown remarkPlugins={REMARK_PLUGINS} components={mdComponents}>
               {e.text}
             </Markdown>
@@ -11702,9 +11704,9 @@ function fenceClassOf(children?: React.ReactNode): string {
  *
  *  Streaming still updates the block: the text changes, so the compare fails
  *  and it re-renders, as it should. */
-const CodeBlock = memo(function CodeBlock({ children }: { children?: React.ReactNode }) {
+const CodeBlock = memo(function CodeBlock({ children, position }: { children?: React.ReactNode; position?: { start?: { offset?: number }; end?: { offset?: number } } }) {
   const [copied, setCopied] = useState(false);
-  const streamingVisual = useContext(StreamingVisualContext);
+  const { streaming: streamingVisual, markdown } = useContext(StreamingVisualContext);
   const className: string = fenceClassOf(children);
   const lang = /language-([\w-]+)/.exec(className)?.[1]?.toLowerCase() ?? "";
   const label = LANGUAGE_NAMES[lang] ?? (lang ? lang.toUpperCase() : "Plain text");
@@ -11718,7 +11720,8 @@ const CodeBlock = memo(function CodeBlock({ children }: { children?: React.React
     () => (grammar ? Prism.highlight(text, grammar, prismLang) : null),
     [text, grammar, prismLang],
   );
-  const visual = useMemo(() => visualFenceContent(lang, text, streamingVisual), [lang, text, streamingVisual]);
+  const fenceClosed = isClosedVisualFence(markdown, position);
+  const visual = useMemo(() => visualFenceContent(lang, text, streamingVisual, fenceClosed), [lang, text, streamingVisual, fenceClosed]);
   if (visual) return visual;
 
   return (

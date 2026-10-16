@@ -149,28 +149,60 @@ function VisualFenceStatus({ pending = false }: { pending?: boolean }) {
   );
 }
 
-function renderProgram(source: string, streaming: boolean): ReactElement {
-  if (streaming) return <VisualFenceStatus pending />;
-  const program = normalizeStandaloneVisualHtml(source);
-  const inspected = inspectOpenUI(program);
-  if (!inspected.valid) {
-    console.warn("[visual] OpenUI source rejected:", inspected.reason);
-    return <VisualFenceStatus />;
+type VisualFenceProps = { language: string; source: string; streaming: boolean; fenceClosed: boolean };
+type ValidatedVisual = { source: string; selfFramed: boolean };
+
+function validatedVisual({ language, source, streaming, fenceClosed }: VisualFenceProps): ValidatedVisual | null {
+  let program = source;
+  if (language === "openui") {
+    // A complete OpenUI program is safe to show even before the closing Markdown fence arrives.
+    program = normalizeStandaloneVisualHtml(source);
+  } else if (language === "mermaid") {
+    if ((streaming && !fenceClosed) || source.length > MAX_MERMAID_LENGTH ||
+        !mermaidDiagramSchema.safeParse({ diagram: source }).success) return null;
+    program = `root = Stack([Mermaid(${JSON.stringify(source)})])`;
+  } else if (language === "visual-html") {
+    // Never run a script fragment until its fence is closed.
+    if ((streaming && !fenceClosed) || !isInteractiveVisualSource(source)) return null;
+    program = `root = Stack([VisualHtml(${JSON.stringify(source)})])`;
+  } else {
+    return null;
   }
-  return <OpenUIVisualSurface source={program} selfFramed={Boolean(inspected.selfFramed)} />;
+  const inspected = inspectOpenUI(program);
+  if (!inspected.valid && !streaming && language === "openui") {
+    console.warn("[visual] OpenUI source rejected:", inspected.reason);
+  }
+  return inspected.valid ? { source: program, selfFramed: Boolean(inspected.selfFramed) } : null;
 }
 
-export function visualFenceContent(language: string, source: string, streaming: boolean): ReactElement | null {
-  if (language === "openui") return renderProgram(source, streaming);
-  if (language === "mermaid") {
-    if (streaming) return <VisualFenceStatus pending />;
-    if (!mermaidDiagramSchema.safeParse({ diagram: source }).success || source.length > MAX_MERMAID_LENGTH) return <VisualFenceStatus />;
-    return renderProgram(`root = Stack([Mermaid(${JSON.stringify(source)})])`, false);
+type VisualFenceState = VisualFenceProps & { current: ValidatedVisual | null; lastValid: ValidatedVisual | null };
+
+class ProgressiveVisualFence extends Component<VisualFenceProps, VisualFenceState> {
+  constructor(props: VisualFenceProps) {
+    super(props);
+    const current = validatedVisual(props);
+    this.state = { ...props, current, lastValid: current };
   }
-  if (language === "visual-html") {
-    if (streaming) return <VisualFenceStatus pending />;
-    if (!isInteractiveVisualSource(source)) return <VisualFenceStatus />;
-    return renderProgram(`root = Stack([VisualHtml(${JSON.stringify(source)})])`, false);
+
+  static getDerivedStateFromProps(props: VisualFenceProps, state: VisualFenceState): VisualFenceState | null {
+    if (props.language === state.language && props.source === state.source &&
+        props.streaming === state.streaming && props.fenceClosed === state.fenceClosed) return null;
+    const current = validatedVisual(props);
+    return {
+      ...props,
+      current,
+      lastValid: current ?? (props.language === state.language ? state.lastValid : null),
+    };
   }
-  return null;
+
+  render() {
+    const visual = this.state.current ?? (this.props.streaming ? this.state.lastValid : null);
+    if (visual) return <OpenUIVisualSurface source={visual.source} selfFramed={visual.selfFramed} />;
+    return <VisualFenceStatus pending={this.props.streaming} />;
+  }
+}
+
+export function visualFenceContent(language: string, source: string, streaming: boolean, fenceClosed = !streaming): ReactElement | null {
+  if (language !== "openui" && language !== "mermaid" && language !== "visual-html") return null;
+  return <ProgressiveVisualFence language={language} source={source} streaming={streaming} fenceClosed={fenceClosed} />;
 }
