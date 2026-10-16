@@ -100,6 +100,27 @@ test("raw HTML handles quoted SVG and script content that breaks an OpenUI strin
   assert.doesNotMatch(raw, /couldn&#x27;t be displayed|onclick=/);
 });
 
+test("recovers a final VisualHtml with bare inner quotes only after its fence closes", () => {
+  const html = '<svg><g onclick=\'showTip("side")\'></g></svg><script>function showTip(zone){}</script>';
+  const source = `root = Stack([TextContent("Zones"), VisualHtml("${html}")])`;
+  assert.equal(inspectOpenUI(source).valid, false);
+  const pending = renderToStaticMarkup(visualFenceContent("openui", source, true, false)!);
+  assert.match(pending, /Preparing visual/);
+  const recovered = renderToStaticMarkup(visualFenceContent("openui", source, true, true)!);
+  assert.match(recovered, /aria-label="Interactive visual"/);
+  assert.doesNotMatch(recovered, /couldn&#x27;t be displayed/);
+  assert.match(recovered, /Zones/);
+
+  for (const invalid of [
+    `${source}\nother = TextContent("extra")`,
+    source.replace("</script>", "</script><html>extra</html>"),
+    source.replace("VisualHtml(", "VisualHtml(VisualHtml("),
+  ]) {
+    const failed = renderToStaticMarkup(visualFenceContent("openui", invalid, false)!);
+    assert.match(failed, /couldn&#x27;t be displayed/);
+  }
+});
+
 test("holds the last validated visual across incomplete streaming updates", async () => {
   const dom = new JSDOM("<!doctype html><div id='root'></div>", { url: "http://localhost" });
   Object.assign(globalThis, {

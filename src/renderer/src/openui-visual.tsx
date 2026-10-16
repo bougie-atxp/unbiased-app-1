@@ -109,6 +109,36 @@ function normalizeStandaloneVisualHtml(source: string): string {
   }
 }
 
+// A bespoke scene is sometimes emitted inside VisualHtml("...") with bare
+// quotes in SVG handlers. Recover only a final VisualHtml call in a Stack;
+// the rebuilt program must still pass the ordinary parser and safety checks.
+function recoverQuotedVisualHtml(source: string): string | null {
+  const marker = 'VisualHtml("';
+  const start = source.indexOf(marker);
+  if (start < 0 || source.indexOf(marker, start + marker.length) >= 0 ||
+      !/^\s*root\s*=\s*Stack\(\s*\[/.test(source.slice(0, start))) return null;
+  const ending = /"\s*\)\s*\]\s*\)\s*$/.exec(source);
+  if (!ending || ending.index <= start + marker.length) return null;
+  const raw = source.slice(start + marker.length, ending.index);
+  let quoted = '"';
+  let backslashes = 0;
+  for (const char of raw) {
+    if (char === '"' && backslashes % 2 === 0) quoted += '\\';
+    quoted += char === "\n" ? "\\n" : char === "\r" ? "\\r" : char === "\t" ? "\\t" : char;
+    backslashes = char === "\\" ? backslashes + 1 : 0;
+  }
+  quoted += '"';
+  try {
+    const html = JSON.parse(quoted) as unknown;
+    if (!isInteractiveVisualSource(html)) return null;
+    const tail = ending[0].replace(/^"\s*\)/, "");
+    const repaired = `${source.slice(0, start)}VisualHtml(${JSON.stringify(html)})${tail}`;
+    return inspectOpenUI(repaired).valid ? repaired : null;
+  } catch {
+    return null;
+  }
+}
+
 class VisualRenderBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
 
@@ -169,6 +199,13 @@ function validatedVisual({ language, source, streaming, fenceClosed }: VisualFen
     return null;
   }
   const inspected = inspectOpenUI(program);
+  if (!inspected.valid && language === "openui" && fenceClosed) {
+    const recovered = recoverQuotedVisualHtml(program);
+    if (recovered) {
+      const repaired = inspectOpenUI(recovered);
+      return { source: recovered, selfFramed: Boolean(repaired.selfFramed) };
+    }
+  }
   if (!inspected.valid && !streaming && language === "openui") {
     console.warn("[visual] OpenUI source rejected:", inspected.reason);
   }
