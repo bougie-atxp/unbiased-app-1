@@ -25,6 +25,7 @@ import { fileActionError, localFileForAction, saveLocalFileCopy } from "./file-a
 import { resolveEngineDir } from "./engine-path";
 import { agentBrowserCandidates, chromeCandidates } from "./browser-binaries";
 import { agentStyleInstructions, DEFAULT_AGENT_STYLE, parseAgentStylePrefs, type AgentStylePrefs } from "../shared/agent-style";
+import { projectContextForDirectory } from "./project-context";
 import { OPENUI_VISUAL_INSTRUCTIONS } from "./visual-instructions";
 import { epochMillis } from "../shared/conversation-time";
 import { INTERACTIVE_VISUAL_CSP, INTERACTIVE_VISUAL_SCHEME, interactiveVisualDocument, interactiveVisualId, isInteractiveVisualSource } from "../shared/interactive-visual";
@@ -1157,7 +1158,14 @@ function developerInstructionsFor(cwd: string | null, threadId: string | null = 
   const dir = memoryDirForCwd(cwd, threadId);
   const section = dir ? renderMemorySection(loadMemoryNotes(dir), dir) : "";
   const base = baseDeveloperInstructions();
-  return section ? `${base}\n\n${section}` : base;
+  return [base, configuredProjectContext(cwd, threadId), section].filter(Boolean).join("\n\n");
+}
+
+function configuredProjectContext(cwd: string | null, threadId: string | null = null): string | null {
+  const assignedProject = threadId ? loadThreadProjects()[rootThreadOf(threadId)] ?? null : null;
+  return projectContextForDirectory({
+    cwd, projects: loadProjects(), worktrees: loadWorktrees(), assignedProject,
+  });
 }
 
 const AGENT_BROWSER_TOOLS = [
@@ -4092,6 +4100,7 @@ function scheduleAutomaticMemory(threadId: string, reason: "compaction" | "25-tu
 // (a plain chat, listed under Recents). Set by the project picker or by
 // clicking a project header; consumed when the lazy thread is created.
 let pendingCwd: string | null = null;
+const projectContextSeen = new Map<string, string>();
 
 // User-selectable access mode (Codex-style). Applied to every new thread
 // AND sent as turn-level overrides, which per the protocol change "this
@@ -8219,6 +8228,10 @@ app.whenReady().then(async () => {
       // Record the directory used by this thread so memory and turn policy
       // remain scoped to its project, including a scratch side chat.
       threadCwds.set(started.thread.id, mainCwd ?? pendingCwd ?? defaultChatDir());
+      if (paneId === "main") {
+        const projectContext = configuredProjectContext(threadCwds.get(started.thread.id) ?? null, started.thread.id);
+        if (projectContext) projectContextSeen.set(started.thread.id, projectContext);
+      }
       // The scope-bearing event, using the SAME resolution memory uses: a
       // worktree belongs to its parent project. The sidecar cannot derive
       // this — cwd cannot tell /a/api from /b/api, and it has no worktree
@@ -8239,7 +8252,13 @@ app.whenReady().then(async () => {
     // Mentions preserve attachment metadata in thread history, but local
     // paths in mentions do not reach the model. Supply readable files (or an
     // explicit path to inspect) as text; images remain actual image input.
+    const turnCwd = paneId.startsWith("side") && pane.threadId
+      ? threadCwds.get(pane.threadId) ?? mainCwd
+      : mainCwd;
+    const projectContext = configuredProjectContext(turnCwd, pane.threadId);
+    const needsProjectContext = !!projectContext && !!pane.threadId && projectContextSeen.get(pane.threadId) !== projectContext;
     const input: Record<string, unknown>[] = [{ type: "text", text }];
+    if (needsProjectContext) input.unshift({ type: "text", text: `App project context:\n${projectContext}` });
     const attachmentContext = fileAttachmentContext(attachments ?? []);
     if (attachmentContext) input.push({ type: "text", text: attachmentContext });
     for (const a of attachments ?? []) {
@@ -8251,9 +8270,6 @@ app.whenReady().then(async () => {
     }
     if (computer) input.unshift({ type: "text", text: COMPUTER_DIRECTIVE });
     if (planMode) input.unshift({ type: "text", text: PLAN_DIRECTIVE });
-    const turnCwd = paneId.startsWith("side") && pane.threadId
-      ? threadCwds.get(pane.threadId) ?? mainCwd
-      : mainCwd;
     const result = (await engine.request("turn/start", {
       threadId: pane.threadId,
       input,
@@ -8264,6 +8280,9 @@ app.whenReady().then(async () => {
       sandboxPolicy: planMode ? { type: "readOnly" } : turnSandbox(turnCwd),
     })) as { turn?: { id?: string } };
     if (result.turn?.id) pane.turnId = result.turn.id;
+    if (result.turn?.id && needsProjectContext && pane.threadId && projectContext) {
+      projectContextSeen.set(pane.threadId, projectContext);
+    }
     return { turnId: pane.turnId, threadId: pane.threadId, created };
   });
 
