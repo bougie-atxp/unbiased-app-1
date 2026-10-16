@@ -1232,7 +1232,8 @@ test("one parked window among several is enough to say it", () => {
 
 test("the read result carries the note, next to the Space guidance", () => {
   const src = readFileSync(join(__dirname, "index.ts"), "utf8");
-  const head = src.slice(src.indexOf("const head = ["), src.indexOf("].filter(Boolean).join"));
+  const headStart = src.indexOf("const head = [");
+  const head = src.slice(headStart, src.indexOf("].filter(Boolean).join", headStart));
   assert.ok(head.includes("parkedReadNote(w.windows)"), `the read head must carry it: ${head}`);
   assert.ok(head.includes("otherSpaceNote"), "and still carry the Space note");
 });
