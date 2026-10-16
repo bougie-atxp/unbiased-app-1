@@ -3158,17 +3158,18 @@ export function App() {
       <header
         aria-label="Navigation toolbar"
         style={{
-          height: 64,
+          height: 52,
+          boxSizing: "border-box",
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
-          padding: "0 20px",
+          padding: windowWidth < 480 ? "0 10px" : "0 20px",
           background: "var(--nav-bg)",
           borderBottom: `1px solid ${colors.border}`,
           zIndex: 32,
         }}
       >
-        <div style={{ width: 260, flexShrink: 0, display: "flex", alignItems: "center", gap: 22 }}>
+        <div style={{ width: windowWidth < 480 ? 158 : 260, flexShrink: 0, display: "flex", alignItems: "center", gap: windowWidth < 480 ? 6 : 22 }}>
         <SidebarRailButton label="Back" disabled={!navigationTarget(navHistory, -1) || navigatingHistory} onClick={() => void moveInHistory(-1)}>
           <ChevronLeft size={20} strokeWidth={1.8} />
         </SidebarRailButton>
@@ -3178,13 +3179,19 @@ export function App() {
         <SidebarRailButton label={navOpen ? "Collapse sidebar" : "Expand sidebar"} onClick={toggleNav}>
           <PanelIcon />
         </SidebarRailButton>
-        {!navOpen && (
+        </div>
+        <span aria-hidden="true" style={{ width: 1, height: 26, background: colors.border }} />
+        <div style={{ marginLeft: windowWidth < 480 ? 6 : 12 }}>
           <SidebarRailButton label="New chat" onClick={() => void newChat()}>
             <NewChatIcon />
           </SidebarRailButton>
-        )}
         </div>
-        <span aria-hidden="true" style={{ width: 1, height: 26, background: colors.border }} />
+        <span style={{ flex: 1 }} />
+        {(!pageOpen || sideVisible) && (
+          <IconButton title={sideOpen ? "Close side panel" : "Open side panel"} onClick={toggleSidePanel}>
+            <SideChatIcon />
+          </IconButton>
+        )}
       </header>
       <div style={{ display: "flex", flex: 1, minHeight: 0, position: "relative" }}>
       <nav
@@ -3246,7 +3253,7 @@ export function App() {
           flexDirection: "column",
           position: navOpen ? "relative" : "fixed",
           left: navOpen ? undefined : NAV_RAIL_WIDTH,
-          top: navOpen ? undefined : 72,
+          top: navOpen ? undefined : 60,
           bottom: navOpen ? undefined : 8,
           zIndex: navOpen ? 2 : 30,
           borderRadius: navOpen ? 0 : 12,
@@ -3261,9 +3268,6 @@ export function App() {
         </div>
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
           <div style={{ padding: "15px 14px 8px" }}>
-          <SidebarAction onClick={() => void newChat()} disabled={false} icon={<NewChatIcon />}>
-            New chat
-          </SidebarAction>
           <SidebarAction onClick={() => void openProjectDialog()} disabled={false} icon={<FolderPlusIcon />}>
             Open project…
           </SidebarAction>
@@ -3745,6 +3749,8 @@ export function App() {
         <header
           style={{
             padding: "10px 16px",
+            minHeight: 52,
+            boxSizing: "border-box",
             display: "flex",
             alignItems: "center",
             gap: 10,
@@ -4142,9 +4148,6 @@ export function App() {
               )}
             </span>
           )}
-          <IconButton title={sideOpen ? "Close side panel" : "Open side panel"} onClick={toggleSidePanel}>
-            <SideChatIcon />
-          </IconButton>
         </header>
         <ChatPane
           paneId="main"
