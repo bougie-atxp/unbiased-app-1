@@ -3181,10 +3181,10 @@ export function App() {
           <PanelIcon />
         </SidebarRailButton>
         <SidebarRailButton compact label="New chat" onClick={() => void newChat()}>
-          <NewChatIcon />
+          <NewChatIcon size={18} />
         </SidebarRailButton>
         </div>
-        <span aria-hidden="true" style={{ width: 1, height: 26, background: colors.border }} />
+        <span aria-hidden="true" style={{ width: 1, height: 18, background: colors.border }} />
         {!pageOpen && (
           <span
             title={mainTitle}
