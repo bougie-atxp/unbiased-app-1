@@ -92,6 +92,14 @@ test("standalone HTML and Mermaid wait for a closed fence, not the end of the tu
   assert.match(renderToStaticMarkup(visualFenceContent("mermaid", diagram, true, true)!), /aria-label="Interactive visual"/);
 });
 
+test("raw HTML handles quoted SVG and script content that breaks an OpenUI string", () => {
+  const html = '<svg><g onclick=\'showTip("side")\'></g></svg><script>function showTip(zone){}</script>';
+  assert.equal(inspectOpenUI(`root = Stack([VisualHtml("${html}")])`).valid, false);
+  const raw = renderToStaticMarkup(visualFenceContent("visual-html", html, false)!);
+  assert.match(raw, /aria-label="Interactive visual"/);
+  assert.doesNotMatch(raw, /couldn&#x27;t be displayed|onclick=/);
+});
+
 test("holds the last validated visual across incomplete streaming updates", async () => {
   const dom = new JSDOM("<!doctype html><div id='root'></div>", { url: "http://localhost" });
   Object.assign(globalThis, {

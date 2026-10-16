@@ -22,13 +22,16 @@ the visual, not replace the renderer's contract.
 
 ## Build for this renderer
 
-Include one complete fenced `openui` block in the final reply. Assign exactly
-one `root = Stack(...)`. Use the built-in components for prose, charts, steps,
-and tabs. Use `VisualHtml` for a custom object, map, board, or interaction
-that the components cannot express; its source must be one escaped,
-self-contained HTML fragment, with no network access or app APIs.
+Include one complete fenced `openui` block for built-in components, or one
+`visual-html` block for a bespoke HTML/SVG/JavaScript scene. In OpenUI, assign
+exactly one `root = Stack(...)`. Use the built-in components for prose, charts,
+steps, and tabs. Put a substantial custom object, map, board, or interaction
+directly in a `visual-html` fence as a self-contained HTML fragment, with no
+network access or app APIs. Do not wrap that fragment in `VisualHtml("...")`:
+quoted attributes and JavaScript strings can break the OpenUI string literal.
+Keep explanatory prose outside the fence.
 
-For `VisualHtml`, use `--visual-bg`, `--visual-fg`, `--visual-muted`, and
+For custom HTML, use `--visual-bg`, `--visual-fg`, `--visual-muted`, and
 `--visual-accent` for interface chrome while retaining meaningful subject
 colors. Size content to its natural height and support narrow widths. Avoid
 fixed viewport heights and empty space below the useful content.
