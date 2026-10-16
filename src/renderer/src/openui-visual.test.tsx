@@ -4,17 +4,36 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { JSDOM } from "jsdom";
-import spec from "@unbiased/iui/spec";
+import { openuiLibrary } from "@openuidev/react-ui/genui-lib";
 import { appOpenUILibrary, inspectOpenUI, visualFenceContent } from "./openui-visual";
+import { openUIThemeStyle } from "./openui-theme";
 
-test("registers every published component in the app's single renderer", () => {
-  for (const name of Object.keys(spec.components)) assert.ok(appOpenUILibrary.components[name], name);
+test("registers the upstream OpenUI catalogue in the app's single renderer", () => {
+  assert.ok(Object.keys(openuiLibrary.components).length > 50);
+  for (const name of Object.keys(openuiLibrary.components)) assert.ok(appOpenUILibrary.components[name], name);
   for (const name of ["Whiteboard", "Mermaid", "VisualHtml"]) assert.ok(appOpenUILibrary.components[name]);
+  assert.equal(appOpenUILibrary.components.GuidedExplainer, undefined);
+});
+
+test("OpenUI interaction and semantic states use host theme tokens", () => {
+  const tokens = openUIThemeStyle as Record<string, string>;
+  for (const key of [
+    "--openui-background", "--openui-text-neutral-primary", "--openui-highlight",
+    "--openui-text-accent-primary", "--openui-interactive-accent-disabled",
+    "--openui-border-accent", "--openui-success-background", "--openui-danger-background",
+    "--openui-info-background", "--openui-alert-background", "--openui-font-code",
+  ]) {
+    assert.ok(tokens[key], key);
+    assert.doesNotMatch(tokens[key], /oklch|\bInter\b/, key);
+  }
+  const markup = renderToStaticMarkup(visualFenceContent("openui", 'root = Stack([TextContent("Themed")])', false)!);
+  assert.match(markup, /--openui-interactive-accent-hover:color-mix\(in srgb, var\(--accent\)/);
 });
 
 test("validates complete programs and rejects unsupported or unsafe content", () => {
   assert.equal(inspectOpenUI('root = Stack([TextContent("Hello")])').valid, true);
   assert.equal(inspectOpenUI('root = Stack([Table([Col("Name", ["Ada"])])])').valid, true);
+  assert.equal(inspectOpenUI('root = Stack([Tabs([TabItem("setup", "Setup", [TextContent("Place pieces")]), TabItem("move", "Move", [TextContent("Move diagonally")])])])').valid, true);
   assert.equal(inspectOpenUI('root = Stack([Mermaid("flowchart LR\\nA-->B")])').valid, true);
   assert.equal(inspectOpenUI('root = Stack([Unknown("oops")])').valid, false);
   assert.equal(inspectOpenUI('root = Stack([TextContent("https://example.com")])').valid, false);
@@ -23,8 +42,7 @@ test("validates complete programs and rejects unsupported or unsafe content", ()
   const board = 'root = Stack([Whiteboard("Graph", [{id:"a",type:"circle",x:1,y:1,width:40},{id:"b",type:"circle",x:100,y:1,width:40},{id:"e",type:"connector",from:"a",to:"b"}])])';
   assert.deepEqual(inspectOpenUI(board), { valid: true, selfFramed: true });
   assert.equal(inspectOpenUI(board.replace('to:"b"', 'to:"missing"')).valid, false);
-  const steps = 'root = Stack([GuidedExplainer("Journey", "Summary", [{id:"same",title:"One",heading:"First",description:"Start"},{id:"same",title:"Two",heading:"Second",description:"Finish"}])])';
-  assert.equal(inspectOpenUI(steps).valid, false);
+  assert.equal(inspectOpenUI('root = Stack([GuidedExplainer("Journey")])').valid, false);
 });
 
 test("hides source while streaming and after validation failure", () => {
@@ -75,6 +93,11 @@ test("routes standalone HTML through OpenUI into a sandboxed frame", async () =>
   assert.match(pending, /Preparing visual/);
   assert.doesNotMatch(pending, /secret-source/);
   const root = createRoot(dom.window.document.getElementById("root")!);
+  const host = dom.window.document.getElementById("root")!;
+  for (const [name, value] of Object.entries({
+    "--bg": "#ffffff", "--panel": "#f5f5f5", "--fg-msg": "#222222",
+    "--dim": "#666666", "--accent": "#e0584a",
+  })) host.style.setProperty(name, value);
   try {
     await act(async () => root.render(visualFenceContent("visual-html", source, false)));
     const frame = dom.window.document.querySelector("iframe");
@@ -82,6 +105,14 @@ test("routes standalone HTML through OpenUI into a sandboxed frame", async () =>
     assert.equal(frame.getAttribute("sandbox"), "allow-scripts");
     assert.equal(frame.getAttribute("src"), "unbiased-visual://view/test-id");
     assert.doesNotMatch(dom.window.document.body.innerHTML, /secret-source/);
+    const sent: unknown[] = [];
+    frame.contentWindow!.postMessage = (data: unknown) => { sent.push(data); };
+    await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
+    assert.deepEqual(sent.at(-1), {
+      type: "unbiased-visual-theme",
+      colors: { bg: "#f5f5f5", fg: "#222222", muted: "#666666", accent: "#e0584a" },
+      scheme: "light",
+    });
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

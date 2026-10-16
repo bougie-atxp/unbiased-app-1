@@ -6,20 +6,21 @@ renderer. Source remains in the transcript, so reopening a chat reconstructs
 the same visual. During streaming the fence shows a stable preparation state
 without exposing partial source. Invalid programs show a contained error state.
 
-The versioned component catalogue is maintained in `@unbiased/iui`. The app
-registers every component from that catalogue, plus its local `Whiteboard`,
-`Mermaid`, and `VisualHtml` components, in
-`src/renderer/src/openui-visual.tsx`. The prompt in
-`src/main/visual-instructions.ts` reads the package's generated component
-signatures, keeping available components aligned with the renderer. The app
-currently consumes a vendored package artifact in `vendor/`; the separate
-source repository is the authoritative place to edit the shared catalogue.
+The app uses the upstream `@openuidev/react-ui` component catalogue directly.
+It registers every upstream component, plus its local `Whiteboard`, `Mermaid`,
+and `VisualHtml` components, in `src/renderer/src/openui-visual.tsx`. The
+prompt in `src/main/visual-instructions.ts` gives the agent a concise,
+verified subset of component signatures to keep generation fast and reliable;
+the rest of the upstream catalogue remains available to the renderer. The
+former `@unbiased/iui` wrapper and its `GuidedExplainer` are not part of this
+path. The app maps OpenUI style tokens to its own theme without forking the
+upstream library.
 
 One root `Stack`, at most 40 statements/components, and a 256 KB source limit
 are enforced. Unknown components, incomplete programs, queries, mutations,
 remote URLs, and unsafe HTML are rejected. The renderer has no tool provider
-or model-to-Electron IPC path. New components must be reviewed and bundled by
-the app before the agent can use them.
+or model-to-Electron IPC path. Upstream package updates and app extensions
+must be reviewed and bundled by the app before the agent can use them.
 
 Standalone `mermaid` and `visual-html` fences are wrapped as OpenUI components
 and use the same rendering path. Mermaid runs in strict security mode. HTML

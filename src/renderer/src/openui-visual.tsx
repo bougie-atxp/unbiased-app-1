@@ -1,10 +1,10 @@
-import { Component, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import { Component, type ReactElement, type ReactNode } from "react";
 import { createLibrary, createParser, defineComponent, Renderer } from "@openuidev/react-lang";
-import { iuiOpenUILibrary } from "@unbiased/iui/openui";
-import { guidedExplainerSchema } from "@unbiased/iui";
+import { openuiLibrary } from "@openuidev/react-ui/genui-lib";
 import { z } from "zod/v4";
 import { isInteractiveVisualSource, MAX_INTERACTIVE_VISUAL_LENGTH } from "../../shared/interactive-visual";
 import { InteractiveHtmlVisual } from "./interactive-html-visual";
+import { openUIThemeStyle } from "./openui-theme";
 import { MermaidDiagram } from "./mermaid-diagram";
 import { mermaidDiagramSchema, MAX_MERMAID_LENGTH } from "./mermaid-model";
 import { Whiteboard } from "./whiteboard";
@@ -38,7 +38,7 @@ const VisualHtmlComponent = defineComponent({
 export const appOpenUILibrary = createLibrary({
   root: "Stack",
   components: [
-    ...Object.values(iuiOpenUILibrary.components),
+    ...Object.values(openuiLibrary.components),
     WhiteboardComponent,
     MermaidComponent,
     VisualHtmlComponent,
@@ -62,7 +62,6 @@ function inspectTree(value: unknown, depth: number, state: { count: number }): b
   if (item.type === "element") {
     const element = item as Element;
     if (!knownComponents.has(element.typeName) || ++state.count > MAX_COMPONENTS) return false;
-    if (element.typeName === "GuidedExplainer" && !guidedExplainerSchema.safeParse(element.props).success) return false;
     if (element.typeName === "Whiteboard" && !whiteboardSchema.safeParse(element.props).success) return false;
     if (element.typeName === "Mermaid" && !mermaidDiagramSchema.safeParse(element.props).success) return false;
     if (element.typeName === "VisualHtml") {
@@ -87,7 +86,7 @@ export function inspectOpenUI(source: string): { valid: boolean; reason?: string
     const children = result.root.props.children;
     const first = Array.isArray(children) ? children[0] as Element | undefined : undefined;
     const selfFramed = Array.isArray(children) && children.length === 1 && first?.type === "element" &&
-      ["GuidedExplainer", "Whiteboard", "VisualHtml"].includes(first.typeName);
+      ["Whiteboard", "VisualHtml"].includes(first.typeName);
     return { valid: true, selfFramed };
   } catch {
     return { valid: false, reason: "parse" };
@@ -114,16 +113,9 @@ function OpenUIVisualSurface({ source, selfFramed }: { source: string; selfFrame
   return (
     <VisualRenderBoundary key={source}>
       <div
-        className={`iui-openui app-openui-visual${selfFramed ? " app-openui-visual--bare" : ""}`}
+        className={`app-openui-visual${selfFramed ? " app-openui-visual--bare" : ""}`}
         aria-label="Interactive visual"
-        style={{
-          "--openui-background": "var(--panel)",
-          "--openui-foreground": "var(--panel-2)",
-          "--openui-text-neutral-primary": "var(--fg-msg)",
-          "--openui-text-neutral-secondary": "var(--dim)",
-          "--openui-border-default": "var(--border)",
-          "--openui-interactive-accent-default": "var(--accent)",
-        } as CSSProperties}
+        style={openUIThemeStyle}
       >
         <Renderer response={source} library={appOpenUILibrary} isStreaming={false} toolProvider={null} publishObservability={false} />
       </div>
