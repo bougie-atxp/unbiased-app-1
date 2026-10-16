@@ -4,6 +4,7 @@ import { openuiLibrary } from "@openuidev/react-ui/genui-lib";
 import { z } from "zod/v4";
 import { isInteractiveVisualSource, MAX_INTERACTIVE_VISUAL_LENGTH } from "../../shared/interactive-visual";
 import { InteractiveHtmlVisual } from "./interactive-html-visual";
+import { GeneratedVisualViewport } from "./generated-visual-viewport";
 import { openUIThemeStyle } from "./openui-theme";
 import { MermaidDiagram } from "./mermaid-diagram";
 import { mermaidDiagramSchema, MAX_MERMAID_LENGTH } from "./mermaid-model";
@@ -126,15 +127,17 @@ class VisualRenderBoundary extends Component<{ children: ReactNode }, { failed: 
 
 function OpenUIVisualSurface({ source, selfFramed }: { source: string; selfFramed: boolean }) {
   return (
-    <VisualRenderBoundary key={source}>
-      <div
-        className={`app-openui-visual${selfFramed ? " app-openui-visual--bare" : ""}`}
-        aria-label="Interactive visual"
-        style={openUIThemeStyle}
-      >
-        <Renderer response={source} library={appOpenUILibrary} isStreaming={false} toolProvider={null} publishObservability={false} />
-      </div>
-    </VisualRenderBoundary>
+    <GeneratedVisualViewport>
+      <VisualRenderBoundary key={source}>
+        <div
+          className={`app-openui-visual${selfFramed ? " app-openui-visual--bare" : ""}`}
+          aria-label="Interactive visual"
+          style={openUIThemeStyle}
+        >
+          <Renderer response={source} library={appOpenUILibrary} isStreaming={false} toolProvider={null} publishObservability={false} />
+        </div>
+      </VisualRenderBoundary>
+    </GeneratedVisualViewport>
   );
 }
 

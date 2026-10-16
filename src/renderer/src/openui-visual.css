@@ -1,3 +1,118 @@
+.app-generated-visual-viewport {
+  display: flow-root;
+  position: relative;
+  min-width: 0;
+}
+
+.app-generated-visual-viewport__toolbar {
+  position: absolute;
+  top: 32px;
+  right: 16px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.app-generated-visual-viewport__toolbar button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-msg);
+  cursor: pointer;
+}
+
+.app-generated-visual-viewport__toolbar .app-generated-visual-viewport__toggle {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: 0 1px 6px rgb(0 0 0 / 25%);
+}
+
+.app-generated-visual-viewport__toolbar button:hover:not(:disabled) {
+  opacity: .7;
+}
+
+.app-generated-visual-viewport__toolbar button:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.app-generated-visual-viewport__toolbar button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.app-generated-visual-viewport__toolbar output {
+  min-width: 44px;
+  text-align: center;
+  font: 12px var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+
+.app-generated-visual-viewport:popover-open {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: fixed;
+  inset: 0;
+  width: min(1120px, calc(100vw - 32px));
+  height: calc(100dvh - 32px);
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: auto;
+  background: var(--bg);
+  color: var(--fg-msg);
+  box-shadow: 0 24px 72px rgb(0 0 0 / 45%);
+}
+
+.app-generated-visual-viewport::backdrop {
+  background: rgb(0 0 0 / 30%);
+  backdrop-filter: blur(8px);
+}
+
+.app-generated-visual-viewport:popover-open .app-generated-visual-viewport__toolbar {
+  position: sticky;
+  top: 0;
+  right: auto;
+  flex: none;
+  align-self: flex-end;
+  margin-bottom: 8px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.app-generated-visual-viewport:popover-open .app-openui-visual {
+  width: 100%;
+  max-width: none;
+  flex: none;
+  margin: 0;
+  zoom: var(--visual-zoom, 1.35);
+}
+
+@media (max-width: 900px) {
+  .app-generated-visual-viewport:popover-open {
+    width: calc(100vw - 24px);
+    height: calc(100dvh - 24px);
+    padding: 12px;
+  }
+
+  .app-generated-visual-viewport:popover-open .app-openui-visual {
+    zoom: var(--visual-zoom, 1);
+  }
+}
+
 .app-openui-visual {
   margin: 16px 0 20px;
   width: 100%;

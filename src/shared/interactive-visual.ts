@@ -41,7 +41,8 @@ export function interactiveVisualDocument(source: string): string {
 <style>
   :root { color-scheme: dark; --visual-bg: #1f1f1f; --visual-fg: #f5f5f5; --visual-muted: #999; --visual-accent: #ff5546; }
   * { box-sizing: border-box; }
-  body { margin: 0; min-width: 0; overflow-x: hidden; background: var(--visual-bg); color: var(--visual-fg); font: 14px/1.5 system-ui, sans-serif; }
+  body { margin: 0; padding: 16px; min-width: 0; overflow-x: hidden; background: var(--visual-bg); color: var(--visual-fg); font: 14px/1.5 system-ui, sans-serif; }
+  @media (max-width: 600px) { body { padding: 12px; } }
 </style>
 <script>
   (() => {

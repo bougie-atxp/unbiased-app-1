@@ -26,6 +26,7 @@ test("the visual document has a resize and theme bridge but no app bridge", () =
   assert.match(document, /unbiased-visual-ready/);
   assert.match(document, /unbiased-visual-error/);
   assert.match(document, /--visual-accent/);
+  assert.match(document, /body \{ margin: 0; padding: 16px;/);
   assert.match(document, /<button type="button">Next<\/button>/);
   assert.doesNotMatch(document, /window\.unbiased/);
 });

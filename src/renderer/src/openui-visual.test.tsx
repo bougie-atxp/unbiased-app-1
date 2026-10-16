@@ -62,6 +62,7 @@ test("renders a standalone VisualHtml root without relaxing other OpenUI validat
   assert.deepEqual(inspectOpenUI(source), { valid: false, reason: "parse" });
   const markup = renderToStaticMarkup(visualFenceContent("openui", source, false)!);
   assert.match(markup, /app-openui-visual--bare/);
+  assert.match(markup, /aria-label="Expand visual"/);
   assert.doesNotMatch(markup, /couldn&#x27;t be displayed|odyssey-map/);
 
   const extraStatement = renderToStaticMarkup(visualFenceContent("openui", `${source}\nother = TextContent("extra")`, false)!);
