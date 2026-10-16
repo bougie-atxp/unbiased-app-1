@@ -1862,7 +1862,8 @@ export function App() {
   const [navHistory, setNavHistory] = useState(initialNavigationHistory);
   const [navigatingHistory, setNavigatingHistory] = useState(false);
   const navPeekCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const NAV_RAIL_WIDTH = 44;
+  const NAV_BAR_SIZE = 44;
+  const NAV_RAIL_WIDTH = NAV_BAR_SIZE;
   // The panel beside the fixed icon rail is user-draggable and persisted.
   const NAV_MIN = 180;
   const NAV_MAX = 400;
@@ -3159,7 +3160,7 @@ export function App() {
       <header
         aria-label="Navigation toolbar"
         style={{
-          height: 44,
+          height: NAV_BAR_SIZE,
           boxSizing: "border-box",
           flexShrink: 0,
           display: "flex",
@@ -3205,7 +3206,7 @@ export function App() {
       <nav
         className="u-sidebar"
         aria-label="Sidebar shortcuts"
-        style={{ width: NAV_RAIL_WIDTH, flexShrink: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 31 }}
+        style={{ width: NAV_RAIL_WIDTH, boxSizing: "border-box", flexShrink: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 31 }}
       >
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "15px 2px 12px" }}>
           <div onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek}>
@@ -3261,7 +3262,7 @@ export function App() {
           flexDirection: "column",
           position: navOpen ? "relative" : "fixed",
           left: navOpen ? undefined : NAV_RAIL_WIDTH,
-          top: navOpen ? undefined : 52,
+          top: navOpen ? undefined : NAV_BAR_SIZE + 8,
           bottom: navOpen ? undefined : 8,
           zIndex: navOpen ? 2 : 30,
           borderRadius: navOpen ? 0 : 12,
