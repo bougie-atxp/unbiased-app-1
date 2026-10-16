@@ -50,6 +50,7 @@ import { dayMarkerIndices, formatConversationDayMarker, formatConversationTime, 
 import { visualFenceContent } from "./openui-visual";
 import { validateUserInput, withoutUserInputDefaults, type UserInputRequest, type UserInputValue } from "../../shared/user-input";
 import { firstInvalidQuestionIndex, validateQuestion } from "./user-input-navigation";
+import { initialNavigationHistory, navigationTarget, pushNavigation, replaceNavigation, type NavigationLocation } from "./navigation-history";
 
 type EngineStatus =
   | { state: "starting" }
@@ -1465,6 +1466,7 @@ export function App() {
         return;
       }
       setEditProj(null);
+      visit({ kind: "project", path: r.path, name: r.name });
       setActiveProject({ name: r.name, path: r.path });
       setActiveThreadId(null);
       setMainStarted(false);
@@ -1856,6 +1858,8 @@ export function App() {
 
   const [navOpen, setNavOpen] = useState(() => localStorage.getItem("navOpen") !== "false");
   const [navPeekOpen, setNavPeekOpen] = useState(false);
+  const [navHistory, setNavHistory] = useState(initialNavigationHistory);
+  const [navigatingHistory, setNavigatingHistory] = useState(false);
   const navPeekCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const NAV_RAIL_WIDTH = 88;
   // The panel beside the fixed icon rail is user-draggable and persisted.
@@ -1890,6 +1894,25 @@ export function App() {
       localStorage.setItem("navOpen", String(!o));
       return !o;
     });
+  }
+
+  function visit(location: NavigationLocation) {
+    setNavHistory((history) => pushNavigation(history, location));
+  }
+
+  function showConnectorsPage(record = true) {
+    ++openSeqRef.current;
+    setScheduledOpen(false);
+    setConnectorsOpen(true);
+    if (record) visit({ kind: "connectors" });
+  }
+
+  function showScheduledPage(focus?: string, record = true) {
+    ++openSeqRef.current;
+    setConnectorsOpen(false);
+    if (focus) setScheduledFocus(focus);
+    setScheduledOpen(true);
+    if (record) visit({ kind: "scheduled" });
   }
 
   function showNavPeek() {
@@ -2115,11 +2138,13 @@ export function App() {
   // Switching away from a running conversation is fine — its turn keeps
   // going in the engine and the sidebar shows it as active. Only genuinely
   // destructive actions still wait.
-  async function newChat(project?: { name: string; path: string }) {
+  async function newChat(project?: { name: string; path: string }, record = true) {
+    ++openSeqRef.current;
     setScheduledOpen(false);
     setConnectorsOpen(false);
     snapshotSideView();
     await window.unbiased.detachThread(project?.path);
+    if (record) visit(project ? { kind: "project", path: project.path, name: project.name } : { kind: "home" });
     setActiveProject(project ?? null);
     setActiveThreadId(null);
     setMainStarted(false);
@@ -2130,9 +2155,11 @@ export function App() {
   async function openProjectDialog() {
     const { path, name } = await window.unbiased.chooseProject();
     if (!path || !name) return; // cancelled
+    ++openSeqRef.current;
     setScheduledOpen(false);
     setConnectorsOpen(false);
     snapshotSideView();
+    visit({ kind: "project", path, name });
     setActiveProject({ name, path });
     setActiveThreadId(null);
     setMainStarted(false);
@@ -2155,13 +2182,16 @@ export function App() {
     [],
   );
 
-  async function openThread(id: string) {
+  async function openThread(id: string, record = true) {
     // Leaving a full-page view is the same gesture as switching chats —
     // clicking a destination in the nav. Both entry points clear them so the
     // view never outlives the row that is lit.
     setScheduledOpen(false);
     setConnectorsOpen(false);
-    if (id === activeThreadId) return;
+    if (id === activeThreadId) {
+      if (record) visit({ kind: "thread", id });
+      return;
+    }
     snapshotSideView();
     // Two quick clicks race their awaits — only the latest open may commit.
     const seq = ++openSeqRef.current;
@@ -2253,6 +2283,7 @@ export function App() {
         });
       entries = retitle(entries);
     }
+    if (record) visit({ kind: "thread", id });
     setActiveProject(null);
     setActiveThreadId(id);
     setMainStarted(entries.length > 0);
@@ -2268,6 +2299,28 @@ export function App() {
     void window.unbiased.subagentsList(id).then((r) => {
       if (!stale()) setSubAgentsList(r.agents);
     });
+  }
+
+  async function moveInHistory(delta: -1 | 1) {
+    const target = navigationTarget(navHistory, delta);
+    if (!target || navigatingHistory) return;
+    setNavigatingHistory(true);
+    setNavPeekOpen(false);
+    try {
+      let pending: Promise<void> | null = null;
+      if (target.kind === "thread") pending = openThread(target.id, false);
+      else if (target.kind === "project") pending = newChat({ name: target.name, path: target.path }, false);
+      else if (target.kind === "home") pending = newChat(undefined, false);
+      else if (target.kind === "scheduled") showScheduledPage(undefined, false);
+      else showConnectorsPage(false);
+      const seq = openSeqRef.current;
+      if (pending) await pending;
+      if (openSeqRef.current === seq) {
+        setNavHistory((history) => ({ ...history, index: history.index + delta }));
+      }
+    } finally {
+      setNavigatingHistory(false);
+    }
   }
 
   async function deleteThread(id: string) {
@@ -3094,27 +3147,50 @@ export function App() {
         ...themeVars(theme),
         height: "100vh",
         display: "flex",
+        flexDirection: "column",
         position: "relative",
         background: colors.bg,
         color: colors.fg,
         fontFamily: "var(--font-ui)",
       }}
     >
+      <header
+        aria-label="Navigation toolbar"
+        style={{
+          height: 64,
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          padding: "0 20px",
+          background: "var(--nav-bg)",
+          borderBottom: `1px solid ${colors.border}`,
+          zIndex: 32,
+        }}
+      >
+        <div style={{ width: 260, flexShrink: 0, display: "flex", alignItems: "center", gap: 22 }}>
+        <SidebarRailButton label="Back" disabled={!navigationTarget(navHistory, -1) || navigatingHistory} onClick={() => void moveInHistory(-1)}>
+          <ChevronLeft size={20} strokeWidth={1.8} />
+        </SidebarRailButton>
+        <SidebarRailButton label="Forward" disabled={!navigationTarget(navHistory, 1) || navigatingHistory} onClick={() => void moveInHistory(1)}>
+          <ChevronRight size={20} strokeWidth={1.8} />
+        </SidebarRailButton>
+        <SidebarRailButton label={navOpen ? "Collapse sidebar" : "Expand sidebar"} onClick={toggleNav}>
+          <PanelIcon />
+        </SidebarRailButton>
+        {!navOpen && (
+          <SidebarRailButton label="New chat" onClick={() => void newChat()}>
+            <NewChatIcon />
+          </SidebarRailButton>
+        )}
+        </div>
+        <span aria-hidden="true" style={{ width: 1, height: 26, background: colors.border }} />
+      </header>
+      <div style={{ display: "flex", flex: 1, minHeight: 0, position: "relative" }}>
       <nav
         className="u-sidebar"
         aria-label="Sidebar shortcuts"
         style={{ width: NAV_RAIL_WIDTH, flexShrink: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 31 }}
       >
-        <div style={{ padding: "16px 2px 0", display: "flex", alignItems: "center", gap: 4 }}>
-          <SidebarRailButton label={navOpen ? "Collapse sidebar" : "Expand sidebar"} onClick={toggleNav}>
-            <PanelIcon />
-          </SidebarRailButton>
-          {!navOpen && (
-            <SidebarRailButton label="New chat" onClick={() => void newChat()}>
-              <NewChatIcon />
-            </SidebarRailButton>
-          )}
-        </div>
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "15px 10px 12px" }}>
           <div onMouseEnter={showNavPeek} onMouseLeave={hideNavPeekSoon} onFocus={showNavPeek}>
             <SidebarRailButton label="Home" active={!pageOpen || navPeekOpen} onClick={showNavPeek}>
@@ -3124,10 +3200,10 @@ export function App() {
           <SidebarRailButton label="Open project" onClick={() => void openProjectDialog()}>
             <FolderPlusIcon />
           </SidebarRailButton>
-          <SidebarRailButton label="Connectors" active={connectorsOpen} onClick={() => { setScheduledOpen(false); setConnectorsOpen(true); }}>
+          <SidebarRailButton label="Connectors" active={connectorsOpen} onClick={() => showConnectorsPage()}>
             <PlugIcon />
           </SidebarRailButton>
-          <SidebarRailButton label="Scheduled" active={scheduledOpen} badge={missedCount} onClick={() => { setConnectorsOpen(false); setScheduledOpen(true); }}>
+          <SidebarRailButton label="Scheduled" active={scheduledOpen} badge={missedCount} onClick={() => showScheduledPage()}>
             <ClockIcon />
           </SidebarRailButton>
         </div>
@@ -3169,7 +3245,7 @@ export function App() {
           flexDirection: "column",
           position: navOpen ? "relative" : "fixed",
           left: navOpen ? undefined : NAV_RAIL_WIDTH,
-          top: navOpen ? undefined : 8,
+          top: navOpen ? undefined : 72,
           bottom: navOpen ? undefined : 8,
           zIndex: navOpen ? 2 : 30,
           borderRadius: navOpen ? 0 : 12,
@@ -3191,10 +3267,7 @@ export function App() {
             Open project…
           </SidebarAction>
           <SidebarAction
-            onClick={() => {
-              setScheduledOpen(false);
-              setConnectorsOpen(true);
-            }}
+            onClick={() => showConnectorsPage()}
             disabled={false}
             active={connectorsOpen}
             icon={<PlugIcon />}
@@ -3202,10 +3275,7 @@ export function App() {
             Connectors
           </SidebarAction>
           <SidebarAction
-            onClick={() => {
-              setConnectorsOpen(false);
-              setScheduledOpen(true);
-            }}
+            onClick={() => showScheduledPage()}
             disabled={false}
             active={scheduledOpen}
             icon={<ClockIcon />}
@@ -4434,8 +4504,7 @@ export function App() {
           }
           onOpenAgent={openAgentTab}
           onOpenScheduled={(key) => {
-            setScheduledFocus(key);
-            setScheduledOpen(true);
+            showScheduledPage(key);
           }}
           onOpenMcp={() => setMcpOpen(true)}
           onOpenConnectors={() => setConnectorsPanelOpen(true)}
@@ -4447,6 +4516,7 @@ export function App() {
           onTurnLanded={refreshThreads}
           onThreadCreated={(id, created, firstMessage) => {
             setActiveThreadId(id);
+            setNavHistory((history) => replaceNavigation(history, { kind: "thread", id }));
             // The engine will not list this thread until it has content, so
             // the nav row has to come from here — otherwise starting a chat
             // and walking away looks like the chat was thrown out.
@@ -5759,8 +5829,7 @@ export function App() {
         <ConnectorsPanel
           onClose={() => setConnectorsPanelOpen(false)}
           onOpenFull={() => {
-            setScheduledOpen(false);
-            setConnectorsOpen(true);
+            showConnectorsPage();
           }}
         />
       )}
@@ -5980,6 +6049,7 @@ export function App() {
           </div>
         </div>
       )}
+      </div>
     </div>
     </SettingsRoute>
   );
@@ -17118,12 +17188,14 @@ function SidebarRailButton({
   onClick,
   active = false,
   badge = false,
+  disabled = false,
   children,
 }: {
   label: string;
   onClick: () => void;
   active?: boolean;
   badge?: number | boolean;
+  disabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -17132,6 +17204,7 @@ function SidebarRailButton({
       title={label}
       aria-label={label}
       onClick={onClick}
+      disabled={disabled}
       className="u-sidebar-row"
       data-active={active}
       style={{
@@ -17145,8 +17218,8 @@ function SidebarRailButton({
         padding: 0,
         border: "none",
         borderRadius: 9,
-        color: active ? colors.fg : "var(--fg-soft)",
-        cursor: "pointer",
+        color: disabled ? colors.dim : active ? colors.fg : "var(--fg-soft)",
+        cursor: disabled ? "default" : "pointer",
       }}
     >
       <span style={{ display: "flex", transform: "scale(1.15)" }}>{children}</span>

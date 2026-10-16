@@ -115,7 +115,7 @@
           color 120ms var(--ease-out),
           box-shadow 120ms var(--ease-out);
       }
-      .u-sidebar-row:hover {
+      .u-sidebar-row:hover:not(:disabled) {
         background: color-mix(in srgb, var(--fg) 5.5%, transparent);
       }
       .u-sidebar-row[data-active="true"] {
