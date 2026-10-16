@@ -1,4 +1,4 @@
-import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Children, createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 // The changelog SHIPS with the build so the Updates tab works offline and on
@@ -43,6 +43,7 @@ import { SideChatIdleTracker } from "./side-chat-idle";
 import { settleTurnOutput } from "./turn-completion";
 import { isTranscriptAtBottom } from "./transcript-scroll";
 import { finalAssistantIndices } from "./transcript-actions";
+import { completedWorkDuration } from "./work-duration";
 import { isComposerTypingKey } from "./type-to-focus";
 import { appendCommandOutputDelta, closeFinishedAutoOpenedPanels, commandStatusAfterEvent, settleTurnSteps, settleUnconfirmedSteps, showsCommandOutputPanel } from "./transcript-command-status";
 import { dayMarkerIndices, formatConversationDayMarker, formatConversationTime, hydrateTranscriptTimes } from "../../shared/conversation-time";
@@ -6976,6 +6977,7 @@ function TranscriptChevron({ open }: { open: boolean }) {
 function WorkedGroup({ duration, children }: { duration: number | null; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const [hovering, setHovering] = useState(false);
+  const hasDetails = Children.count(children) > 0;
   // A small bottom margin, not zero: the answer below tightens its own top
   // margin after a fold, and with nothing here the two collapsed to 2px —
   // the metadata line then read as the answer's first line, and the gap
@@ -6986,10 +6988,11 @@ function WorkedGroup({ duration, children }: { duration: number | null; children
     <div style={{ margin: "14px 0 8px" }}>
       <button
         className="u-worked-group"
-        onClick={() => setOpen((o) => !o)}
+        onClick={hasDetails ? () => setOpen((o) => !o) : undefined}
         onMouseEnter={() => setHovering(true)}
         onMouseLeave={() => setHovering(false)}
-        aria-expanded={open}
+        aria-expanded={hasDetails ? open : undefined}
+        disabled={!hasDetails}
         style={{
           display: "flex",
           alignItems: "center",
@@ -7002,7 +7005,7 @@ function WorkedGroup({ duration, children }: { duration: number | null; children
           background: "transparent",
           border: "none",
           padding: "2px 0 2px",
-          color: hovering ? "var(--fg-msg)" : colors.dim,
+          color: hasDetails && hovering ? "var(--fg-msg)" : colors.dim,
           // Set like the answer it introduces — same size, leading and
           // tracking — so the fold reads as a quiet line of the same voice
           // rather than a caption in a different one. Colour alone carries
@@ -7010,14 +7013,15 @@ function WorkedGroup({ duration, children }: { duration: number | null; children
           fontSize: 15.5,
           lineHeight: 1.7,
           letterSpacing: "var(--track-body)",
-          cursor: "pointer",
+          cursor: hasDetails ? "pointer" : "default",
+          opacity: 1,
           fontFamily: "inherit",
         }}
       >
         {duration !== null ? `Worked for ${formatDuration(duration)}` : "Worked"}
-        <TranscriptChevron open={open} />
+        {hasDetails && <TranscriptChevron open={open} />}
       </button>
-      {open && (
+      {hasDetails && open && (
         <>
           {/* A rule only while open: collapsed, the header is a quiet label
               and a full-width line would compete with the transcript; open,
@@ -9267,11 +9271,10 @@ function ChatPane({
           next = withoutTrailingPlaceholder(next);
           const start = workStart;
           next = settleTurnSteps(next, start);
-          // Fold a completed turn's intermediate output — narration, agent
-          // lifecycle rows, command groups — under a "Worked for Ns" header,
-          // leaving the final message visible (Codex-style). Only turns that
-          // actually did agent/tool work get folded; failed and interrupted
-          // turns stay raw so nothing hides the evidence.
+          // Keep completed-turn duration beside the final answer. Intermediate
+          // narration, agent rows, and commands fold under that header; a
+          // direct answer still gets a duration without an empty disclosure.
+          // Failed and interrupted turns stay raw so evidence remains visible.
           if (p.status === "completed") {
             if (start !== null && start >= 0 && start < next.length) {
               const turnEntries = next.slice(start);
@@ -9315,8 +9318,10 @@ function ChatPane({
                       ...(agents.length > 0 ? { agents } : null),
                     }
                   : finalMsg;
-              if (didWork && foldable.length > 0) {
-                const duration = workStartedAt !== null ? (Date.now() - workStartedAt) / 1000 : null;
+              const duration = completedWorkDuration(
+                workStartedAt, Date.now(), Boolean(answer), didWork && foldable.length > 0,
+              );
+              if (duration !== undefined) {
                 next = [
                   ...next.slice(0, start),
                   { kind: "work", duration, entries: foldable },
