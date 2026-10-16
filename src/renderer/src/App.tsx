@@ -1862,7 +1862,7 @@ export function App() {
   const [navHistory, setNavHistory] = useState(initialNavigationHistory);
   const [navigatingHistory, setNavigatingHistory] = useState(false);
   const navPeekCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const NAV_BAR_SIZE = 48;
+  const NAV_BAR_SIZE = 52;
   const NAV_RAIL_WIDTH = NAV_BAR_SIZE;
   // The panel beside the fixed icon rail is user-draggable and persisted.
   const NAV_MIN = 180;
@@ -3165,7 +3165,7 @@ export function App() {
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
-          padding: windowWidth < 480 ? "0 10px 0 8px" : "0 20px 0 8px",
+          padding: windowWidth < 480 ? "0 10px" : "0 20px 0 10px",
           background: "var(--nav-bg)",
           borderBottom: `1px solid ${colors.border}`,
           zIndex: 32,
