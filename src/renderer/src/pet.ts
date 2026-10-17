@@ -1,11 +1,11 @@
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
+import { palShapeFor, type PalSelection } from "../../shared/pals";
 import { RobotHead } from "./robot-heads/RobotHead";
 import type { RobotHeadDirection, RobotHeadState } from "./robot-heads/types";
 import "./pet.css";
 
 type PetState = "idle" | "working" | "done" | "failed";
-type PalSelection = "robot" | "original";
 type PetUpdate = {
   state: PetState;
   runningCount: number;
@@ -44,13 +44,10 @@ function compactCount(count: number): string {
 }
 
 function renderRobot(): void {
-  if (current.selection !== "robot") {
-    robotRoot.render(null);
-    return;
-  }
   const state: RobotHeadState = current.state === "done" ? "happy" : current.state === "failed" ? "error" : current.state;
   robotRoot.render(createElement(RobotHead, {
     state,
+    shape: palShapeFor(current.selection),
     direction: motion,
     size: 76,
     interactive: false,
@@ -67,10 +64,10 @@ window.pet.onUpdate((incoming) => {
     completedActions: Number.isFinite(incoming.completedActions) ? incoming.completedActions! : 0,
     completedThreads: Number.isFinite(incoming.completedThreads) ? incoming.completedThreads! : 0,
     inFlightActions: Number.isFinite(incoming.inFlightActions) ? incoming.inFlightActions! : 0,
-    selection: incoming.selection === "original" ? "original" : "robot",
+    selection: incoming.selection ?? "robot",
   };
   root.style.transform = `scale(${current.scale})`;
-  root.className = `pet ${current.state} ${current.selection}${motion ? ` moving-${motion}` : ""}`;
+  root.className = `pet ${current.state}${motion ? ` moving-${motion}` : ""}`;
   root.setAttribute("aria-label", `Unbiased Pal, ${current.state}`);
   status.textContent = current.state === "working"
     ? `${compactCount(current.runningCount)} running · ${compactCount(current.completedActions)} actions`

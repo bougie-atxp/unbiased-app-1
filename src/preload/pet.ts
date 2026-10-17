@@ -1,8 +1,19 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { PalSelection } from "../shared/pals";
+
+type PetUpdate = {
+  state: "idle" | "working" | "done" | "failed";
+  runningCount: number;
+  completedActions: number;
+  completedThreads: number;
+  inFlightActions: number;
+  selection: PalSelection;
+  scale: number;
+};
 
 contextBridge.exposeInMainWorld("pet", {
-  onUpdate: (callback: (value: { state: string; runningCount: number; completedActions?: number; completedThreads?: number; inFlightActions?: number; sprite?: string | null; scale: number }) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, value: { state: string; runningCount: number; completedActions?: number; completedThreads?: number; inFlightActions?: number; sprite?: string | null; scale: number }) => callback(value);
+  onUpdate: (callback: (value: PetUpdate) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: PetUpdate) => callback(value);
     ipcRenderer.on("pet:update", listener);
     return () => ipcRenderer.removeListener("pet:update", listener);
   },

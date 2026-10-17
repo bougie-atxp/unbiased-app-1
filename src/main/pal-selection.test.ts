@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { palShapeFor, ROBOT_PALS } from "../shared/pals";
 import { savedPalSelection } from "./pal-selection";
 
 test("Robot Head is the default Pal", () => {
@@ -8,7 +9,14 @@ test("Robot Head is the default Pal", () => {
   assert.equal(savedPalSelection({ selection: "unknown" }), "robot");
 });
 
-test("the user's Original Pal choice survives legacy preference migration", () => {
-  assert.equal(savedPalSelection({ selection: "original" }), "original");
-  assert.equal(savedPalSelection({ folder: "default" }), "original");
+test("removed and legacy Pal choices migrate to Robot Head", () => {
+  assert.equal(savedPalSelection({ selection: "original" }), "robot");
+  assert.equal(savedPalSelection({ folder: "default" }), "robot");
+});
+
+test("each Robot Head shape survives preference loading", () => {
+  for (const pal of ROBOT_PALS) {
+    assert.equal(savedPalSelection({ selection: pal.id }), pal.id);
+    assert.equal(palShapeFor(pal.id), pal.shape);
+  }
 });

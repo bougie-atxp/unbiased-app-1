@@ -27,7 +27,7 @@ import { PetActivity, petTurnActivityKey } from "./pet-activity";
 import { clampPetPosition, PET_SCALES, petScale, petWindowSize, pointInPetWindow, type PetScale } from "./pet-layout";
 import { PET_NOTICE_DURATION_MS, PET_NOTICE_SIZE, latestPetResponse, petNoticeStackBounds, petResponseFirstLine } from "./pet-notice";
 import { savedPalSelection, type PalSelection } from "./pal-selection";
-import type { PalsSettings } from "../shared/pals";
+import { isPalSelection, ROBOT_PALS, type PalsSettings } from "../shared/pals";
 import { resolveEngineDir } from "./engine-path";
 import { matchingMessageSnippet, messagesFromTranscriptEntries } from "./thread-search";
 import { agentBrowserCandidates, chromeCandidates } from "./browser-binaries";
@@ -5700,15 +5700,12 @@ function palsSettings(): PalsSettings {
     visible: petPreferences.visible,
     selected: petPreferences.selection ?? "robot",
     scale: petScale(petPreferences.scale),
-    choices: [
-      { id: "robot", name: "Robot Head", description: "A responsive companion for focused work" },
-      { id: "original", name: "Original Pal", description: "The original Unbiased Pal" },
-    ],
+    choices: [...ROBOT_PALS],
   };
 }
 
 function selectPal(id: string): { ok: boolean; settings: PalsSettings } {
-  if (id !== "robot" && id !== "original") return { ok: false, settings: palsSettings() };
+  if (!isPalSelection(id)) return { ok: false, settings: palsSettings() };
   petPreferences.selection = id;
   savePetPreferences();
   if (petPreferences.visible) createPetWindow();
@@ -6003,8 +6000,13 @@ function showPetMenu(): void {
     click: () => setPetScale(scale),
   }));
   Menu.buildFromTemplate([
-    { label: "Robot Head", type: "radio", checked: petPreferences.selection !== "original", click: () => selectPal("robot") },
-    { label: "Original Pal", type: "radio", checked: petPreferences.selection === "original", click: () => selectPal("original") },
+    ...ROBOT_PALS.map((pal): MenuItemConstructorOptions => ({
+      label: pal.name,
+      type: "radio",
+      checked: (petPreferences.selection ?? "robot") === pal.id,
+      click: () => selectPal(pal.id),
+    })),
+    { type: "separator" },
     { label: "Pal Size", submenu: sizeMenu },
     { type: "separator" },
     { label: "Hide Desktop Pal", click: hidePet },

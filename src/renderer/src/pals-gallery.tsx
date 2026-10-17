@@ -1,31 +1,13 @@
 import { EyeOff } from "lucide-react";
-import type { PalChoice, PalScale, PalsSettings } from "../../shared/pals";
+import { palShapeFor, ROBOT_PALS, type PalScale, type PalsSettings } from "../../shared/pals";
 import { RobotHead } from "./robot-heads/RobotHead";
 import "./pals-gallery.css";
-
-function DefaultPalArt() {
-  return (
-    <div className="pal-art" aria-hidden="true">
-      <div className="pal-art-ear pal-art-ear-left" />
-      <div className="pal-art-ear pal-art-ear-right" />
-      <div className="pal-art-body">
-        <div className="pal-art-eye pal-art-eye-left" />
-        <div className="pal-art-eye pal-art-eye-right" />
-        <div className="pal-art-mouth" />
-        <div className="pal-art-brand" />
-      </div>
-      <div className="pal-art-foot pal-art-foot-left" />
-      <div className="pal-art-foot pal-art-foot-right" />
-    </div>
-  );
-}
 
 function PalArtwork({ id, large = false }: { id: string; large?: boolean }) {
   return (
     <div className={`pals-artwork${large ? " pals-artwork-large" : ""}`}>
       {id === "none" ? <EyeOff size={large ? 42 : 34} strokeWidth={1.4} aria-hidden="true" />
-        : id === "original" ? <DefaultPalArt />
-        : <RobotHead size={large ? 112 : 90} color="#ed6b5f" trimColor="#a9b8c2" screenColor="#e8f7fb" interactive={false} />}
+        : <RobotHead shape={palShapeFor(id)} size={large ? 112 : 90} color="#ed6b5f" trimColor="#a9b8c2" screenColor="#e8f7fb" />}
     </div>
   );
 }
@@ -43,7 +25,7 @@ export function PalsGallery({
   onVisibleChange: (visible: boolean) => void;
   onScaleChange: (scale: PalScale) => void;
 }) {
-  const choices: PalChoice[] = settings?.choices ?? [{ id: "robot", name: "Robot Head" }, { id: "original", name: "Original Pal" }];
+  const choices = settings?.choices ?? ROBOT_PALS;
   const selected = settings ? (settings.visible ? settings.selected : "none") : "robot";
   const selectedChoice = choices.find((choice) => choice.id === settings?.selected);
   const name = selected === "none" ? "No Pal" : selectedChoice?.name ?? "Robot Head";
@@ -88,7 +70,6 @@ export function PalsGallery({
           </label>
         ))}
       </div>
-      <p className="pals-attribution">Robot Head by <a href="https://github.com/fayazara/robot-heads" target="_blank" rel="noopener noreferrer">Fayaz Ahmed</a> (MIT).</p>
     </div>
   );
 }
