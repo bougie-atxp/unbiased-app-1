@@ -65,6 +65,10 @@
         ]
       },
       {
+        "from": "src/renderer/src/robot-heads/LICENSE",
+        "to": "licenses/robot-heads/LICENSE"
+      },
+      {
         "from": "resources/icon.png",
         "to": "icon.png"
       }

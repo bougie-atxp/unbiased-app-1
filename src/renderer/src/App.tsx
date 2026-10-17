@@ -36,15 +36,21 @@ import { UserMessageMarkdown } from "./user-message-markdown";
 import { MarkdownComposer, type MarkdownComposerHandle } from "./markdown-composer";
 import "./markdown-composer.css";
 import "./user-input-card.css";
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Home, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Heart, Home, LayoutGrid, MessageSquare, MoreHorizontal, Pin, PinOff, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { ConversationDrafts } from "./conversation-drafts";
 import { SettingsRoute } from "./settings-route";
+import { PalsGallery } from "./pals-gallery";
 import { parseAgentStylePrefs, type AgentStylePrefs } from "../../shared/agent-style";
+import type { PalScale, PalsSettings as PalsSettingsState } from "../../shared/pals";
 import { SideChatIdleTracker } from "./side-chat-idle";
 import { settleTurnOutput } from "./turn-completion";
 import { isTranscriptAtBottom } from "./transcript-scroll";
 import { finalAssistantIndices } from "./transcript-actions";
 import { isComposerTypingKey } from "./type-to-focus";
+import { parsePinnedThreads, togglePinnedThread } from "./sidebar-pins";
+import { parseUnreadCompletedThreads, setThreadUnread, unreadAfterThreadActivity } from "./sidebar-unread";
+import { groupRecentThreads } from "./sidebar-recency";
+import { browserHistoryUrl, parseBrowserVisits, recordBrowserVisit, suggestedBrowserSites, updateBrowserVisitTitle, type BrowserVisit } from "./browser-start";
 import { appendCommandOutputDelta, closeFinishedAutoOpenedPanels, commandStatusAfterEvent, settleTurnSteps, settleUnconfirmedSteps, showsCommandOutputPanel } from "./transcript-command-status";
 import { dayMarkerIndices, formatConversationDayMarker, formatConversationTime, hydrateTranscriptTimes } from "../../shared/conversation-time";
 import { visualFenceContent } from "./openui-visual";
@@ -135,7 +141,7 @@ type Entry =
 type ApprovalDecision = "accept" | "acceptForSession" | "decline";
 // "main" or a dynamic side-chat pane ("side:<n>").
 type PaneId = string;
-type ThreadSummary = { id: string; title: string; createdAt?: string };
+type ThreadSummary = { id: string; title: string; createdAt?: string; updatedAt?: string | number };
 // A transcript excerpt staged for the next send, with an optional comment.
 // The live Range (when still valid) keeps the excerpt tinted in the DOM.
 // tag = what kind of thing was annotated (element tag, "selection",
@@ -309,12 +315,13 @@ type ProjectInfo = {
   threads: ThreadSummary[];
 };
 type RailPeekSection = "home" | "projects" | "connectors" | "scheduled" | "updates" | "whats-new" | "settings";
+type SettingsTab = "appearance" | "agent" | "pals" | "account" | "updates" | "resources";
 /** A thread we know exists because we just created it, but which the engine
  *  will not return from thread/list yet — verified: a list issued straight
  *  after thread/start does not include the new id. Without a stand-in row, a
  *  chat you start and leave running is invisible until its first turn ends,
  *  which for a long job reads as "it deleted my chat". */
-type PendingThread = { id: string; title: string; projectPath: string | null };
+type PendingThread = { id: string; title: string; projectPath: string | null; createdAt: string };
 
 /** Stand-in title until the engine names the thread — the first line of what
  *  was sent, which is roughly what it derives its own title from anyway. */
@@ -343,7 +350,7 @@ function mergePendingThreads(sidebar: SidebarData, pending: PendingThread[]): Si
   ]);
   const extra = pending.filter((p) => !known.has(p.id));
   if (extra.length === 0) return sidebar;
-  const row = (p: PendingThread): ThreadSummary => ({ id: p.id, title: p.title });
+  const row = (p: PendingThread): ThreadSummary => ({ id: p.id, title: p.title, createdAt: p.createdAt });
   const paths = new Set(sidebar.projects.map((p) => p.path));
   return {
     ...sidebar,
@@ -609,7 +616,7 @@ declare global {
       onTurnCompleted: (
         cb: (p: { paneId: PaneId; status: string; error?: string | null; narrated?: boolean }) => void,
       ) => () => void;
-      onThreadActivity: (cb: (p: { threadId: string; running: boolean }) => void) => () => void;
+      onThreadActivity: (cb: (p: { threadId: string; running: boolean; completed?: boolean }) => void) => () => void;
       setAccessMode: (mode: AccessMode) => Promise<{ mode: string }>;
       setWorkMode: (mode: string, dir?: string) => Promise<{ ok: boolean }>;
       setPlanMode: (on: boolean) => Promise<{ planMode: boolean }>;
@@ -697,6 +704,7 @@ declare global {
         cb: (p: { paneId: PaneId; key: string; name: string; cadence: string }) => void,
       ) => () => void;
       onScheduledOpenRun: (cb: (p: { threadId: string }) => void) => () => void;
+      onPetNoticeOpenThread: (cb: (p: { threadId: string }) => void) => () => void;
       memoryList: (threadId: string | null) => Promise<{
         dir: string;
         memories: { name: string; description: string; type: string; path: string; thisThread: boolean }[];
@@ -769,6 +777,7 @@ declare global {
       }>;
       readBilling: () => Promise<BillingResult>;
       listThreads: () => Promise<SidebarData>;
+      searchThreads: (query: string, threads: { id: string; updatedAt?: string | number }[], includeSavedTranscripts?: boolean) => Promise<{ results: { id: string; snippet: string; title?: string }[]; failed: number }>;
       openThread: (id: string) => Promise<{
         id: string;
         entries: Entry[];
@@ -865,6 +874,10 @@ declare global {
       setUpdatePrefs: (p: { autoDownload: boolean }) => Promise<{ ok: boolean }>;
       agentStyle: () => Promise<AgentStylePrefs>;
       setAgentStyle: (prefs: AgentStylePrefs) => Promise<{ ok: boolean; prefs: AgentStylePrefs }>;
+      palsSettings: () => Promise<PalsSettingsState>;
+      selectPal: (id: string) => Promise<{ ok: boolean; settings: PalsSettingsState }>;
+      setPalVisible: (visible: boolean) => Promise<PalsSettingsState>;
+      setPalScale: (scale: PalScale) => Promise<PalsSettingsState>;
       openBrowser: (p: { id: number; url?: string }) => Promise<{ ok: boolean }>;
       captureBrowser: (id: number) => Promise<string | null>;
       setBrowserBounds: (b: { id: number; x: number; y: number; width: number; height: number }) => Promise<void>;
@@ -1201,6 +1214,7 @@ export function App() {
     document.body.style.background = theme.surface;
   }, [theme.surface]);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("appearance");
   const [showChangelog, setShowChangelog] = useState(false);
   const [toolbarActionsEl, setToolbarActionsEl] = useState<HTMLSpanElement | null>(null);
   const [mcpOpen, setMcpOpen] = useState(false);
@@ -1339,6 +1353,34 @@ export function App() {
   const [pendingThreads, setPendingThreads] = useState<PendingThread[]>([]);
   // Threads with a turn running right now — including backgrounded ones.
   const [runningThreads, setRunningThreads] = useState<ReadonlySet<string>>(new Set());
+  const [unreadCompletedThreads, setUnreadCompletedThreads] = useState<ReadonlySet<string>>(
+    () => parseUnreadCompletedThreads(localStorage.getItem("navUnreadCompletedThreads")),
+  );
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const visibleThreadIdRef = useRef<string | null>(null);
+  visibleThreadIdRef.current = !pageOpen && !showSettings && !showChangelog ? activeThreadId : null;
+
+  useEffect(() => {
+    localStorage.setItem("navUnreadCompletedThreads", JSON.stringify([...unreadCompletedThreads]));
+  }, [unreadCompletedThreads]);
+
+  useEffect(() => {
+    const markVisibleRead = () => {
+      const id = visibleThreadIdRef.current;
+      if (id && document.hasFocus()) setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
+    };
+    window.addEventListener("focus", markVisibleRead);
+    document.addEventListener("visibilitychange", markVisibleRead);
+    return () => {
+      window.removeEventListener("focus", markVisibleRead);
+      document.removeEventListener("visibilitychange", markVisibleRead);
+    };
+  }, []);
+
+  useEffect(() => {
+    const id = visibleThreadIdRef.current;
+    if (id && document.hasFocus()) setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
+  }, [activeThreadId, pageOpen, showSettings, showChangelog]);
 
   useEffect(() => {
     return window.unbiased.onThreadActivity((p) => {
@@ -1348,6 +1390,8 @@ export function App() {
         else next.delete(p.threadId);
         return next;
       });
+      if (!p.running && p.completed) setUnreadCompletedThreads((current) =>
+        unreadAfterThreadActivity(current, p, visibleThreadIdRef.current, document.hasFocus()));
       // A finished background turn may retitle/reorder its thread. Once that
       // list is in, the stand-in row hands over to the real one — or drops,
       // if the turn ended without the engine ever having anything to list.
@@ -1359,7 +1403,6 @@ export function App() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [activeProject, setActiveProject] = useState<{ name: string; path: string } | null>(null);
   const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
   const [hoveredProject, setHoveredProject] = useState<string | null>(null);
@@ -1473,7 +1516,7 @@ export function App() {
       setActiveThreadId(null);
       setMainStarted(false);
       setMainReset((r2) => ({ entries: [], nonce: r2.nonce + 1 }));
-      resetSideView(true);
+      resetSideView();
       void refreshThreads();
       return;
     }
@@ -1502,6 +1545,7 @@ export function App() {
       setRenameDialog((d) => (d ? { ...d, error: r.error ?? "Rename failed" } : d));
       return;
     }
+    setPinnedThreads((current) => current.map((t) => t.id === renameDialog.id ? { ...t, title: renameDialog.name.trim() } : t));
     setRenameDialog(null);
     void refreshThreads();
   }
@@ -1509,6 +1553,7 @@ export function App() {
   async function doMoveThread(projectPath: string) {
     if (!moveDialog) return;
     await window.unbiased.assignThreadProject(moveDialog.id, projectPath);
+    setPinnedThreads((current) => current.map((t) => t.id === moveDialog.id ? { ...t, inProject: true } : t));
     setMoveDialog(null);
     void refreshThreads();
   }
@@ -1539,6 +1584,8 @@ export function App() {
     const { kind, path } = confirmDialog;
     if (kind === "archive") {
       await window.unbiased.archiveProjectChats(path);
+      const archived = new Set(sidebar.projects.find((p) => p.path === path)?.threads.map((t) => t.id) ?? []);
+      setUnreadCompletedThreads((current) => new Set([...current].filter((id) => !archived.has(id))));
       // The active conversation may have just been archived.
       const wasActive = sidebar.projects.some(
         (p) => p.path === path && p.threads.some((t) => t.id === activeThreadId),
@@ -1548,7 +1595,7 @@ export function App() {
         setActiveThreadId(null);
         setMainStarted(false);
         setMainReset((r) => ({ entries: [], nonce: r.nonce + 1 }));
-        resetSideView(true);
+        resetSideView();
       }
     } else {
       await window.unbiased.removeProject(path);
@@ -1557,13 +1604,32 @@ export function App() {
     setConfirmDialog(null);
     void refreshThreads();
   }
-  // Sidebar sections fold independently; both states persist.
+  const [pinnedThreads, setPinnedThreads] = useState(() => parsePinnedThreads(localStorage.getItem("navPinnedThreads")));
+  const [pinnedCollapsed, setPinnedCollapsed] = useState(
+    () => localStorage.getItem("navPinnedCollapsed") === "true",
+  );
+  useEffect(() => {
+    localStorage.setItem("navPinnedThreads", JSON.stringify(pinnedThreads));
+  }, [pinnedThreads]);
+
+  function toggleThreadPin(thread: ThreadSummary, inProject: boolean) {
+    setPinnedThreads((current) => togglePinnedThread(current, { id: thread.id, title: thread.title, inProject }));
+  }
+
+  // Sidebar sections fold independently; their states persist.
   const [projectsCollapsed, setProjectsCollapsed] = useState(
     () => localStorage.getItem("navProjectsCollapsed") === "true",
   );
   const [recentsCollapsed, setRecentsCollapsed] = useState(
     () => localStorage.getItem("navRecentsCollapsed") === "true",
   );
+
+  function togglePinnedSection() {
+    setPinnedCollapsed((c) => {
+      localStorage.setItem("navPinnedCollapsed", String(!c));
+      return !c;
+    });
+  }
 
   function toggleProjectsSection() {
     setProjectsCollapsed((c) => {
@@ -1861,6 +1927,9 @@ export function App() {
   const [navOpen, setNavOpen] = useState(() => localStorage.getItem("navOpen") !== "false");
   const [navPeekOpen, setNavPeekOpen] = useState(false);
   const [navPeekSection, setNavPeekSection] = useState<RailPeekSection>("home");
+  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
+  const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
+  const [contentSearch, setContentSearch] = useState<{ query: string; results: { id: string; snippet: string; title?: string }[]; failed: number; complete: boolean }>({ query: "", results: [], failed: 0, complete: true });
   const [scheduledCreateRequested, setScheduledCreateRequested] = useState(false);
   const [navHistory, setNavHistory] = useState(initialNavigationHistory);
   const [navigatingHistory, setNavigatingHistory] = useState(false);
@@ -1920,6 +1989,21 @@ export function App() {
     if (record) visit({ kind: "scheduled" });
   }
 
+  function showHome() {
+    if (!scheduledOpen && !connectorsOpen) {
+      showNavPeek("home");
+      return;
+    }
+    setNavPeekOpen(false);
+    setScheduledOpen(false);
+    setConnectorsOpen(false);
+    visit(activeThreadId
+      ? { kind: "thread", id: activeThreadId }
+      : activeProject
+        ? { kind: "project", path: activeProject.path, name: activeProject.name }
+        : { kind: "home" });
+  }
+
   function showNavPeek(section: RailPeekSection) {
     if (navPeekCloseTimer.current) clearTimeout(navPeekCloseTimer.current);
     navPeekCloseTimer.current = null;
@@ -1942,6 +2026,18 @@ export function App() {
       onBlur: hideNavPeekSoon,
     };
   }
+
+  useEffect(() => {
+    if (authed !== "in") return;
+    const onSearchShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== "k") return;
+      event.preventDefault();
+      setSidebarSearchOpen(true);
+      requestAnimationFrame(() => document.getElementById("chat-search-input")?.focus());
+    };
+    document.addEventListener("keydown", onSearchShortcut);
+    return () => document.removeEventListener("keydown", onSearchShortcut);
+  }, [authed]);
 
   useEffect(() => {
     if (!navPeekOpen) return;
@@ -1981,6 +2077,7 @@ export function App() {
     function onUp() {
       if (navDraggingRef.current) {
         navDraggingRef.current = false;
+        delete document.body.dataset.panelResizing;
         document.body.style.userSelect = "";
         document.body.style.cursor = "";
         setNavWidth((w) => {
@@ -1991,6 +2088,7 @@ export function App() {
       }
       if (!draggingRef.current) return;
       draggingRef.current = false;
+      delete document.body.dataset.panelResizing;
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
       setSideFrac((f) => {
@@ -2003,6 +2101,7 @@ export function App() {
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      delete document.body.dataset.panelResizing;
     };
   }, []);
 
@@ -2104,15 +2203,10 @@ export function App() {
     return true;
   }
 
-  /** `fresh` = a clean-slate action (new chat, new/opened project, deleting
-   *  the active conversation): the whole side panel resets, browser tabs and
-   *  side chats included. They used to survive every reset ("the page you're
-   *  reading survives"), but a NEW chat opening with the previous chat's
-   *  browser page reads as a leak, not a feature. Conversation SWITCHES stay
-   *  non-fresh on purpose: a closed browser view cannot be restored later
-   *  (snapshots don't capture page state), so switching must not cost the
-   *  user their open page. */
-  function resetSideView(fresh = false) {
+  /** Live browser, terminal, and side-chat tabs cannot be restored from a
+   *  thread snapshot. Close them on every conversation change so a new chat's
+   *  side panel never appears to belong to the next conversation. */
+  function resetSideView() {
     setSideContexts({});
     setSideNonce((n) => n + 1);
     setOpenFiles([]);
@@ -2122,34 +2216,23 @@ export function App() {
     setTreeFiles({});
     setTerminalTabs([]); // the shells ran in the previous conversation's cwd
     setReviewOpen(false); // the diff reviewed the previous conversation's cwd
-    if (fresh) {
-      for (const id of browserTabsRef.current) void window.unbiased.closeBrowser(id);
-      setBrowserTabs([]);
-      blankBrowserTabsRef.current.clear();
-      setAgentMirrorOpen(false);
-      setBrowserTitles({});
-      // Matching closeSideChat: the engine drops each ephemeral pane, so the
-      // fork of the previous conversation doesn't linger under the cap.
-      for (const id of sideChatsRef.current) {
-        sideChatIdleRef.current.close(id);
-        void window.unbiased.resetSideChat(id);
-      }
-      setSideChats([]);
-      setPanelMode("launcher");
-      setSideOpenPersisted(false);
-      return;
+    for (const id of browserTabsRef.current) void window.unbiased.closeBrowser(id);
+    browserTabsRef.current = [];
+    setBrowserTabs([]);
+    blankBrowserTabsRef.current.clear();
+    setAgentMirrorOpen(false);
+    setBrowserStates({});
+    lastRecordedBrowserUrl.current.clear();
+    // Matching closeSideChat: the engine drops each ephemeral pane, so the
+    // fork of the previous conversation doesn't linger under the cap.
+    for (const id of sideChatsRef.current) {
+      sideChatIdleRef.current.close(id);
+      void window.unbiased.resetSideChat(id);
     }
-    // The browser isn't cwd-bound — the page you're reading survives.
-    const browsers = browserTabsRef.current;
-    const chats = sideChatsRef.current;
-    setPanelMode(
-      browsers.length > 0
-        ? `browser:${browsers[browsers.length - 1]}`
-        : chats.length > 0
-          ? chats[chats.length - 1]
-          : "launcher",
-    );
-    if (chats.length === 0 && browsers.length === 0) setSideOpenPersisted(false);
+    sideChatsRef.current = [];
+    setSideChats([]);
+    setPanelMode("launcher");
+    setSideOpenPersisted(false);
   }
 
   // Switching away from a running conversation is fine — its turn keeps
@@ -2167,7 +2250,7 @@ export function App() {
     setActiveThreadId(null);
     setMainStarted(false);
     setMainReset((r) => ({ entries: [], nonce: r.nonce + 1 }));
-    resetSideView(true);
+    resetSideView();
   }
 
   async function openProjectDialog() {
@@ -2182,7 +2265,7 @@ export function App() {
     setActiveThreadId(null);
     setMainStarted(false);
     setMainReset((r) => ({ entries: [], nonce: r.nonce + 1 }));
-    resetSideView(true);
+    resetSideView();
     void refreshThreads(); // the project shows in the sidebar immediately
   }
 
@@ -2199,6 +2282,16 @@ export function App() {
       }),
     [],
   );
+  useEffect(
+    () =>
+      window.unbiased.onPetNoticeOpenThread(({ threadId }) => {
+        setShowSettings(false);
+        setShowChangelog(false);
+        setNavPeekOpen(false);
+        void openThread(threadId);
+      }),
+    [],
+  );
 
   async function openThread(id: string, record = true) {
     // Leaving a full-page view is the same gesture as switching chats —
@@ -2207,6 +2300,7 @@ export function App() {
     setScheduledOpen(false);
     setConnectorsOpen(false);
     if (id === activeThreadId) {
+      setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
       if (record) visit({ kind: "thread", id });
       return;
     }
@@ -2302,6 +2396,7 @@ export function App() {
       entries = retitle(entries);
     }
     if (record) visit({ kind: "thread", id });
+    setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
     setActiveProject(null);
     setActiveThreadId(id);
     setMainStarted(entries.length > 0);
@@ -2310,7 +2405,8 @@ export function App() {
       nonce: r.nonce + 1,
       resume: res.running ? { running: true, approvals: res.approvals, userInputs: res.userInputs ?? [] } : null,
     }));
-    if (!restoreSideView(id)) resetSideView();
+    resetSideView();
+    restoreSideView(id);
     // The engine may still be running spawns for this thread — pick up the
     // roster the live pushes accumulated while it was backgrounded.
     fileExistsCache.clear(); // chip probes resolve against the new thread's cwd
@@ -2344,12 +2440,14 @@ export function App() {
   async function deleteThread(id: string) {
     sidePanelSnapshots.current.delete(id);
     await window.unbiased.deleteThread(id);
+    setPinnedThreads((current) => current.filter((t) => t.id !== id));
+    setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
     mainDraftsRef.current?.deleteThread(id);
     if (id === activeThreadId) {
       setActiveThreadId(null);
       setMainStarted(false);
       setMainReset((r) => ({ entries: [], nonce: r.nonce + 1 }));
-      resetSideView(true);
+      resetSideView();
     }
     void refreshThreads();
   }
@@ -2390,8 +2488,8 @@ export function App() {
     setSideOpenPersisted(true);
   }
 
-  // "launcher" = the panel is open with nothing selected yet — it shows
-  // big rows asking which surface to open (Codex's empty side panel).
+  // "launcher" is the fallback for an empty panel; opening the panel with no
+  // tabs creates a Browser tab and shows its start page instead.
   // Static keys ("chat", "review", "browser", "launcher") name singleton
   // surfaces; dynamic keys ("agent:<threadId>", "terminal:<id>",
   // "files:<id>", "file:<id>") name multi-instance tabs.
@@ -2442,12 +2540,27 @@ export function App() {
   const blankBrowserTabsRef = useRef(new Set<number>());
   const sideChatsRef = useRef(sideChats);
   sideChatsRef.current = sideChats;
-  // Live page titles per browser tab (for the strip labels).
-  const [browserTitles, setBrowserTitles] = useState<Record<number, string>>({});
+  const [browserStates, setBrowserStates] = useState<Record<number, BrowserState>>({});
+  const [browserVisits, setBrowserVisits] = useState<BrowserVisit[]>(() => parseBrowserVisits(localStorage.getItem("browserVisitsV1")));
+  const lastRecordedBrowserUrl = useRef(new Map<number, string>());
+  useEffect(() => {
+    localStorage.setItem("browserVisitsV1", JSON.stringify(browserVisits));
+  }, [browserVisits]);
   useEffect(
     () =>
       window.unbiased.onBrowserState((st) => {
-        setBrowserTitles((m) => (m[st.id] === st.title ? m : { ...m, [st.id]: st.title }));
+        setBrowserStates((states) => ({ ...states, [st.id]: st }));
+        const url = browserHistoryUrl(st.url);
+        if (!url) {
+          lastRecordedBrowserUrl.current.delete(st.id);
+          return;
+        }
+        if (lastRecordedBrowserUrl.current.get(st.id) !== url) {
+          lastRecordedBrowserUrl.current.set(st.id, url);
+          setBrowserVisits((visits) => recordBrowserVisit(visits, url, st.title, Date.now()));
+        } else if (st.title) {
+          setBrowserVisits((visits) => updateBrowserVisitTitle(visits, url, st.title));
+        }
       }),
     [],
   );
@@ -2529,38 +2642,9 @@ export function App() {
   // Rendered preview for files that have one (markdown, SVG). Raw code is
   // the default; the header button flips per file and resets on switch.
   const [previewOn, setPreviewOn] = useState(false);
-  // The side panel header's + menu (Review / Terminal / Files / Side chat).
-  const [sidePlusOpen, setSidePlusOpen] = useState(false);
-  const [sidePlusOpensLeft, setSidePlusOpensLeft] = useState(false);
-  const [browserPreview, setBrowserPreview] = useState<{ id: number; image: string } | null>(null);
-  const sidePlusRef = useRef<HTMLSpanElement>(null);
   const sideTabStripRef = useRef<HTMLDivElement>(null);
-
-  async function toggleSidePlusMenu() {
-    if (sidePlusOpen) {
-      setSidePlusOpen(false);
-      return;
-    }
-    const id = panelMode.startsWith("browser:") ? Number(panelMode.slice(8)) : null;
-    let image: string | null = null;
-    if (id !== null && browserTabs.includes(id)) {
-      try {
-        image = await window.unbiased.captureBrowser(id);
-      } catch {
-        // The menu remains usable if a page cannot be captured.
-      }
-    }
-    setBrowserPreview(image && id !== null ? { id, image } : null);
-    const anchorLeft = sidePlusRef.current?.getBoundingClientRect().left ?? 0;
-    setSidePlusOpensLeft(anchorLeft + 224 + 8 > window.innerWidth);
-    setSidePlusOpen(true);
-  }
-
-  useEffect(() => {
-    if (sidePlusOpen || !browserPreview) return;
-    const timer = window.setTimeout(() => setBrowserPreview(null), 200);
-    return () => window.clearTimeout(timer);
-  }, [sidePlusOpen, browserPreview]);
+  const [sideHeaderHost, setSideHeaderHost] = useState<HTMLDivElement | null>(null);
+  const [sideHeaderWidth, setSideHeaderWidth] = useState(0);
 
   useEffect(() => {
     if (!sideOpen) return;
@@ -2576,23 +2660,8 @@ export function App() {
     };
     strip.addEventListener("wheel", onWheel, { passive: false });
     return () => strip.removeEventListener("wheel", onWheel);
-  }, [sideOpen]);
+  }, [sideOpen, sideHeaderHost]);
 
-  useEffect(() => {
-    if (!sidePlusOpen) return;
-    function onDown(e: MouseEvent) {
-      if (!sidePlusRef.current?.contains(e.target as Node)) setSidePlusOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setSidePlusOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [sidePlusOpen]);
 
   // Environment popover (header): Codex-style summary of the active
   // conversation's checkout — changes, worktree, branch, ship actions.
@@ -2685,12 +2754,14 @@ export function App() {
   }
 
   // The browser is a native layer floating over the panel — it must hide
-  // whenever its spot isn't showing: other tab active, panel closed, the
-  // side-panel + menu dropping over it, or Settings replacing the whole UI.
+  // whenever its spot isn't showing: other tab active, panel closed, or
+  // Settings replacing the whole UI.
   // The Environment menu lives in the main pane and does not cover it.
+  const selectedBrowserId = panelMode.startsWith("browser:") ? Number(panelMode.slice(8)) : null;
+  const selectedBrowserUrl = selectedBrowserId !== null ? browserStates[selectedBrowserId]?.url : null;
+  const selectedBrowserHasPage = !!selectedBrowserUrl && selectedBrowserUrl !== "about:blank";
   useLayoutEffect(() => {
     const clear =
-      !sidePlusOpen &&
       !showSettings &&
       !showChangelog &&
       !confirmDialog &&
@@ -2704,8 +2775,8 @@ export function App() {
       // hiding itself with display:none would leave the page floating over
       // Scheduled or Connectors. It has to be told.
       !pageOpen;
-    const activeId = sideOpen && clear && panelMode.startsWith("browser:")
-      ? Number(panelMode.slice(8))
+    const activeId = sideOpen && clear && selectedBrowserHasPage
+      ? selectedBrowserId
       : null;
     let cancelled = false;
     const sync = async () => {
@@ -2725,10 +2796,9 @@ export function App() {
     };
     void sync();
     return () => { cancelled = true; };
-  }, [browserTabs, sideOpen, panelMode, sidePlusOpen, showSettings, showChangelog, confirmDialog, fullAccessPrompt, branchSwitch, branchCreate, renameDialog, moveDialog, editProj, pageOpen]);
+  }, [browserTabs, selectedBrowserId, selectedBrowserHasPage, sideOpen, showSettings, showChangelog, confirmDialog, fullAccessPrompt, branchSwitch, branchCreate, renameDialog, moveDialog, editProj, pageOpen]);
 
   function openSideChatTab() {
-    setSidePlusOpen(false);
     if (sideChats.length >= MAX_TABS_PER_KIND) {
       sideChatIdleRef.current.use(sideChats[sideChats.length - 1]);
       setPanelMode(sideChats[sideChats.length - 1]);
@@ -2755,7 +2825,6 @@ export function App() {
   }
 
   function openBrowserTab() {
-    setSidePlusOpen(false);
     if (!createBrowserTab() && browserTabsRef.current.length > 0) {
       setPanelMode(`browser:${browserTabsRef.current[browserTabsRef.current.length - 1]}`);
       setSideOpenPersisted(true);
@@ -2778,8 +2847,9 @@ export function App() {
 
   function closeBrowserTab(id: number) {
     blankBrowserTabsRef.current.delete(id);
+    lastRecordedBrowserUrl.current.delete(id);
     setBrowserTabs((ts) => ts.filter((x) => x !== id));
-    setBrowserTitles((m) => {
+    setBrowserStates((m) => {
       const rest = { ...m };
       delete rest[id];
       return rest;
@@ -2789,7 +2859,6 @@ export function App() {
   }
 
   function openFilesTab() {
-    setSidePlusOpen(false);
     // At the cap, tabs holding LIVE state refuse (a terminal's PTY, a
     // browser's page, a side chat's conversation would all be destroyed);
     // tabs that are just views evict the oldest, like an editor. A file tree
@@ -2803,19 +2872,21 @@ export function App() {
     setSideOpenPersisted(true);
   }
 
-  // The header's panel toggle: open to whatever the panel last showed, or
-  // the launcher when there's nothing yet.
+  // The header's panel toggle returns to the last tab, or starts a Browser tab.
   function toggleSidePanel() {
     if (sideOpen) {
       setSideOpenPersisted(false);
       return;
     }
+    if (tabOrder.length === 0) {
+      openBrowserTab();
+      return;
+    }
+    setPanelMode(tabOrder[tabOrder.length - 1]);
     setSideOpenPersisted(true);
-    setPanelMode(tabOrder.length > 0 ? tabOrder[tabOrder.length - 1] : "launcher");
   }
 
   function openReviewTab() {
-    setSidePlusOpen(false);
     setReviewOpen(true);
     setPanelMode("review");
     setSideOpenPersisted(true);
@@ -2828,7 +2899,6 @@ export function App() {
   // Closing a terminal tab KILLS its shell (unmount disposes the PTY) —
   // unlike the side chat, a dead terminal has no transcript worth keeping.
   function openAgentMirrorTab() {
-    setSidePlusOpen(false);
     setAgentMirrorOpen(true);
     setPanelMode("agentmirror");
     setSideOpenPersisted(true);
@@ -2839,7 +2909,6 @@ export function App() {
   openAgentMirrorRef.current = openAgentMirrorTab;
   closeAgentMirrorRef.current = () => setAgentMirrorOpen(false);
   function openTerminalTab() {
-    setSidePlusOpen(false);
     if (terminalTabs.length >= MAX_TABS_PER_KIND) {
       setPanelMode(`terminal:${terminalTabs[terminalTabs.length - 1]}`);
       setSideOpenPersisted(true);
@@ -2849,6 +2918,20 @@ export function App() {
     setTerminalTabs((ts) => [...ts, id]);
     setPanelMode(`terminal:${id}`);
     setSideOpenPersisted(true);
+  }
+
+  function openToolFromBrowserStart(browserId: number, kind: "terminal" | "side") {
+    const atCap = kind === "terminal" ? terminalTabs.length >= MAX_TABS_PER_KIND : sideChats.length >= MAX_TABS_PER_KIND;
+    const browserKey = `browser:${browserId}`;
+    const url = browserStates[browserId]?.url;
+    if (!atCap && panelMode === browserKey && browserTabsRef.current.includes(browserId) && (!url || url === "about:blank")) {
+      const nextKey = kind === "terminal" ? `terminal:${tabIdRef.current}` : `side:${tabIdRef.current}`;
+      const position = tabSeqRef.current.get(browserKey);
+      if (position !== undefined) tabSeqRef.current.set(nextKey, position);
+      closeBrowserTab(browserId);
+    }
+    if (kind === "terminal") openTerminalTab();
+    else openSideChatTab();
   }
 
   // Selection → side chat: lands on the focused side-chat tab, else the
@@ -2975,6 +3058,78 @@ export function App() {
   // is never missing from the nav between pressing Enter and the engine
   // deciding it exists. A stand-in disappears the moment the real row lands.
   const sidebarView = useMemo(() => mergePendingThreads(sidebar, pendingThreads), [sidebar, pendingThreads]);
+  const pinnedThreadIds = useMemo(() => new Set(pinnedThreads.map((t) => t.id)), [pinnedThreads]);
+  const pinnedSidebarThreads = useMemo(() => {
+    const listed = new Map<string, { thread: ThreadSummary; inProject: boolean }>();
+    for (const project of sidebarView.projects) {
+      for (const thread of project.threads) listed.set(thread.id, { thread, inProject: true });
+    }
+    for (const thread of sidebarView.recents) listed.set(thread.id, { thread, inProject: false });
+    return pinnedThreads.map((saved) => listed.get(saved.id) ?? {
+      thread: { id: saved.id, title: saved.title },
+      inProject: saved.inProject,
+    });
+  }, [sidebarView, pinnedThreads]);
+  const recentGroups = groupRecentThreads(sidebarView.recents.filter((thread) => !pinnedThreadIds.has(thread.id)));
+  const sidebarSearchTerm = sidebarSearchQuery.trim().toLocaleLowerCase();
+  const projectNameByThread = new Map(sidebarView.projects.flatMap((project) => project.threads.map((thread) => [thread.id, project.name] as const)));
+  const sidebarSearchProjects = sidebarSearchTerm
+    ? sidebarView.projects.filter((project) => `${project.name} ${project.path}`.toLocaleLowerCase().includes(sidebarSearchTerm))
+    : [];
+  useEffect(() => {
+    if (!sidebarSearchOpen || sidebarSearchTerm.length < 2) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const threads = [
+        ...sidebarView.recents,
+        ...sidebarView.projects.flatMap((project) => project.threads),
+        ...(activeThreadId ? [{ id: activeThreadId, title: "" }] : []),
+      ];
+      const batches = Array.from({ length: Math.max(1, Math.ceil(threads.length / 12)) }, (_, index) => threads.slice(index * 12, (index + 1) * 12));
+      void (async () => {
+        const results: { id: string; snippet: string; title?: string }[] = [];
+        let failed = 0;
+        for (const [index, batch] of batches.entries()) {
+          if (cancelled) return;
+          try {
+            const response = await window.unbiased.searchThreads(sidebarSearchTerm, batch, index === 0);
+            results.push(...response.results);
+            failed += response.failed;
+          } catch {
+            failed += batch.length;
+          }
+          if (cancelled) return;
+          setContentSearch({ query: sidebarSearchTerm, results: [...results], failed, complete: index === batches.length - 1 });
+        }
+      })();
+    }, 180);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [sidebarSearchOpen, sidebarSearchTerm, sidebarView, activeThreadId]);
+  const contentMatches = contentSearch.query === sidebarSearchTerm
+    ? new Map(contentSearch.results.map((result) => [result.id, result.snippet] as const))
+    : new Map<string, string>();
+  const seenSearchThreads = new Set<string>();
+  const sidebarSearchThreads = [
+        ...pinnedSidebarThreads.map(({ thread, inProject }) => ({ thread, inProject })),
+        ...sidebarView.recents.map((thread) => ({ thread, inProject: false })),
+        ...sidebarView.projects.flatMap((project) => project.threads.map((thread) => ({ thread, inProject: true }))),
+      ].filter(({ thread }) => {
+        if (seenSearchThreads.has(thread.id)) return false;
+        seenSearchThreads.add(thread.id);
+        return !sidebarSearchTerm || contentMatches.has(thread.id) || `${thread.title} ${projectNameByThread.get(thread.id) ?? ""}`.toLocaleLowerCase().includes(sidebarSearchTerm);
+      }).slice(0, sidebarSearchTerm ? 30 : 9)
+        .map(({ thread, inProject }) => ({ thread, inProject, snippet: contentMatches.get(thread.id) }));
+  if (sidebarSearchTerm && contentSearch.query === sidebarSearchTerm) {
+    for (const result of contentSearch.results) {
+      if (sidebarSearchThreads.length >= 30) break;
+      if (seenSearchThreads.has(result.id)) continue;
+      sidebarSearchThreads.push({
+        thread: { id: result.id, title: result.title ?? "Conversation" },
+        inProject: false,
+        snippet: result.snippet,
+      });
+    }
+  }
 
   // Files (workspace tree) only makes sense inside a project — a plain
   // Recents chat lives in the home directory.
@@ -3002,8 +3157,19 @@ export function App() {
    *  all (the mirror is already wired to the running task's thread). */
   const sideVisible = sideOpen && (!pageOpen || panelMode === "agentmirror");
   const sidebarWidth = NAV_RAIL_WIDTH + (navOpen ? navWidth : 0);
-  const sideOverlay = sideVisible && windowWidth < sidebarWidth + 320 + 300 + 8;
+  const sideOverlayLayout = windowWidth < sidebarWidth + 320 + 300 + 8;
+  const sideOverlay = sideVisible && sideOverlayLayout;
   const sideOverlayWidth = Math.min(420, Math.max(300, (windowWidth - sidebarWidth) * 0.65));
+  const navHomePeek = !navOpen && navPeekOpen && navPeekSection === "home";
+  useLayoutEffect(() => {
+    const panel = sidePanelRef.current;
+    if (!panel) return;
+    const measure = () => setSideHeaderWidth(Math.round(panel.getBoundingClientRect().width));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [authed]);
   const typingPaneRef = useRef<PaneId>("main");
   useEffect(() => {
     typingPaneRef.current = sideVisible && sideChats.includes(panelMode) ? panelMode : "main";
@@ -3011,7 +3177,7 @@ export function App() {
   const composerTypingAvailable = !pageOpen && !showSettings && !showChangelog &&
     !mcpOpen && !connectorsPanelOpen && !skillsOpen && !confirmDialog &&
     !fullAccessPrompt && !branchSwitch && !branchCreate && !renameDialog &&
-    !moveDialog && !editProj && !envOpen && !sidePlusOpen && !workMenuOpen && !branchMenu;
+    !moveDialog && !editProj && !envOpen && !workMenuOpen && !branchMenu;
   const focusMainComposer = () =>
     requestAnimationFrame(() => document.querySelector<HTMLElement>('[contenteditable="true"][data-pane-id="main"]')?.focus());
   const appCommandRef = useRef<(command: string) => void>(() => {});
@@ -3141,10 +3307,25 @@ export function App() {
           }}
         >
           <SettingsView
+            initialTab={settingsTab}
             releases={releases}
             theme={theme}
             onChange={applyTheme}
             onBack={() => setShowSettings(false)}
+            onOpenProject={() => { setShowSettings(false); void openProjectDialog(); }}
+            onOpenConnectors={() => { setShowSettings(false); showConnectorsPage(); }}
+            onOpenScheduled={() => { setShowSettings(false); showScheduledPage(); }}
+            onOpenWhatsNew={() => {
+              setShowSettings(false);
+              localStorage.setItem("changelogSeen", releases[0]?.version ?? "");
+              setChangelogUnread(false);
+              setShowChangelog(true);
+            }}
+            onUpdate={() => void (updateStaged ? window.unbiased.applyUpdate() : window.unbiased.downloadUpdate())}
+            updateAvailable={!!update}
+            updateStaged={updateStaged}
+            changelogUnread={changelogUnread}
+            missedCount={missedCount}
             onSignOut={signOut}
           />
         </div>
@@ -3180,7 +3361,7 @@ export function App() {
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
-          padding: windowWidth < 480 ? "0 10px" : "0 20px 0 10px",
+          padding: "0 4px 0 10px",
           background: "var(--nav-bg)",
           zIndex: 32,
         }}
@@ -3202,20 +3383,28 @@ export function App() {
         )}
         </div>
         <span aria-hidden="true" style={{ width: 1, height: 22, background: colors.border }} />
-        {!pageOpen && (
-          <span
-            title={mainTitle}
-            style={{ marginLeft: windowWidth < 480 ? 10 : 16, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, fontWeight: 500 }}
-          >
-            {mainTitle}
-          </span>
+        <span
+          title={scheduledOpen ? "Scheduled" : connectorsOpen ? "Connectors" : mainTitle}
+          style={{ marginLeft: windowWidth < 480 ? 10 : 16, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, fontWeight: 500 }}
+        >
+          {scheduledOpen ? "Scheduled" : connectorsOpen ? "Connectors" : mainTitle}
+        </span>
+        <span style={{ flex: 1, minWidth: 0 }} />
+        <span ref={setToolbarActionsEl} style={{ display: "flex", flexShrink: 0, marginRight: sideVisible ? 8 : 0 }} />
+        {sideVisible && (
+          <div style={{ width: (sideHeaderWidth || (sideOverlay ? sideOverlayWidth : Math.max(300, (windowWidth - sidebarWidth - 12) * sideFrac))) + 4, boxSizing: "border-box", flexShrink: 1, minWidth: 0, display: "flex", alignItems: "center", borderLeft: `1px solid ${colors.border}`, marginLeft: 4, paddingLeft: 6 }}>
+            <div ref={setSideHeaderHost} style={{ display: "flex", alignItems: "center", flex: 1, minWidth: 0 }} />
+            <div style={{ marginRight: 12, flexShrink: 0 }}>
+              <IconButton title="Close side panel" onClick={toggleSidePanel}><SideChatIcon size={16} /></IconButton>
+            </div>
+          </div>
         )}
-        <span style={{ flex: 1 }} />
-        <span ref={setToolbarActionsEl} style={{ display: "flex", flexShrink: 0 }} />
-        {(!pageOpen || sideVisible) && (
-          <IconButton title={sideOpen ? "Close side panel" : "Open side panel"} onClick={toggleSidePanel}>
-            <SideChatIcon />
-          </IconButton>
+        {!sideVisible && !pageOpen && (
+          <span style={{ display: "flex", flexShrink: 0, marginLeft: 16, marginRight: 12 }}>
+            <IconButton title={sideOpen ? "Close side panel" : "Open side panel"} onClick={toggleSidePanel}>
+              <SideChatIcon size={16} />
+            </IconButton>
+          </span>
         )}
       </header>
       <div style={{ display: "flex", flex: 1, minHeight: 0, position: "relative", background: "var(--nav-bg)", padding: "0 4px 4px 0" }}>
@@ -3225,7 +3414,7 @@ export function App() {
         style={{ width: NAV_RAIL_WIDTH, boxSizing: "border-box", flexShrink: 0, display: "flex", flexDirection: "column", position: "relative", zIndex: 31 }}
       >
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "15px 2px 12px" }}>
-          <SidebarRailButton label="Home" active={!pageOpen} onClick={() => showNavPeek("home")} {...railPeekHandlers("home")}>
+          <SidebarRailButton label="Home" active={!pageOpen} onClick={showHome} {...railPeekHandlers("home")}>
             <Home size={18} />
           </SidebarRailButton>
           <SidebarRailButton label="Open project" onClick={() => { setNavPeekOpen(false); void openProjectDialog(); }} {...railPeekHandlers("projects")}>
@@ -3245,7 +3434,7 @@ export function App() {
               onClick={() => { setNavPeekOpen(false); void (updateStaged ? window.unbiased.applyUpdate() : window.unbiased.downloadUpdate()); }}
               {...railPeekHandlers("updates")}
             >
-              <DownloadIcon />
+              <DownloadIcon size={18} />
             </SidebarRailButton>
           )}
           <SidebarRailButton
@@ -3261,88 +3450,87 @@ export function App() {
           >
             <BellIcon />
           </SidebarRailButton>
-          <SidebarRailButton label="Settings" onClick={() => { setNavPeekOpen(false); setShowSettings(true); }} {...railPeekHandlers("settings")}>
+          <SidebarRailButton label="Settings" onClick={() => { setNavPeekOpen(false); setSettingsTab("appearance"); setShowSettings(true); }} {...railPeekHandlers("settings")}>
             <GearIcon />
           </SidebarRailButton>
         </div>
       </nav>
-      {(navOpen || (navPeekOpen && navPeekSection === "home")) && (
       <nav
-        className="u-sidebar"
-        aria-label={navOpen ? "Sidebar" : "Sidebar preview"}
+        className="u-sidebar u-nav-panel"
+        data-mode={navOpen ? "open" : navHomePeek ? "preview" : "closed"}
+        aria-label={navHomePeek ? "Sidebar preview" : "Sidebar"}
+        aria-hidden={!navOpen && !navHomePeek}
+        inert={!navOpen && !navHomePeek}
         onMouseEnter={() => showNavPeek("home")}
         onMouseLeave={hideNavPeekSoon}
         onFocusCapture={() => showNavPeek("home")}
         onBlurCapture={hideNavPeekSoon}
         style={{
-          width: navOpen ? navWidth : Math.min(navWidth, Math.max(0, windowWidth - NAV_RAIL_WIDTH - 8)),
+          width: navOpen ? navWidth : navHomePeek ? Math.min(navWidth, Math.max(0, windowWidth - NAV_RAIL_WIDTH - 8)) : 0,
           flexShrink: 0,
           display: "flex",
           flexDirection: "column",
-          position: navOpen ? "relative" : "fixed",
-          left: navOpen ? undefined : NAV_RAIL_WIDTH,
-          top: navOpen ? undefined : NAV_BAR_SIZE + 8,
-          bottom: navOpen ? undefined : 8,
-          zIndex: navOpen ? 2 : 30,
-          borderRadius: navOpen ? 0 : 12,
-          border: navOpen ? undefined : "1px solid color-mix(in srgb, var(--fg) 12%, transparent)",
-          boxShadow: navOpen ? undefined : "0 20px 50px rgba(0, 0, 0, 0.35)",
+          fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif',
+          position: navHomePeek ? "fixed" : "relative",
+          left: navHomePeek ? NAV_RAIL_WIDTH : undefined,
+          top: navHomePeek ? NAV_BAR_SIZE + 8 : undefined,
+          bottom: navHomePeek ? 8 : undefined,
+          zIndex: navHomePeek ? 30 : 2,
+          borderRadius: navHomePeek ? 12 : 0,
+          border: navHomePeek ? "1px solid color-mix(in srgb, var(--fg) 12%, transparent)" : undefined,
+          boxShadow: navHomePeek ? "0 20px 50px rgba(0, 0, 0, 0.35)" : undefined,
         }}
       >
-        <div style={{ padding: "16px 14px 0" }}>
-          <div style={{ display: "flex", alignItems: "center", padding: "2px 2px", height: 40 }}>
-            <Wordmark height={15} />
+        <div style={{ flexShrink: 0, padding: "16px 14px 0" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "2px 2px", height: 32 }}>
+            <Wordmark height={16} />
+            <button
+              type="button"
+              title="Search (⌘K)"
+              aria-label="Search conversations and projects"
+              aria-expanded={sidebarSearchOpen}
+              aria-controls={sidebarSearchOpen ? "chat-search-dialog" : undefined}
+              className="u-sidebar-icon-button"
+              onClick={() => { setSidebarSearchQuery(""); setSidebarSearchOpen(true); }}
+              style={{ display: "grid", placeItems: "center", width: 30, height: 30, flexShrink: 0, background: sidebarSearchOpen ? "var(--panel-2)" : "transparent", border: 0, borderRadius: 8, color: colors.dim, cursor: "pointer" }}
+            >
+              <Search size={17} />
+            </button>
           </div>
         </div>
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-          <div style={{ padding: "15px 14px 8px" }}>
-          <SidebarAction onClick={() => void newChat()} disabled={false} icon={<NewChatIcon size={18} />}>
+        <div style={{ flexShrink: 0, padding: "8px 8px 8px" }}>
+          <SidebarAction onClick={() => { setSidebarSearchOpen(false); setSidebarSearchQuery(""); void newChat(); }} disabled={false} icon={<NewChatIcon size={16} />}>
             New chat
           </SidebarAction>
-          <SidebarAction onClick={() => void openProjectDialog()} disabled={false} icon={<FolderPlusIcon />}>
-            Open project…
-          </SidebarAction>
-          <SidebarAction
-            onClick={() => showConnectorsPage()}
-            disabled={false}
-            active={connectorsOpen}
-            icon={<PlugIcon />}
-          >
-            Connectors
-          </SidebarAction>
-          <SidebarAction
-            onClick={() => showScheduledPage()}
-            disabled={false}
-            active={scheduledOpen}
-            icon={<ClockIcon />}
-          >
-            <span style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
-              Scheduled
-              {missedCount > 0 && (
-                <span
-                  title={`${missedCount} scheduled ${missedCount === 1 ? "task" : "tasks"} came due while Unbiased was closed`}
-                  style={{
-                    background: colors.amber,
-                    color: "#1b1b1b",
-                    borderRadius: 999,
-                    fontSize: 11,
-                    fontWeight: 600,
-                    padding: "1px 6px",
-                    lineHeight: 1.5,
-                  }}
-                >
-                  {missedCount}
-                </span>
-              )}
-            </span>
-          </SidebarAction>
         </div>
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         <div style={{ padding: "2px 8px 16px" }}>
-          {sidebarView.projects.length === 0 && sidebarView.recents.length === 0 && (
-            <div style={{ color: colors.dim, fontSize: 12, padding: "8px 8px" }}>No conversations yet</div>
+          <SectionLabel collapsed={pinnedCollapsed} onToggle={togglePinnedSection}>
+            Pinned
+          </SectionLabel>
+          {!pinnedCollapsed && pinnedSidebarThreads.length > 0 && (
+            <div className="u-sidebar-thread-list">
+              {pinnedSidebarThreads.map(({ thread, inProject }) => (
+                <ThreadRow
+                  key={thread.id}
+                  thread={thread}
+                  active={!pageOpen && thread.id === activeThreadId}
+                  hovered={hoveredThreadId === thread.id}
+                  running={runningThreads.has(thread.id)}
+                  unread={unreadCompletedThreads.has(thread.id)}
+                  pinned
+                  indent
+                  onHover={setHoveredThreadId}
+                  onOpen={openThread}
+                  onTogglePin={() => toggleThreadPin(thread, inProject)}
+                  menuOpen={threadMenu?.id === thread.id}
+                  onMenu={(x, y) => setThreadMenu((cur) => (cur?.id === thread.id ? null : { id: thread.id, title: thread.title, inProject, x, y }))}
+                />
+              ))}
+            </div>
           )}
 
-          <div style={{ display: "flex", alignItems: "stretch" }}>
+          <div className="u-sidebar-section-heading" style={{ display: "flex", alignItems: "stretch" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <SectionLabel collapsed={projectsCollapsed} onToggle={toggleProjectsSection}>
                 Projects
@@ -3364,7 +3552,7 @@ export function App() {
               }
               title="Create project"
               aria-label="Create project"
-              className="u-sidebar-icon-button u-projects-add"
+              className="u-sidebar-icon-button u-sidebar-heading-add"
               style={{
                 background: "transparent",
                 border: "none",
@@ -3419,8 +3607,6 @@ export function App() {
                   // you were in before it.
                   borderRadius: 9,
                   padding: "8px 8px 6px",
-                  // A project heads the chats nested under it, so it keeps its
-                  // original 14.5 and takes the weight; the chats stay at 14.
                   fontSize: 14.5,
                   fontWeight: 500,
                   letterSpacing: "var(--track-body)",
@@ -3607,42 +3793,80 @@ export function App() {
                   </span>
                 )}
               </div>
-              {!collapsedProjects.has(p.path) && p.threads.map((t) => (
-                <ThreadRow
-                  key={t.id}
-                  thread={t}
-                  active={!pageOpen && t.id === activeThreadId}
-                  hovered={hoveredThreadId === t.id}
-                  running={runningThreads.has(t.id)}
-                  indent
-                  onHover={setHoveredThreadId}
-                  onOpen={openThread}
-                  menuOpen={threadMenu?.id === t.id}
-                  onMenu={(x, y) => setThreadMenu((cur) => (cur?.id === t.id ? null : { id: t.id, title: t.title, inProject: true, x, y }))}
-                />
-              ))}
+              {!collapsedProjects.has(p.path) && p.threads.some((t) => !pinnedThreadIds.has(t.id)) && (
+                <div className="u-sidebar-thread-list">
+                  {p.threads.filter((t) => !pinnedThreadIds.has(t.id)).map((t) => (
+                    <ThreadRow
+                      key={t.id}
+                      thread={t}
+                      active={!pageOpen && t.id === activeThreadId}
+                      hovered={hoveredThreadId === t.id}
+                      running={runningThreads.has(t.id)}
+                      unread={unreadCompletedThreads.has(t.id)}
+                      indent
+                      onHover={setHoveredThreadId}
+                      onOpen={openThread}
+                      onTogglePin={() => toggleThreadPin(t, true)}
+                      menuOpen={threadMenu?.id === t.id}
+                      onMenu={(x, y) => setThreadMenu((cur) => (cur?.id === t.id ? null : { id: t.id, title: t.title, inProject: true, x, y }))}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           ))}
 
-          {sidebarView.recents.length > 0 && (
-            <SectionLabel collapsed={recentsCollapsed} onToggle={toggleRecentsSection}>
-              Recents
-            </SectionLabel>
-          )}
-          {!recentsCollapsed &&
-          sidebarView.recents.map((t) => (
-            <ThreadRow
-              key={t.id}
-              thread={t}
-              active={!pageOpen && t.id === activeThreadId}
-              hovered={hoveredThreadId === t.id}
-              running={runningThreads.has(t.id)}
-              onHover={setHoveredThreadId}
-              onOpen={openThread}
-              menuOpen={threadMenu?.id === t.id}
-              onMenu={(x, y) => setThreadMenu((cur) => (cur?.id === t.id ? null : { id: t.id, title: t.title, inProject: false, x, y }))}
-            />
+          <div className="u-sidebar-section-heading" style={{ display: "flex", alignItems: "stretch" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <SectionLabel collapsed={recentsCollapsed} onToggle={toggleRecentsSection}>
+                Recents
+              </SectionLabel>
+            </div>
+            <button
+              onClick={() => void newChat()}
+              title="New chat"
+              aria-label="New chat"
+              className="u-sidebar-icon-button u-recents-add"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: colors.dim,
+                cursor: "pointer",
+                padding: "19px 8px 7px",
+                display: "flex",
+                alignItems: "center",
+                flexShrink: 0,
+              }}
+            >
+              <Plus size={16} strokeWidth={1.8} />
+            </button>
+          </div>
+          {!recentsCollapsed && recentGroups.map(({ label, threads }) => (
+            <div key={label} className="u-sidebar-recent-group">
+              <div className="u-sidebar-recent-label">{label}</div>
+              <div className="u-sidebar-thread-list">
+                {threads.map((t) => (
+                  <ThreadRow
+                    key={t.id}
+                    thread={t}
+                    active={!pageOpen && t.id === activeThreadId}
+                    hovered={hoveredThreadId === t.id}
+                    running={runningThreads.has(t.id)}
+                    unread={unreadCompletedThreads.has(t.id)}
+                    indent
+                    onHover={setHoveredThreadId}
+                    onOpen={openThread}
+                    onTogglePin={() => toggleThreadPin(t, false)}
+                    menuOpen={threadMenu?.id === t.id}
+                    onMenu={(x, y) => setThreadMenu((cur) => (cur?.id === t.id ? null : { id: t.id, title: t.title, inProject: false, x, y }))}
+                  />
+                ))}
+              </div>
+            </div>
           ))}
+          {sidebarView.projects.length === 0 && sidebarView.recents.length === 0 && pinnedSidebarThreads.length === 0 && (
+            <div style={{ color: colors.dim, fontSize: 12, padding: "8px 8px" }}>No conversations yet</div>
+          )}
         </div>
         </div>
         {update && (
@@ -3656,53 +3880,44 @@ export function App() {
             }
           />
         )}
-        <div className="u-sidebar-bottom" style={{ padding: "12px 14px 3px", flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <SidebarAction onClick={() => setShowSettings(true)} disabled={false} icon={<GearIcon />}>
-              Settings
-            </SidebarAction>
-          </div>
-          <button
-            onClick={() => {
-              localStorage.setItem("changelogSeen", releases[0]?.version ?? "");
-              setChangelogUnread(false);
-              setShowChangelog(true);
-            }}
-            title="What's new"
-            className="u-sidebar-icon-button"
-            style={{
-              position: "relative",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 32,
-              height: 32,
-              flexShrink: 0,
-              background: "transparent",
-              border: "none",
-              borderRadius: 9,
-              color: "var(--fg-soft)",
-              cursor: "pointer",
-            }}
-          >
-            <BellIcon />
-            {changelogUnread && (
-              <span
-                style={{
-                  position: "absolute",
-                  top: 5,
-                  right: 5,
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  background: colors.accent,
-                  border: `1.5px solid ${colors.bg}`,
-                }}
-              />
-            )}
-          </button>
-        </div>
       </nav>
+      {sidebarSearchOpen && (
+        <ChatSearchDialog
+          query={sidebarSearchQuery}
+          onQueryChange={setSidebarSearchQuery}
+          threads={sidebarSearchThreads.map(({ thread, snippet }) => ({
+            thread,
+            projectName: projectNameByThread.get(thread.id),
+            snippet,
+          }))}
+          projects={sidebarSearchProjects}
+          searching={sidebarSearchTerm.length >= 2 && (contentSearch.query !== sidebarSearchTerm || !contentSearch.complete)}
+          searchFailed={contentSearch.query === sidebarSearchTerm && contentSearch.failed > 0}
+          onClose={() => { setSidebarSearchOpen(false); setSidebarSearchQuery(""); }}
+          onOpenThread={(id) => { setSidebarSearchOpen(false); setSidebarSearchQuery(""); void openThread(id); }}
+          onOpenProject={(project) => {
+            setSidebarSearchOpen(false);
+            setSidebarSearchQuery("");
+            if (!navOpen) {
+              setNavOpen(true);
+              setNavPeekOpen(false);
+              localStorage.setItem("navOpen", "true");
+            }
+            setProjectsCollapsed(false);
+            setCollapsedProjects((current) => {
+              const next = new Set(current);
+              next.delete(project.path);
+              return next;
+            });
+            requestAnimationFrame(() => {
+              [...document.querySelectorAll<HTMLElement>("[data-project-path]")]
+                .find((element) => element.dataset.projectPath === project.path)
+                ?.scrollIntoView({ block: "nearest" });
+            });
+          }}
+          onNewChat={() => { setSidebarSearchOpen(false); setSidebarSearchQuery(""); void newChat(); }}
+          onOpenFolder={() => { setSidebarSearchOpen(false); setSidebarSearchQuery(""); void openProjectDialog(); }}
+        />
       )}
       {!navOpen && navPeekOpen && navPeekSection !== "home" && (
         <nav
@@ -3752,7 +3967,7 @@ export function App() {
               setChangelogUnread(false);
               setShowChangelog(true);
             }}
-            onOpenSettings={() => { setNavPeekOpen(false); setShowSettings(true); }}
+            onOpenSettings={(tab) => { setNavPeekOpen(false); setSettingsTab(tab); setShowSettings(true); }}
           />
         </nav>
       )}
@@ -3760,6 +3975,7 @@ export function App() {
         <div
           onMouseDown={() => {
             navDraggingRef.current = true;
+            document.body.dataset.panelResizing = "true";
             document.body.style.userSelect = "none";
             document.body.style.cursor = "col-resize";
           }}
@@ -3799,6 +4015,7 @@ export function App() {
       )}
 
       <div
+        className="u-main-pane"
         style={{
           // sideVisible, not sideOpen: with a flex-grow of 1 - sideFrac and a
           // zero basis, a column whose panel is hidden claims only its old
@@ -3809,7 +4026,7 @@ export function App() {
           display: "flex",
           flexDirection: "column",
           background: colors.bg,
-          borderRadius: 12,
+          borderRadius: sideVisible && !sideOverlay ? "12px 0 0 12px" : 12,
         }}
       >
         {/* Scheduled tasks lives in the content area, not over it and not
@@ -4583,6 +4800,7 @@ export function App() {
                       id,
                       title: provisionalTitle(firstMessage),
                       projectPath: activeProject?.path ?? null,
+                      createdAt: new Date().toISOString(),
                     },
                   ],
             );
@@ -4598,10 +4816,15 @@ export function App() {
         )}
       </div>
 
-      {sideVisible && !sideOverlay && (
+      {!sideOverlayLayout && (
         <div
+          className="u-side-divider"
+          aria-hidden={!sideVisible}
+          inert={!sideVisible}
           onMouseDown={() => {
+            if (!sideVisible) return;
             draggingRef.current = true;
+            document.body.dataset.panelResizing = "true";
             document.body.style.userSelect = "none";
             document.body.style.cursor = "col-resize";
           }}
@@ -4628,28 +4851,39 @@ export function App() {
           tabIndex={0}
           title="Drag or use arrow keys to resize"
           style={{
-            width: 8,
+            width: sideVisible ? 8 : 0,
             flexShrink: 0,
             cursor: "col-resize",
-            background: "transparent",
-            borderLeft: `1px solid ${colors.border}`,
+            background: colors.bg,
+            position: "relative",
+            opacity: sideVisible ? 1 : 0,
+            overflow: "hidden",
+            pointerEvents: sideVisible ? "auto" : "none",
           }}
-        />
+        >
+          <span aria-hidden="true" style={{ position: "absolute", inset: "0 auto 0 4px", width: 1, background: colors.border, pointerEvents: "none" }} />
+        </div>
       )}
       {/* Always mounted so the side conversation survives hide/show; only
           its visibility toggles. */}
         <div
           ref={sidePanelRef}
+          className="u-animated-side-panel"
+          data-open={sideVisible}
           role="region"
           aria-label="Side panel"
           tabIndex={-1}
+          aria-hidden={!sideVisible}
+          inert={!sideVisible}
           style={{
             flex: sideVisible && !sideOverlay ? `${sideFrac} 1 0%` : "0 0 0%",
             minWidth: sideVisible ? 300 : 0,
-            display: sideVisible ? "flex" : "none",
+            display: "flex",
             flexDirection: "column",
-            background: "var(--nav-bg)",
-            ...(sideOverlay ? {
+            background: colors.bg,
+            borderRadius: sideOverlayLayout ? 12 : "0 12px 12px 0",
+            overflow: "hidden",
+            ...(sideOverlayLayout ? {
               position: "absolute" as const,
               top: 0,
               bottom: 0,
@@ -4658,20 +4892,12 @@ export function App() {
               borderLeft: `1px solid ${colors.border}`,
               boxShadow: "-8px 0 24px rgba(0,0,0,0.25)",
               zIndex: 5,
+              transform: sideVisible ? "translateX(0)" : "translateX(100%)",
             } : {}),
           }}
         >
-          <header
-            style={{
-              minHeight: 56,
-              boxSizing: "border-box",
-              padding: "10px 12px 6px",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              flexShrink: 0,
-            }}
-          >
+          {sideVisible && sideHeaderHost && createPortal(
+          <div style={{ width: "100%", minWidth: 0, display: "flex", alignItems: "center", gap: 6 }}>
             <div ref={sideTabStripRef} className="u-side-tab-strip" style={{ display: "flex", alignItems: "center", gap: 4, flex: "0 1 auto", minWidth: 0, overflowX: "auto", overscrollBehaviorX: "contain" }}>
             {tabOrder.map((t) => {
               const agent = t.startsWith("agent:")
@@ -4704,7 +4930,7 @@ export function App() {
                         : t.startsWith("browser:")
                           ? {
                               icon: <GlobeIcon size={13} />,
-                              label: browserTitles[Number(t.slice(8))] || "Browser",
+                              label: browserStates[Number(t.slice(8))]?.title || "Browser",
                               close: () => closeTab(t),
                               aria: "Close browser",
                             }
@@ -4739,7 +4965,7 @@ export function App() {
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    background: panelMode === t ? colors.panel : "transparent",
+                    background: panelMode === t ? "var(--panel-2)" : "transparent",
                     color: panelMode === t ? colors.fg : colors.dim,
                     borderRadius: 8,
                     minWidth: 90,
@@ -4777,56 +5003,10 @@ export function App() {
               );
             })}
             </div>
-            <span ref={sidePlusRef} style={{ position: "relative", display: "flex", flexShrink: 0 }}>
-              <IconButton title="Open side panel tab" onClick={() => void toggleSidePlusMenu()}>
+            <span style={{ display: "flex", flexShrink: 0 }}>
+              <IconButton title="New browser tab" onClick={openBrowserTab}>
                 <PlusIcon />
               </IconButton>
-              {sidePlusOpen && (
-                <div
-                  style={{
-                    position: "absolute",
-                    top: 32,
-                    ...(sidePlusOpensLeft ? { right: 0 } : { left: 0 }),
-                    width: 224,
-                    boxSizing: "border-box",
-                    background: colors.panel,
-                    border: `1px solid ${colors.border}`,
-                    borderRadius: 12,
-                    padding: 6,
-                    zIndex: 30,
-                    boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
-                  }}
-                >
-                  {inProject && <MenuItem icon={<ReviewIcon />} label="Review" onClick={openReviewTab} />}
-                  <MenuItem icon={<TerminalIcon />} label="Terminal" onClick={openTerminalTab} />
-                  <MenuItem icon={<GlobeIcon />} label="Browser" onClick={openBrowserTab} />
-                  {inProject && (
-                    <MenuItem icon={<FolderOutlineIcon size={15} />} label="Files" onClick={openFilesTab} />
-                  )}
-                  {mainStarted && (
-                    <MenuItem icon={<ChatPlusIcon />} label="Side chat" onClick={openSideChatTab} />
-                  )}
-                  {subAgentsList.length > 0 && (
-                    <>
-                      <div style={{ color: colors.dim, fontSize: 12.5, padding: "8px 10px 4px", borderTop: `1px solid ${colors.border}`, marginTop: 6 }}>
-                        Sub-agents
-                      </div>
-                      {subAgentsList.map((a) => (
-                        <MenuItem
-                          key={a.threadId}
-                          icon={<span style={{ fontSize: 14 }}>{agentEmoji(a.threadId)}</span>}
-                          label={a.name}
-                          desc={a.status === "running" ? "working…" : a.status}
-                          onClick={() => {
-                            setSidePlusOpen(false);
-                            openAgentTab(a);
-                          }}
-                        />
-                      ))}
-                    </>
-                  )}
-                </div>
-              )}
             </span>
             <span style={{ flex: 1, minWidth: 0 }} />
             {previewable && (
@@ -4853,12 +5033,7 @@ export function App() {
                 <FoldersIcon />
               </IconButton>
             )}
-            {sideOverlay && (
-              <IconButton title="Close side panel" onClick={() => setSideOpenPersisted(false)}>
-                <CloseIcon />
-              </IconButton>
-            )}
-          </header>
+          </div>, sideHeaderHost)}
           {panelMode === "launcher" && (
             <div
               style={{
@@ -4996,7 +5171,26 @@ export function App() {
                 flexDirection: "column",
               }}
             >
-              <BrowserPane browserId={id} autoFocusAddress={blankBrowserTabsRef.current.has(id)} preview={browserPreview?.id === id ? browserPreview.image : null} />
+              <BrowserPane
+                browserId={id}
+                browserState={browserStates[id]}
+                autoFocusAddress={blankBrowserTabsRef.current.has(id)}
+                startPage={
+                  <BrowserStartPage
+                    visits={browserVisits}
+                    inProject={inProject}
+                    canSideChat={mainStarted}
+                    onReview={openReviewTab}
+                    onFiles={openFilesTab}
+                    onTerminal={() => openToolFromBrowserStart(id, "terminal")}
+                    onSideChat={() => openToolFromBrowserStart(id, "side")}
+                    onNewBrowser={openBrowserTab}
+                    onAgentBrowser={openAgentMirrorTab}
+                    onNavigate={(url) => void window.unbiased.navigateBrowser({ id, url })}
+                    onClearHistory={() => setBrowserVisits([])}
+                  />
+                }
+              />
             </div>
           ))}
           {sideChats.map((id) => (
@@ -5554,6 +5748,19 @@ export function App() {
             iconSurface
             onClick={() => {
               setRenameDialog({ id: threadMenu.id, name: threadMenu.title, error: null });
+              setThreadMenu(null);
+            }}
+          />
+          <MenuItem
+            icon={pinnedThreadIds.has(threadMenu.id)
+              ? <PinOff size={15} strokeWidth={1.8} />
+              : <Pin size={15} strokeWidth={1.8} />}
+            label={pinnedThreadIds.has(threadMenu.id) ? "Unpin chat" : "Pin chat"}
+            compact
+            iconSurface
+            onClick={() => {
+              const { id, title, inProject } = threadMenu;
+              toggleThreadPin({ id, title }, inProject);
               setThreadMenu(null);
             }}
           />
@@ -6948,20 +7155,25 @@ function ReviewPane({ gitPath }: { gitPath: string | null }) {
   );
 }
 
-/** The embedded browser's renderer half: toolbar + a placeholder div whose
- *  bounds the native WebContentsView (main process) is pinned to. The
- *  actual page pixels are the native layer floating above this spot. */
-function BrowserPane({ browserId, autoFocusAddress, preview }: { browserId: number; autoFocusAddress: boolean; preview: string | null }) {
+/** Browser toolbar and start page share a host with the native WebContentsView.
+ *  The native layer is parked offscreen while the tab has no page to show. */
+function BrowserPane({ browserId, browserState, autoFocusAddress, startPage }: {
+  browserId: number;
+  browserState?: BrowserState;
+  autoFocusAddress: boolean;
+  startPage: React.ReactNode;
+}) {
   const holdRef = useRef<HTMLDivElement>(null);
   const [urlDraft, setUrlDraft] = useState("");
-  const [state, setState] = useState<BrowserState>({
+  const state = browserState ?? {
     id: browserId,
     url: "",
     title: "",
     canGoBack: false,
     canGoForward: false,
     loading: false,
-  });
+  };
+  const blank = !state.url || state.url === "about:blank";
   const editingRef = useRef(false);
   const selectedUrlRef = useRef<string | null>(null);
   const selectOnClickRef = useRef(false);
@@ -6979,13 +7191,8 @@ function BrowserPane({ browserId, autoFocusAddress, preview }: { browserId: numb
 
   useEffect(() => {
     void window.unbiased.openBrowser({ id: browserId });
-    const off = window.unbiased.onBrowserState((s) => {
-      if (s.id !== browserId) return;
-      setState(s);
-      setUrlDraft((current) => !editingRef.current || !current ? (s.url === "about:blank" ? "" : s.url) : current);
-    });
     const el = holdRef.current;
-    if (!el) return off;
+    if (!el) return;
     const sync = () => {
       const r = el.getBoundingClientRect();
       void window.unbiased.setBrowserBounds({ id: browserId, x: r.x, y: r.y, width: r.width, height: r.height });
@@ -6995,12 +7202,15 @@ function BrowserPane({ browserId, autoFocusAddress, preview }: { browserId: numb
     ro.observe(el);
     window.addEventListener("resize", sync);
     return () => {
-      off();
       ro.disconnect();
       window.removeEventListener("resize", sync);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [browserId]);
+
+  useEffect(() => {
+    setUrlDraft((current) => !editingRef.current || !current ? (blank ? "" : state.url) : current);
+  }, [blank, state.url]);
 
   const navBtn = (label: string, enabled: boolean, action: "back" | "forward" | "reload") => (
     <button
@@ -7025,7 +7235,10 @@ function BrowserPane({ browserId, autoFocusAddress, preview }: { browserId: numb
           display: "flex",
           alignItems: "center",
           gap: 4,
-          padding: "8px 10px",
+          height: 52,
+          boxSizing: "border-box",
+          padding: "0 10px",
+          background: colors.bg,
           borderBottom: `1px solid ${colors.border}`,
           flexShrink: 0,
         }}
@@ -7114,7 +7327,107 @@ function BrowserPane({ browserId, autoFocusAddress, preview }: { browserId: numb
         </button>
       </div>
       <div ref={holdRef} data-browser-host={browserId} style={{ flex: 1, minHeight: 0, position: "relative", overflow: "hidden", background: "var(--code-bg)" }}>
-        {preview && <img src={preview} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} />}
+        {blank && startPage}
+      </div>
+    </div>
+  );
+}
+
+function BrowserStartPage({
+  visits,
+  inProject,
+  canSideChat,
+  onReview,
+  onFiles,
+  onTerminal,
+  onSideChat,
+  onNewBrowser,
+  onAgentBrowser,
+  onNavigate,
+  onClearHistory,
+}: {
+  visits: BrowserVisit[];
+  inProject: boolean;
+  canSideChat: boolean;
+  onReview: () => void;
+  onFiles: () => void;
+  onTerminal: () => void;
+  onSideChat: () => void;
+  onNewBrowser: () => void;
+  onAgentBrowser: () => void;
+  onNavigate: (url: string) => void;
+  onClearHistory: () => void;
+}) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [recentsOpen, setRecentsOpen] = useState(true);
+  const suggestions = suggestedBrowserSites(visits);
+  const recent = visits.slice(0, 5);
+  const toolStyle: React.CSSProperties = {
+    display: "flex", alignItems: "center", gap: 11, width: "100%", minWidth: 0,
+    border: `1px solid ${colors.border}`, borderRadius: 8, padding: "11px 13px",
+    background: "var(--panel-2)", color: colors.fg, textAlign: "left",
+    font: "inherit", fontSize: 14, cursor: "pointer",
+  };
+  const tool = (label: string, icon: React.ReactNode, onClick: () => void) => (
+    <button key={label} type="button" className="u-browser-start-tool" style={toolStyle} onClick={onClick}>
+      <span style={{ display: "flex", color: colors.dim, flexShrink: 0 }}>{icon}</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+    </button>
+  );
+  return (
+    <div style={{ position: "absolute", inset: 0, overflowY: "auto", background: colors.bg }}>
+      <div style={{ width: "100%", maxWidth: 920, boxSizing: "border-box", margin: "0 auto", padding: "32px clamp(16px, 4vw, 48px) 48px" }}>
+        <section aria-label="Tools">
+          <h2 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 600 }}>Tools</h2>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 8 }}>
+            {inProject && tool("Changes", <ReviewIcon />, onReview)}
+            {tool("Terminal", <TerminalIcon />, onTerminal)}
+            {inProject && tool("Files", <FolderOutlineIcon size={15} />, onFiles)}
+            {canSideChat && tool("Side chat", <ChatPlusIcon />, onSideChat)}
+            <button type="button" className="u-browser-start-tool" style={{ ...toolStyle, justifyContent: "space-between" }} onClick={() => setMoreOpen((open) => !open)} aria-expanded={moreOpen}>
+              <span style={{ display: "flex", alignItems: "center", gap: 11 }}><span style={{ display: "flex", color: colors.dim }}><LayoutGrid size={16} /></span>More tools</span>
+              <ChevronDown size={16} style={{ transform: moreOpen ? "rotate(180deg)" : undefined, color: colors.dim }} />
+            </button>
+            {moreOpen && (
+              <>
+                {tool("New browser tab", <GlobeIcon />, onNewBrowser)}
+                {tool("Agent browser", <GlobeIcon />, onAgentBrowser)}
+              </>
+            )}
+          </div>
+        </section>
+        <section aria-label="Suggested" style={{ marginTop: 34 }}>
+          <h2 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 600 }}>Suggested</h2>
+          {suggestions.length > 0 ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 140px), 1fr))", gap: 8 }}>
+              {suggestions.map((site) => (
+                <button key={site.url} type="button" className="u-browser-start-link" onClick={() => onNavigate(site.url)} title={site.url} style={{ border: 0, borderRadius: 8, background: "transparent", color: colors.fg, padding: "12px 8px", minWidth: 0, display: "flex", alignItems: "center", flexDirection: "column", gap: 12, cursor: "pointer", font: "inherit" }}>
+                  <span style={{ width: 38, height: 38, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--panel-2)", color: colors.dim }}><GlobeIcon size={22} /></span>
+                  <span style={{ width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13, textAlign: "center" }}>{site.label}</span>
+                </button>
+              ))}
+            </div>
+          ) : <div style={{ color: colors.dim, fontSize: 13 }}>No suggested sites yet</div>}
+        </section>
+        <section aria-label="Recents" style={{ marginTop: 34 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Recents</h2>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              {visits.length > 0 && <button type="button" className="u-sidebar-icon-button" title="Clear recent pages" aria-label="Clear recent pages" onClick={onClearHistory} style={{ display: "grid", placeItems: "center", width: 28, height: 28, background: "transparent", border: 0, borderRadius: 7, color: colors.dim, cursor: "pointer" }}><Trash2 size={15} /></button>}
+              <button type="button" className="u-sidebar-icon-button" title={recentsOpen ? "Collapse recents" : "Expand recents"} aria-label={recentsOpen ? "Collapse recents" : "Expand recents"} aria-expanded={recentsOpen} onClick={() => setRecentsOpen((open) => !open)} style={{ display: "grid", placeItems: "center", width: 28, height: 28, background: "transparent", border: 0, borderRadius: 7, color: colors.dim, cursor: "pointer" }}><ChevronDown size={16} style={{ transform: recentsOpen ? "rotate(180deg)" : undefined }} /></button>
+            </div>
+          </div>
+          {recentsOpen && (recent.length > 0 ? recent.map((visit) => (
+            <button key={visit.url} type="button" className="u-browser-start-link" onClick={() => onNavigate(visit.url)} title={visit.url} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, minWidth: 0, border: 0, borderBottom: `1px solid ${colors.border}`, borderRadius: 8, padding: "10px 12px", background: "transparent", color: colors.fg, textAlign: "left", font: "inherit", cursor: "pointer" }}>
+              <span style={{ display: "grid", placeItems: "center", width: 30, height: 30, flexShrink: 0, borderRadius: 7, background: "var(--panel-2)", color: colors.dim }}><GlobeIcon size={16} /></span>
+              <span style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13.5 }}>{visit.title}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5, color: colors.dim }}>{visit.url}</span>
+              </span>
+              <span style={{ color: colors.dim, fontSize: 11.5, flexShrink: 0 }}>{new Date(visit.lastVisited).toLocaleDateString()}</span>
+            </button>
+          )) : <div style={{ color: colors.dim, fontSize: 13, padding: "10px 0" }}>No recent pages</div>)}
+        </section>
       </div>
     </div>
   );
@@ -12514,23 +12827,6 @@ function ConnectorsView() {
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", height: "100%" }}>
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "10px 16px",
-          flexShrink: 0,
-          position: "relative",
-          zIndex: 2,
-        }}
-      >
-        <HeaderEdge />
-        <span style={{ fontSize: 14, fontWeight: 500, color: colors.fg, letterSpacing: "var(--track-body)" }}>
-          Connectors
-        </span>
-      </header>
-
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         <div style={{ maxWidth: 760, margin: "0 auto", padding: "40px 24px 64px" }}>
           {open ? (
@@ -13204,33 +13500,6 @@ function ScheduledView({
     // inside it scroll, and everything below the fold painted on the bare
     // white body. Measured live: a 950px window, this div at 1084px.
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
-      {/* The same chrome a conversation gets — so this reads as another place in the app rather than a mode you
-          have been dropped into. No back button: the nav is right there, and
-          a chat does not have one either. */}
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "10px 16px",
-          flexShrink: 0,
-          position: "relative",
-          zIndex: 2,
-        }}
-      >
-        <HeaderEdge />
-        <span
-          style={{
-            fontSize: 14,
-            fontWeight: 500,
-            color: colors.fg,
-            letterSpacing: "var(--track-body)",
-          }}
-        >
-          Scheduled
-        </span>
-      </header>
-
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         {/* One centred measure for the whole page — the list, the search and
             the form all share it, so nothing needs its own width. */}
@@ -15974,22 +16243,86 @@ function ResourcesView() {
 }
 
 function SettingsView({
+  initialTab,
   theme,
   onChange,
   onBack,
+  onOpenProject,
+  onOpenConnectors,
+  onOpenScheduled,
+  onOpenWhatsNew,
+  onUpdate,
+  updateAvailable,
+  updateStaged,
+  changelogUnread,
+  missedCount,
   onSignOut,
   releases,
 }: {
+  initialTab: SettingsTab;
   theme: ThemeConfig;
   onChange: (t: ThemeConfig) => void;
   onBack: () => void;
+  onOpenProject: () => void;
+  onOpenConnectors: () => void;
+  onOpenScheduled: () => void;
+  onOpenWhatsNew: () => void;
+  onUpdate: () => void;
+  updateAvailable: boolean;
+  updateStaged: boolean;
+  changelogUnread: boolean;
+  missedCount: number;
   onSignOut: () => void;
   releases: ChangelogRelease[];
 }) {
-  const [tab, setTab] = useState<"appearance" | "agent" | "resources" | "account" | "updates">("appearance");
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const [search, setSearch] = useState("");
   const [agentPrefs, setAgentPrefs] = useState<AgentStylePrefs | null>(null);
   const [agentPrefsSaving, setAgentPrefsSaving] = useState(false);
   const [agentPrefsError, setAgentPrefsError] = useState<string | null>(null);
+  const [pals, setPals] = useState<PalsSettingsState | null>(null);
+  const [palsBusy, setPalsBusy] = useState(false);
+  const [palsError, setPalsError] = useState<string | null>(null);
+  useEffect(() => {
+    if (tab !== "pals") return;
+    if (typeof window.unbiased.palsSettings !== "function") {
+      setPalsError("Restart the app to use Pals settings.");
+      return;
+    }
+    void window.unbiased.palsSettings().then(setPals).catch(() => setPalsError("Could not load Pals."));
+  }, [tab]);
+
+  async function changePals(action: () => Promise<PalsSettingsState>) {
+    if (palsBusy) return;
+    setPalsBusy(true);
+    setPalsError(null);
+    try {
+      setPals(await action());
+    } catch {
+      setPalsError("Could not update Pals.");
+    } finally {
+      setPalsBusy(false);
+    }
+  }
+
+  async function selectPal(id: string) {
+    if (palsBusy) return;
+    setPalsBusy(true);
+    setPalsError(null);
+    try {
+      const result = await window.unbiased.selectPal(id);
+      if (!result.ok) {
+        setPals(result.settings);
+        setPalsError("This Pal is unavailable. Choose another Pal file.");
+      } else {
+        setPals(result.settings.visible ? result.settings : await window.unbiased.setPalVisible(true));
+      }
+    } catch {
+      setPalsError("Could not choose this Pal.");
+    } finally {
+      setPalsBusy(false);
+    }
+  }
   useEffect(() => {
     if (tab !== "agent" || agentPrefs) return;
     void window.unbiased.agentStyle().then(setAgentPrefs).catch(() => {
@@ -16054,10 +16387,11 @@ function SettingsView({
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
+    flexWrap: "wrap",
     gap: 20,
-    padding: "14px 18px",
+    padding: "16px 18px",
     borderBottom: `1px solid ${colors.border}`,
-    fontSize: 13.5,
+    fontSize: 14,
     letterSpacing: "var(--track-body)",
   };
   const textInputStyle: React.CSSProperties = {
@@ -16077,19 +16411,16 @@ function SettingsView({
     outline: "none",
   };
 
-  /** Heading above a group of cards. Codex labels each block rather than
-   *  relying on the cards alone to imply structure. */
+  /** Heading above a group of settings. */
   function Group({ title, children }: { title: string; children: React.ReactNode }) {
     return (
-      <section style={{ marginBottom: 30 }}>
+      <section style={{ marginBottom: 36 }}>
         <div
           style={{
-            fontSize: 11,
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: "var(--track-overline)",
-            color: colors.dim,
-            margin: "0 0 10px 2px",
+            fontSize: 14,
+            fontWeight: 500,
+            color: "var(--fg-soft)",
+            margin: "0 0 14px 2px",
           }}
         >
           {title}
@@ -16131,96 +16462,122 @@ function SettingsView({
     );
   }
 
-  return (
-    <div style={{ flex: 1, display: "flex", minWidth: 0 }}>
-      <nav
-        style={{
-          width: 220,
-          flexShrink: 0,
-          borderRight: `1px solid ${colors.border}`,
-          background: "var(--nav-bg)",
-          padding: 14,
-        }}
-      >
-        <button
-          onClick={onBack}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            background: "transparent",
-            border: "none",
-            color: colors.dim,
-            fontSize: 13.5,
-            cursor: "pointer",
-            padding: "4px 0 16px",
-            fontFamily: "inherit",
-          }}
-        >
-          <ChevronLeft size={16} strokeWidth={1.8} aria-hidden="true" />
-          Back to app
-        </button>
-{(
-          [
-            {
-              group: "Personal",
-              items: [
-                { id: "appearance", label: "Appearance", icon: <ContrastIcon /> },
-                { id: "agent", label: "Agent", icon: <Bot size={15} /> },
-                { id: "account", label: "Account", icon: <PersonIcon /> },
-              ],
-            },
-            {
-              group: "Application",
-              items: [
-                { id: "updates", label: "Updates", icon: <DownloadIcon /> },
-                { id: "resources", label: "Resources", icon: <LaptopIcon /> },
-              ],
-            },
-          ] as const
-        ).map((sec) => (
-          <div key={sec.group} style={{ marginBottom: 10 }}>
-            <SectionLabel>{sec.group}</SectionLabel>
-            {sec.items.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setTab(item.id)}
-                className="u-sidebar-row"
-                data-active={tab === item.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 9,
-                  width: "100%",
-                  textAlign: "left",
-                  // Keep the settings accent rail while the shared sidebar
-                  // row styles handle hover and selected backgrounds.
-                  boxShadow: tab === item.id ? "inset 2px 0 0 0 var(--accent)" : "none",
-                  fontWeight: tab === item.id ? 500 : 400,
-                  color: tab === item.id ? colors.fg : colors.dim,
-                  border: "none",
-                  borderRadius: 8,
-                  padding: "7px 10px",
-                  fontSize: 13.5,
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  marginBottom: 2,
-                }}
-              >
-                <span style={{ display: "flex", flexShrink: 0, opacity: tab === item.id ? 1 : 0.75 }}>
-                  {item.icon}
-                </span>
-                {item.label}
-              </button>
-            ))}
-          </div>
-        ))}
-      </nav>
+  const settingsSections = [
+    {
+      group: "Personal",
+      items: [
+        { id: "appearance", label: "Appearance", icon: <ContrastIcon /> },
+        { id: "agent", label: "Agent", icon: <Bot size={15} /> },
+        { id: "pals", label: "Pals", icon: <Heart size={15} /> },
+        { id: "account", label: "Account", icon: <PersonIcon /> },
+      ],
+    },
+    {
+      group: "Application",
+      items: [
+        { id: "updates", label: "Updates", icon: <DownloadIcon /> },
+        { id: "resources", label: "Resources", icon: <LaptopIcon /> },
+      ],
+    },
+  ] as const;
+  const filteredSections = settingsSections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => item.label.toLowerCase().includes(search.trim().toLowerCase())),
+    }))
+    .filter((section) => section.items.length > 0);
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "44px 48px 64px" }}>
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, background: "var(--nav-bg)" }}>
+      <header aria-label="Navigation toolbar" style={{ height: 52, flexShrink: 0, display: "flex", alignItems: "center", paddingLeft: 10 }}>
+        <SidebarRailButton compact label="Back to app" onClick={onBack}>
+          <ChevronLeft size={20} strokeWidth={1.8} />
+        </SidebarRailButton>
+        <SidebarRailButton compact label="Forward" disabled onClick={() => {}}>
+          <ChevronRight size={20} strokeWidth={1.8} />
+        </SidebarRailButton>
+      </header>
+      <div className="u-settings-body" style={{ display: "flex", flex: 1, minHeight: 0, padding: "0 4px 4px 0" }}>
+        <nav aria-label="Sidebar shortcuts" className="u-sidebar u-settings-rail" style={{ width: 52, flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center" }}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, paddingTop: 15 }}>
+            <SidebarRailButton label="Home" onClick={onBack}><Home size={18} /></SidebarRailButton>
+            <SidebarRailButton label="Open project" onClick={onOpenProject}><FolderPlusIcon /></SidebarRailButton>
+            <SidebarRailButton label="Connectors" onClick={onOpenConnectors}><PlugIcon /></SidebarRailButton>
+            <SidebarRailButton label="Scheduled" badge={missedCount} onClick={onOpenScheduled}><ClockIcon /></SidebarRailButton>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "8px 2px" }}>
+            {updateAvailable && (
+              <SidebarRailButton label={updateStaged ? "Install update" : "Download update"} onClick={onUpdate}><DownloadIcon size={18} /></SidebarRailButton>
+            )}
+            <SidebarRailButton label="What's new" badge={changelogUnread} onClick={onOpenWhatsNew}><BellIcon /></SidebarRailButton>
+            <SidebarRailButton label="Settings" active onClick={() => {}}><GearIcon /></SidebarRailButton>
+          </div>
+        </nav>
+        <div className="u-settings-surface" style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", overflow: "hidden", borderRadius: 12, background: "var(--nav-bg)" }}>
+          <nav aria-label="Settings" className="u-sidebar u-settings-nav" style={{ width: 256, boxSizing: "border-box", flexShrink: 0, overflowY: "auto", padding: "14px 10px 24px" }}>
+            <div style={{ fontSize: 17, fontWeight: 600, padding: "0 8px 14px", color: colors.fg }}>Settings</div>
+            <label style={{ height: 32, display: "flex", alignItems: "center", gap: 8, padding: "0 10px", borderRadius: 8, background: "var(--panel-2)", color: colors.dim }}>
+              <Search size={15} strokeWidth={1.8} aria-hidden="true" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search"
+                aria-label="Search settings"
+                style={{ flex: 1, minWidth: 0, border: 0, outline: "none", background: "transparent", color: colors.fg, font: "inherit", fontSize: 13.5 }}
+              />
+            </label>
+            {filteredSections.length === 0 && <div style={{ padding: "20px 8px", color: colors.dim, fontSize: 13 }}>No matching settings</div>}
+            <div className="u-settings-nav-groups">
+            {filteredSections.map((sec) => (
+              <div key={sec.group} className="u-settings-nav-group" style={{ marginTop: 6 }}>
+                <SectionLabel>{sec.group}</SectionLabel>
+                {sec.items.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setTab(item.id)}
+                    className="u-sidebar-row"
+                    data-active={tab === item.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      width: "100%",
+                      textAlign: "left",
+                      fontWeight: tab === item.id ? 500 : 400,
+                      color: tab === item.id ? colors.fg : "var(--fg-soft)",
+                      border: "none",
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                      fontSize: 14,
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      marginBottom: 2,
+                    }}
+                  >
+                    <span style={{ display: "flex", flexShrink: 0, color: tab === item.id ? colors.fg : colors.dim }}>{item.icon}</span>
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            ))}
+            </div>
+          </nav>
+
+          <div className="u-settings-content" style={{ flex: 1, minWidth: 0, overflowY: "auto", padding: "72px 48px 64px", borderRadius: "12px 0 0 12px", background: colors.bg }}>
         {tab === "resources" ? (
           <div style={{ maxWidth: 760, margin: "0 auto" }}>
             <ResourcesView />
+          </div>
+        ) : tab === "pals" ? (
+          <div>
+            {palsError && <div role="alert" style={{ color: colors.err, fontSize: 13, marginBottom: 18 }}>{palsError}</div>}
+            <PalsGallery
+              settings={pals}
+              busy={palsBusy}
+              onSelect={(id) => void selectPal(id)}
+              onVisibleChange={(visible) => void changePals(() => window.unbiased.setPalVisible(visible))}
+              onScaleChange={(scale) => void changePals(() => window.unbiased.setPalScale(scale))}
+            />
           </div>
         ) : tab === "updates" ? (
           <div style={{ maxWidth: 760, margin: "0 auto" }}>
@@ -16445,6 +16802,7 @@ function SettingsView({
         <div style={{ maxWidth: 760, margin: "0 auto" }}>
           <h1 style={{ fontSize: 28, fontWeight: 600, letterSpacing: "var(--track-title)", lineHeight: 1.15, margin: "0 0 28px" }}>Appearance</h1>
 
+          <Group title="Theme">
           <div
             style={{
               border: `1px solid ${colors.border}`,
@@ -16500,17 +16858,17 @@ function SettingsView({
               </span>
             </div>
           </div>
+          </Group>
 
+          <Group title="Import theme">
           <div
             style={{
               border: `1px solid ${colors.border}`,
               borderRadius: 12,
               background: colors.panel,
-              marginTop: 24,
               padding: "14px 18px",
             }}
           >
-            <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 8 }}>Import theme</div>
             <div style={{ fontSize: 12.5, color: colors.dim, marginBottom: 10 }}>
               Paste a Codex theme export (<code style={{ fontFamily: "var(--font-code)" }}>codex-theme-v1:…</code>)
               or its raw JSON.
@@ -16569,8 +16927,11 @@ function SettingsView({
               {importError && <span style={{ color: colors.err, fontSize: 12.5 }}>{importError}</span>}
             </div>
           </div>
+          </Group>
         </div>
         )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -16805,12 +17166,13 @@ function PrIcon() {
   );
 }
 
-/** Checklist glyph for the header's Environment button. */
+/** Environment glyph for the header button. */
 function EnvIcon() {
   return (
-    <svg width="15" height="15" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M0.96 10.27C1.11 11.71 2.27 12.87 3.71 13.03c1.07.12 2.17.22 3.29.22s2.22-.1 3.29-.22c1.44-.16 2.6-1.32 2.75-2.76.11-1.06.21-2.16.21-3.27s-.1-2.21-.21-3.27C12.89 2.29 11.73 1.13 10.29.97 9.22.85 8.12.75 7 .75S4.78.85 3.71.97C2.27 1.13 1.11 2.29.96 3.73.85 4.79.75 5.89.75 7s.1 2.21.21 3.27Z" />
-      <path d="m3.1 4.7.7.7 1-1.1m1.5 1h4.2M3.1 8.7l.7.7 1-1.1m1.5 1h4.2" />
+    <svg width="15" height="15" viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2" y="2" width="17.5" height="17.5" rx="5" />
+      <rect x="2" y="28.5" width="17.5" height="17" rx="5" />
+      <path d="M31 2H45.5 M31 16.5H45.5 M31 31.5H45.5 M31 45.5H45.5" />
     </svg>
   );
 }
@@ -16875,10 +17237,10 @@ function PersonIcon({ size = 15 }: { size?: number } = {}) {
 
 function DownloadIcon({ size = 15 }: { size?: number } = {}) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 3v11" />
-      <path d="m7.5 10 4.5 4.5L16.5 10" />
-      <path d="M5 20h14" />
+    <svg width={size} height={size} viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M24 2.5V31" />
+      <path d="M13 19.5 C15.5 24.5 19.2 28.5 24 31 C28.8 28.5 32.5 24.5 35 19.5" />
+      <path d="M2.5 35.5 C4.4 44 7.8 45.5 17 45.5 H31 C40.2 45.5 43.6 44 45.5 35.5" />
     </svg>
   );
 }
@@ -17158,42 +17520,140 @@ function GearIcon() {
   return <StreamlineSunIcon />;
 }
 
-/**
- * The boundary under a header — a soft edge rather than a rule.
- *
- * A 1px line at --gutter (#4c4c4c against this surface) is the brightest
- * horizontal element on the screen, and it was drawing more attention than the
- * content it was separating. This is the scroll-edge treatment instead: a
- * translucent hairline that fades out at both ends, over a short downward wash
- * that sits on the first few pixels of content. The eye reads a boundary
- * without a hard rule being drawn anywhere.
- *
- * Overflows below its header on purpose, so the wash falls across the content
- * rather than across the bar; the header therefore needs a stacking context of
- * its own, or the next sibling paints over it. Inert to the pointer.
- */
-function HeaderEdge() {
-  const hairline = "color-mix(in srgb, var(--fg) 9%, transparent)";
+function ChatSearchDialog({
+  query,
+  onQueryChange,
+  threads,
+  projects,
+  searching,
+  searchFailed,
+  onClose,
+  onOpenThread,
+  onOpenProject,
+  onNewChat,
+  onOpenFolder,
+}: {
+  query: string;
+  onQueryChange: (value: string) => void;
+  threads: { thread: ThreadSummary; projectName?: string; snippet?: string }[];
+  projects: ProjectInfo[];
+  searching: boolean;
+  searchFailed: boolean;
+  onClose: () => void;
+  onOpenThread: (id: string) => void;
+  onOpenProject: (project: ProjectInfo) => void;
+  onNewChat: () => void;
+  onOpenFolder: () => void;
+}) {
+  const [selected, setSelected] = useState(0);
+  const previousFocus = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  useEffect(() => () => previousFocus.current?.focus(), []);
+
+  const items = [
+    ...threads.map(({ thread, projectName, snippet }) => ({
+      key: `thread:${thread.id}`,
+      section: "Chats",
+      label: thread.title,
+      detail: projectName,
+      snippet,
+      icon: <MessageSquare size={16} strokeWidth={1.8} />,
+      action: () => onOpenThread(thread.id),
+    })),
+    ...projects.map((project) => ({
+      key: `project:${project.path}`,
+      section: "Projects",
+      label: project.name,
+      detail: undefined as string | undefined,
+      snippet: undefined as string | undefined,
+      icon: <ProjectIcon icon={project.icon} color={project.color} />,
+      action: () => onOpenProject(project),
+    })),
+    { key: "new-chat", section: "Quick actions", label: "New chat", detail: undefined as string | undefined, snippet: undefined as string | undefined, icon: <NewChatIcon size={16} />, action: onNewChat },
+    { key: "open-folder", section: "Quick actions", label: "Open folder", detail: undefined as string | undefined, snippet: undefined as string | undefined, icon: <FolderPlusIcon size={16} />, action: onOpenFolder },
+  ];
+  const resultCount = threads.length + projects.length;
+
   return (
-    <span
-      aria-hidden="true"
-      style={{
-        position: "absolute",
-        left: 0,
-        right: 0,
-        bottom: -14,
-        height: 14,
-        pointerEvents: "none",
-        backgroundImage: [
-          `linear-gradient(to right, transparent, ${hairline} 8%, ${hairline} 92%, transparent)`,
-          "linear-gradient(to bottom, rgba(0, 0, 0, 0.30), rgba(0, 0, 0, 0))",
-        ].join(", "),
-        backgroundSize: "100% 1px, 100% 100%",
-        backgroundRepeat: "no-repeat, no-repeat",
-        backgroundPosition: "top left, top left",
-      }}
-    />
+    <div
+      data-popover
+      role="presentation"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      style={{ position: "fixed", inset: 0, display: "grid", placeItems: "start center", padding: "min(11vh, 100px) 16px 24px", boxSizing: "border-box", background: "rgba(0, 0, 0, 0.55)", zIndex: 1000 }}
+    >
+      <div
+        id="chat-search-dialog"
+        data-popover
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search chats"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") { event.preventDefault(); onClose(); }
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            const next = (selected + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+            setSelected(next);
+            document.getElementById(`chat-search-result-${next}`)?.scrollIntoView({ block: "nearest" });
+          }
+          if (event.key === "Enter") { event.preventDefault(); items[selected]?.action(); }
+          if (event.key === "Tab") {
+            const focusable = [...event.currentTarget.querySelectorAll<HTMLElement>('input, button')];
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+          }
+        }}
+        style={{ width: 560, maxWidth: "100%", maxHeight: "min(740px, calc(100vh - 48px))", display: "flex", flexDirection: "column", overflow: "hidden", background: colors.panel, color: colors.fg, border: `1px solid ${colors.border}`, borderRadius: 16, boxShadow: "0 24px 70px rgba(0, 0, 0, 0.55)", fontFamily: "var(--font-ui)" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", flexShrink: 0, borderBottom: `1px solid ${colors.border}` }}>
+          <input
+            id="chat-search-input"
+            autoFocus
+            type="text"
+            aria-label="Search chats"
+            placeholder="Search chats"
+            value={query}
+            onChange={(event) => { onQueryChange(event.target.value); setSelected(0); }}
+            style={{ flex: 1, minWidth: 0, boxSizing: "border-box", padding: "18px 20px", border: 0, outline: "none", background: "transparent", color: colors.fg, font: "inherit", fontSize: 19 }}
+          />
+          {query && <button type="button" aria-label="Clear search" title="Clear search" onClick={() => { onQueryChange(""); setSelected(0); document.getElementById("chat-search-input")?.focus(); }} style={{ width: 30, height: 30, marginRight: 14, display: "grid", placeItems: "center", border: 0, borderRadius: 7, background: "transparent", color: colors.dim, cursor: "pointer" }}><X size={17} strokeWidth={1.8} /></button>}
+        </div>
+        <div style={{ overflowY: "auto", padding: "12px 8px 14px" }}>
+          {resultCount === 0 && <div style={{ padding: "10px 12px 18px", color: colors.dim, fontSize: 13 }}>{searching ? "Searching chat contents…" : "No matching chats or projects"}</div>}
+          {searchFailed && <div style={{ padding: "5px 12px 10px", color: colors.dim, fontSize: 12 }}>Some chats could not be searched</div>}
+          {items.map((item, index) => (
+            <Fragment key={item.key}>
+              {(index === 0 || items[index - 1].section !== item.section) && (
+                <div style={{ padding: "10px 12px 8px", color: colors.dim, fontSize: 12.5, fontWeight: 500 }}>{item.section}</div>
+              )}
+              <button
+                id={`chat-search-result-${index}`}
+                type="button"
+                onMouseEnter={() => setSelected(index)}
+                onClick={item.action}
+                style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", minHeight: 38, padding: "7px 12px", border: 0, borderRadius: 9, background: selected === index ? "var(--panel-2)" : "transparent", color: selected === index ? colors.fg : "var(--fg-soft)", font: "inherit", fontSize: 14, textAlign: "left", cursor: "pointer" }}
+              >
+                <span style={{ flexShrink: 0, width: 18, display: "grid", placeItems: "center", color: colors.dim }}>{item.icon}</span>
+                <span style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span style={{ display: "flex", gap: 10, minWidth: 0 }}>
+                    <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+                    {item.detail && <span style={{ maxWidth: "35%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: colors.dim, fontSize: 12.5 }}>{item.detail}</span>}
+                  </span>
+                  {item.snippet && <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: colors.dim, fontSize: 12.5 }}><SearchSnippet text={item.snippet} query={query} /></span>}
+                </span>
+              </button>
+            </Fragment>
+          ))}
+        </div>
+      </div>
+    </div>
   );
+}
+
+function SearchSnippet({ text, query }: { text: string; query: string }) {
+  const index = text.toLocaleLowerCase().indexOf(query.trim().toLocaleLowerCase());
+  if (index < 0 || !query.trim()) return <>{text}</>;
+  return <>{text.slice(0, index)}<span style={{ color: colors.fg }}>{text.slice(index, index + query.trim().length)}</span>{text.slice(index + query.trim().length)}</>;
 }
 
 // Sidebar destinations use the same neutral material for hover and selection.
@@ -17223,17 +17683,15 @@ function SidebarAction({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 10,
+        gap: 7,
         width: "100%",
         fontWeight: active ? 500 : 400,
         color: disabled ? colors.dim : active ? colors.fg : "var(--fg-soft)",
         border: "none",
         borderRadius: 9,
-        padding: "8px 9px",
-        // Left at 14. An earlier pass took the whole sidebar to 13.5 to
-        // unify it; unified it did, but the sidebar went quiet with it.
-        // Hierarchy is carried by weight and the active rail instead.
-        fontSize: 14,
+        padding: "7px 8px",
+        fontSize: 14.5,
+        lineHeight: "20px",
         letterSpacing: "var(--track-body)",
         cursor: disabled ? "default" : "pointer",
         textAlign: "left",
@@ -17317,7 +17775,7 @@ function SidebarSectionPreview({
   onNewTask: () => void;
   onOpenUpdates: () => void;
   onOpenWhatsNew: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (tab: SettingsTab) => void;
 }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -17465,7 +17923,16 @@ function SidebarSectionPreview({
           <SidebarPreviewRow icon={<BellIcon />} title={latestRelease ? `Version ${latestRelease}` : "Release notes"} detail="View what's new" onClick={onOpenWhatsNew} />
         )}
         {section === "settings" && (
-          <SidebarPreviewRow icon={<GearIcon />} title="Open settings" onClick={onOpenSettings} />
+          <>
+            <SidebarPreviewLabel>Personal</SidebarPreviewLabel>
+            <SidebarPreviewRow icon={<ContrastIcon />} title="Appearance" onClick={() => onOpenSettings("appearance")} />
+            <SidebarPreviewRow icon={<Bot size={15} />} title="Agent" onClick={() => onOpenSettings("agent")} />
+            <SidebarPreviewRow icon={<Heart size={15} />} title="Pals" onClick={() => onOpenSettings("pals")} />
+            <SidebarPreviewRow icon={<PersonIcon />} title="Account" onClick={() => onOpenSettings("account")} />
+            <SidebarPreviewLabel>Application</SidebarPreviewLabel>
+            <SidebarPreviewRow icon={<DownloadIcon />} title="Updates" onClick={() => onOpenSettings("updates")} />
+            <SidebarPreviewRow icon={<LaptopIcon />} title="Resources" onClick={() => onOpenSettings("resources")} />
+          </>
         )}
       </div>
     </div>
@@ -17666,7 +18133,8 @@ function SectionLabel({
   const base: React.CSSProperties = {
     color: colors.dim,
     fontSize: 14,
-    fontWeight: 400,
+    fontWeight: 500,
+    lineHeight: "20px",
     letterSpacing: "var(--track-body)",
     padding: "19px 8px 7px",
   };
@@ -17726,7 +18194,7 @@ function PencilIcon() {
 }
 
 function PanelIcon() {
-  return <SideChatIcon size={16} mirrored />;
+  return <SideChatIcon size={16} divider="left" />;
 }
 
 function ChatPlusIcon({ size = 14, strokeWidth = 2 }: { size?: number; strokeWidth?: number } = {}) {
@@ -17747,13 +18215,11 @@ function ChatBubbleIcon() {
   );
 }
 
-function SideChatIcon({ size = 15, mirrored = false }: { size?: number; mirrored?: boolean } = {}) {
+function SideChatIcon({ size = 15, divider = "right" }: { size?: number; divider?: "left" | "right" } = {}) {
   return (
-    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={mirrored ? { transform: "scaleX(-1)" } : undefined}>
-      <path d="m9.5 3.99988 1.5 0" />
-      <path d="m9.5 6.49988 1.5 0" />
-      <path d="M0.959867 10.2685C1.114 11.7092 2.2727 12.8679 3.71266 13.0284 4.78221 13.1476 5.88037 13.25 7 13.25s2.21779 -0.1024 3.2873 -0.2216c1.44 -0.1605 2.5987 -1.3192 2.7528 -2.7599 0.1138 -1.06348 0.2099 -2.15535 0.2099 -3.2685 0 -1.11316 -0.0961 -2.20502 -0.2099 -3.26853 -0.1541 -1.44065 -1.3128 -2.59936 -2.7528 -2.759861C9.21779 0.852392 8.11963 0.75 7 0.75S4.78221 0.852392 3.71266 0.971609C2.2727 1.13211 1.114 2.29082 0.959867 3.73147 0.846083 4.79498 0.75 5.88684 0.75 7c0 1.11315 0.096084 2.20502 0.209867 3.2685Z" />
-      <path d="m7.5 0.756592 0 12.486908" />
+    <svg width={size} height={size} viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <path d="M24 2.5 C13.86 2.5 8.79 2.5 5.64 5.64 C2.5 8.79 2.5 13.86 2.5 24 C2.5 34.14 2.5 39.21 5.64 42.36 C8.79 45.5 13.86 45.5 24 45.5 C34.14 45.5 39.21 45.5 42.36 42.36 C45.5 39.21 45.5 34.14 45.5 24 C45.5 13.86 45.5 8.79 42.36 5.64 C39.21 2.5 34.14 2.5 24 2.5Z" />
+      <path d={divider === "left" ? "M15.5 12.5V35.5" : "M32.5 12.5V35.5"} />
     </svg>
   );
 }
@@ -18582,9 +19048,12 @@ function ThreadRow({
   active,
   hovered,
   running,
+  unread,
+  pinned,
   indent,
   onHover,
   onOpen,
+  onTogglePin,
   menuOpen,
   onMenu,
 }: {
@@ -18592,9 +19061,12 @@ function ThreadRow({
   active: boolean;
   hovered: boolean;
   running?: boolean;
+  unread?: boolean;
+  pinned?: boolean;
   indent?: boolean;
   onHover: (id: string | null) => void;
   onOpen: (id: string) => Promise<void>;
+  onTogglePin: () => void;
   menuOpen?: boolean;
   onMenu: (x: number, y: number) => void;
 }) {
@@ -18607,13 +19079,48 @@ function ThreadRow({
       style={{
         display: "flex",
         alignItems: "center",
+        position: "relative",
         // Selection is a slightly stronger neutral material than hover. This
         // keeps the title aligned while avoiding a decorative accent rail.
         borderRadius: 9,
         marginBottom: 2,
-        paddingLeft: indent ? 25 : 0,
+        paddingLeft: indent ? 24 : 0,
       }}
     >
+      {indent && (
+        <button
+          type="button"
+          onClick={(event) => { event.stopPropagation(); onTogglePin(); }}
+          title={pinned ? "Unpin chat" : "Pin chat"}
+          aria-label={pinned ? `Unpin ${thread.title}` : `Pin ${thread.title}`}
+          className="u-sidebar-pin-toggle"
+          style={{
+            position: "absolute",
+            left: 1,
+            top: "calc(50% - 11px)",
+            width: 22,
+            height: 22,
+            padding: 0,
+            display: "grid",
+            placeItems: "center",
+            border: 0,
+            borderRadius: 4,
+            background: "transparent",
+            cursor: "pointer",
+            zIndex: 3,
+          }}
+        >
+          {pinned ? <PinOff size={14} strokeWidth={1.8} /> : <Pin size={14} strokeWidth={1.8} />}
+        </button>
+      )}
+      {indent && (
+        <span
+          className={`u-sidebar-thread-dot${running ? " is-running" : unread ? " is-unread" : ""}`}
+          role={running || unread ? "status" : undefined}
+          aria-label={running ? "Turn running" : unread ? "Unread completed response" : undefined}
+          aria-hidden={running || unread ? undefined : true}
+        />
+      )}
       <button
         onClick={() => void onOpen(thread.id)}
         title={thread.title}
@@ -18626,9 +19133,10 @@ function ThreadRow({
           background: "transparent",
           color: active ? colors.fg : "var(--fg-soft)",
           border: "none",
-          padding: "8px 4px 8px 8px",
-          fontSize: 14,
+          padding: indent ? "7px 4px 7px 18px" : "7px 4px 7px 8px",
+          fontSize: 14.5,
           fontWeight: 400,
+          lineHeight: "20px",
           letterSpacing: "var(--track-body)",
           textAlign: "left",
           cursor: "pointer",
@@ -18645,16 +19153,16 @@ function ThreadRow({
         >
           {thread.title}
         </span>
-        {running && (
+        {(running || unread) && !indent && (
           <span
-            aria-label="Turn running"
+            aria-label={running ? "Turn running" : "Unread completed response"}
             style={{
               width: 7,
               height: 7,
               borderRadius: "50%",
-              background: "var(--accent)",
+              background: running ? "var(--accent)" : "#4bbf87",
               flexShrink: 0,
-              animation: "unbiased-pulse 1.2s ease-in-out infinite",
+              animation: running ? "unbiased-pulse 1.2s ease-in-out infinite" : undefined,
             }}
           />
         )}

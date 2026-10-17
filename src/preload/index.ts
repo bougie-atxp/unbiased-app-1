@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { AgentStylePrefs } from "../shared/agent-style";
+import type { PalScale, PalsSettings } from "../shared/pals";
 
 // The renderer's entire view of the engine. Typed, minimal, and additive.
 // Chat traffic is pane-scoped: every event payload carries paneId and every
@@ -28,6 +29,10 @@ contextBridge.exposeInMainWorld("unbiased", {
   setUpdatePrefs: (p: { autoDownload: boolean }) => ipcRenderer.invoke("update:set-prefs", p),
   agentStyle: () => ipcRenderer.invoke("agent-style:get"),
   setAgentStyle: (prefs: AgentStylePrefs) => ipcRenderer.invoke("agent-style:set", prefs),
+  palsSettings: (): Promise<PalsSettings> => ipcRenderer.invoke("pals:get"),
+  selectPal: (id: string) => ipcRenderer.invoke("pals:select", id),
+  setPalVisible: (visible: boolean): Promise<PalsSettings> => ipcRenderer.invoke("pals:visible", visible),
+  setPalScale: (scale: PalScale): Promise<PalsSettings> => ipcRenderer.invoke("pals:scale", scale),
   onUpdateAvailable: (cb: (p: unknown) => void) => subscribe("update:available", cb),
   onUpdateStaged: (cb: (p: unknown) => void) => subscribe("update:staged", cb),
   onUpdateProgress: (cb: (p: unknown) => void) => subscribe("update:progress", cb),
@@ -113,6 +118,7 @@ contextBridge.exposeInMainWorld("unbiased", {
   onScheduledRunState: (cb: (p: unknown) => void) => subscribe("scheduled:run-state", cb),
   onScheduledCreated: (cb: (p: unknown) => void) => subscribe("chat:scheduled-created", cb),
   onScheduledOpenRun: (cb: (p: unknown) => void) => subscribe("scheduled:open-run", cb),
+  onPetNoticeOpenThread: (cb: (p: unknown) => void) => subscribe("pet:notice-open-thread", cb),
   memoryList: (threadId: string | null) => ipcRenderer.invoke("memory:list", threadId),
   onMemorySaved: (cb: (p: unknown) => void) => subscribe("chat:memory-saved", cb),
   mcpLogin: (name: string) => ipcRenderer.invoke("mcp:login", name),
@@ -153,6 +159,8 @@ contextBridge.exposeInMainWorld("unbiased", {
   storageStats: () => ipcRenderer.invoke("stats:storage"),
 
   listThreads: () => ipcRenderer.invoke("threads:list"),
+  searchThreads: (query: string, threads: { id: string; updatedAt?: string | number }[], includeSavedTranscripts = false) =>
+    ipcRenderer.invoke("threads:search", { query, threads, includeSavedTranscripts }),
   openThread: (id: string) => ipcRenderer.invoke("threads:open", id),
   detachThread: (cwd?: string) => ipcRenderer.invoke("threads:detach", cwd),
   deleteThread: (id: string) => ipcRenderer.invoke("threads:delete", id),
