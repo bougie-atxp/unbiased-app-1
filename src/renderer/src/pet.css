@@ -11,8 +11,8 @@ html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background:
 .brand { position: absolute; left: 28px; bottom: 9px; width: 14px; height: 5px; border-top: 3px solid #fff9; border-bottom: 3px solid #fff9; border-radius: 6px; }
 .foot { position: absolute; top: 78px; width: 24px; height: 12px; border-radius: 6px; background: #bd4943; border: 3px solid #111; }
 .foot-left { left: 16px; }.foot-right { right: 16px; }
-.sprite { display: none; position: absolute; left: 4px; top: 0; width: 104px; height: 112px; image-rendering: pixelated; }
-.has-sprite .sprite { display: block; }.has-sprite .mascot { display: none; }
+.robot-head { display: none; position: absolute; left: 18px; top: 20px; width: 76px; height: 76px; }
+.pet.robot .robot-head { display: block; }.pet.robot .mascot { display: none; }
 .status { position: absolute; left: 1px; right: 1px; bottom: 3px; height: 23px; text-align: center; font: 600 9px/23px system-ui, sans-serif; color: #f6f6f6; background: #222e; border: 1px solid #ffffff2b; border-radius: 11px; opacity: 0; transition: opacity 160ms; white-space: nowrap; }
 .menu { position: absolute; top: 10px; right: 2px; width: 20px; height: 20px; padding: 0; border: 0; background: transparent; color: #fff; font: 16px/20px system-ui, sans-serif; text-shadow: 0 1px 3px #000; cursor: pointer; opacity: 0; -webkit-app-region: no-drag; }
 .pet.hovered .menu, .pet:hover .menu, .menu:hover, .menu:focus-visible { opacity: 1; }

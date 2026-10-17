@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Greyforge Labs
+Copyright (c) 2026 Fayaz Ahmed
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,6 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-Scope: every file in this directory tree (qml/assets/pets/**). The species frames are
-raster extractions of AI-generated source sheets (OpenAI GPT Image 2); see PROVENANCE.md.

@@ -875,8 +875,6 @@ declare global {
       agentStyle: () => Promise<AgentStylePrefs>;
       setAgentStyle: (prefs: AgentStylePrefs) => Promise<{ ok: boolean; prefs: AgentStylePrefs }>;
       palsSettings: () => Promise<PalsSettingsState>;
-      palPreview: (id: string) => Promise<string | null>;
-      choosePal: () => Promise<PalsSettingsState>;
       selectPal: (id: string) => Promise<{ ok: boolean; settings: PalsSettingsState }>;
       setPalVisible: (visible: boolean) => Promise<PalsSettingsState>;
       setPalScale: (scale: PalScale) => Promise<PalsSettingsState>;
@@ -16577,7 +16575,6 @@ function SettingsView({
               settings={pals}
               busy={palsBusy}
               onSelect={(id) => void selectPal(id)}
-              onAdd={() => void changePals(() => window.unbiased.choosePal())}
               onVisibleChange={(visible) => void changePals(() => window.unbiased.setPalVisible(visible))}
               onScaleChange={(scale) => void changePals(() => window.unbiased.setPalScale(scale))}
             />

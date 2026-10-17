@@ -30,8 +30,6 @@ contextBridge.exposeInMainWorld("unbiased", {
   agentStyle: () => ipcRenderer.invoke("agent-style:get"),
   setAgentStyle: (prefs: AgentStylePrefs) => ipcRenderer.invoke("agent-style:set", prefs),
   palsSettings: (): Promise<PalsSettings> => ipcRenderer.invoke("pals:get"),
-  palPreview: (id: string): Promise<string | null> => ipcRenderer.invoke("pals:preview", id),
-  choosePal: (): Promise<PalsSettings> => ipcRenderer.invoke("pals:choose"),
   selectPal: (id: string) => ipcRenderer.invoke("pals:select", id),
   setPalVisible: (visible: boolean): Promise<PalsSettings> => ipcRenderer.invoke("pals:visible", visible),
   setPalScale: (scale: PalScale): Promise<PalsSettings> => ipcRenderer.invoke("pals:scale", scale),
