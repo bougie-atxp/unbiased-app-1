@@ -19,12 +19,20 @@ import type { NativeImage } from "electron";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { homedir, hostname } from "node:os";
 import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFile as readFileAsync, readdir as readdirAsync, stat as statAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { fileActionError, localFileForAction, saveLocalFileCopy } from "./file-actions";
+import { PetActivity, petTurnActivityKey } from "./pet-activity";
+import { clampPetPosition, PET_SCALES, petScale, petWindowSize, pointInPetWindow, type PetScale } from "./pet-layout";
+import { PET_NOTICE_DURATION_MS, PET_NOTICE_SIZE, latestPetResponse, petNoticeStackBounds, petResponseFirstLine } from "./pet-notice";
+import { savedPalSelection, type PalSelection } from "./pal-selection";
+import { isPalSelection, ROBOT_PALS, type PalsSettings } from "../shared/pals";
 import { resolveEngineDir } from "./engine-path";
+import { matchingMessageSnippet, messagesFromTranscriptEntries } from "./thread-search";
 import { agentBrowserCandidates, chromeCandidates } from "./browser-binaries";
 import { agentStyleInstructions, DEFAULT_AGENT_STYLE, parseAgentStylePrefs, type AgentStylePrefs } from "../shared/agent-style";
+import { projectContextForDirectory } from "./project-context";
 import { OPENUI_VISUAL_INSTRUCTIONS, VISUALIZE_DIRECTIVE } from "./visual-instructions";
 import { epochMillis } from "../shared/conversation-time";
 import { INTERACTIVE_VISUAL_CSP, INTERACTIVE_VISUAL_SCHEME, interactiveVisualDocument, interactiveVisualId, isInteractiveVisualSource } from "../shared/interactive-visual";
@@ -189,9 +197,33 @@ function productionBuild(): boolean {
 if (!productionBuild() && process.env.UNBIASED_DEV_HOME_DIR) {
   app.setPath("home", process.env.UNBIASED_DEV_HOME_DIR);
 }
+if (!productionBuild() && process.env.UNBIASED_DEV_USER_DATA_DIR) {
+  const userDataDir = process.env.UNBIASED_DEV_USER_DATA_DIR;
+  if (!isAbsolute(userDataDir)) throw new Error("UNBIASED_DEV_USER_DATA_DIR must be absolute");
+  mkdirSync(userDataDir, { recursive: true });
+  app.setPath("userData", userDataDir);
+}
 
 const engine = new EngineClient();
 let win: BrowserWindow | null = null;
+let petWin: BrowserWindow | null = null;
+let petNoticeWin: BrowserWindow | null = null;
+const petActivity = new PetActivity();
+const petReplies = new Map<string, { stream: string; last: string; final: string }>();
+const petThreadTitles = new Map<string, string>();
+let petNoticeVersion = 0;
+let petNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+type PetNotice = { id: number; threadId: string; title: string; response: string; expiresAt: number };
+let petNotices: PetNotice[] = [];
+let nextPetNoticeId = 0;
+let petSettleTimer: ReturnType<typeof setTimeout> | null = null;
+let petSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let petHoverTimer: ReturnType<typeof setInterval> | null = null;
+let petMotionTimer: ReturnType<typeof setTimeout> | null = null;
+let devDockRestoreTimer: ReturnType<typeof setTimeout> | null = null;
+let petHovered = false;
+type PetPreferences = { visible: boolean; x?: number; y?: number; selection?: PalSelection; scale?: PetScale };
+let petPreferences: PetPreferences = { visible: true };
 let lastStatus: EngineStatus = { state: "starting" };
 
 // Conversation panes share one engine. "main" is the persistent,
@@ -247,6 +279,7 @@ function dropSidePane(paneId: string): void {
         // the turn may have just finished on its own
       });
       runningTurns.delete(threadId);
+      petFinished(`turn:${threadId}`, "interrupted");
     }
     threadAccessModes.delete(threadId);
   }
@@ -1157,7 +1190,14 @@ function developerInstructionsFor(cwd: string | null, threadId: string | null = 
   const dir = memoryDirForCwd(cwd, threadId);
   const section = dir ? renderMemorySection(loadMemoryNotes(dir), dir) : "";
   const base = baseDeveloperInstructions();
-  return section ? `${base}\n\n${section}` : base;
+  return [base, configuredProjectContext(cwd, threadId), section].filter(Boolean).join("\n\n");
+}
+
+function configuredProjectContext(cwd: string | null, threadId: string | null = null): string | null {
+  const assignedProject = threadId ? loadThreadProjects()[rootThreadOf(threadId)] ?? null : null;
+  return projectContextForDirectory({
+    cwd, projects: loadProjects(), worktrees: loadWorktrees(), assignedProject,
+  });
 }
 
 const AGENT_BROWSER_TOOLS = [
@@ -4092,6 +4132,7 @@ function scheduleAutomaticMemory(threadId: string, reason: "compaction" | "25-tu
 // (a plain chat, listed under Recents). Set by the project picker or by
 // clicking a project header; consumed when the lazy thread is created.
 let pendingCwd: string | null = null;
+const projectContextSeen = new Map<string, string>();
 
 // User-selectable access mode (Codex-style). Applied to every new thread
 // AND sent as turn-level overrides, which per the protocol change "this
@@ -4376,7 +4417,7 @@ async function createWorktree(project: string, seed?: string): Promise<string | 
   return dir;
 }
 
-type ThreadSummary = { id: string; title: string; createdAt?: string };
+type ThreadSummary = { id: string; title: string; createdAt?: string; updatedAt?: string | number };
 type WireItem = {
   id?: string;
   type?: string;
@@ -4395,12 +4436,59 @@ type WireThread = {
   name?: string | null;
   preview?: string;
   createdAt?: string;
+  updatedAt?: string | number;
   cwd?: string;
   /** Free-form classification the client set at thread/start, handed back
    *  unchanged. Used to keep scheduled runs out of the sidebar. */
   threadSource?: string | null;
   turns?: { items?: WireItem[]; startedAt?: number; durationMs?: number }[];
 };
+
+const threadSearchCache = new Map<string, { updatedAt?: string | number; sourceMtimeMs?: number; cachedAt: number; messages: string[] }>();
+const threadSearchReads = new Map<string, Promise<string[]>>();
+
+async function searchableThreadMessages(id: string, updatedAt?: string | number): Promise<string[]> {
+  const transcriptPath = join(app.getPath("userData"), "transcripts", `${id.replace(/[^\w.-]/g, "_")}.json`);
+  const transcriptStat = await statAsync(transcriptPath).catch(() => null);
+  const sourceMtimeMs = transcriptStat?.mtimeMs;
+  const cached = threadSearchCache.get(id);
+  if (cached && cached.updatedAt === updatedAt && cached.sourceMtimeMs === sourceMtimeMs && Date.now() - cached.cachedAt < 60_000) return cached.messages;
+  const pending = threadSearchReads.get(id);
+  if (pending) return pending;
+
+  const read = (async () => {
+    if (transcriptStat) {
+      try {
+        const saved = JSON.parse(await readFileAsync(transcriptPath, "utf8")) as { entries?: unknown };
+        const messages = redactSecrets(messagesFromTranscriptEntries(saved.entries));
+        if (messages.length > 0) {
+          threadSearchCache.set(id, { updatedAt, sourceMtimeMs, cachedAt: Date.now(), messages });
+          if (threadSearchCache.size > 120) threadSearchCache.delete(threadSearchCache.keys().next().value!);
+          return messages;
+        }
+      } catch {
+        // Missing or damaged local transcript: the engine remains the source of truth.
+      }
+    }
+    const result = await engine.request("thread/read", { threadId: id, includeTurns: true }) as { thread: WireThread };
+    const messages = (result.thread.turns ?? []).flatMap((turn) => (turn.items ?? []).flatMap((item) => {
+      if (item.type === "userMessage") return [stripFileAttachmentContext(item.text ?? contentToText(item.content))];
+      if (item.type === "agentMessage" || item.type === "plan") return [item.text ?? ""];
+      if (item.type === "message") {
+        const message = item as WireItem & { role?: string };
+        return message.role === "user" || message.role === "assistant" ? [message.text ?? contentToText(message.content)] : [];
+      }
+      return [];
+    })).filter(Boolean);
+    const safeMessages = redactSecrets(messages);
+    threadSearchCache.set(id, { updatedAt, sourceMtimeMs, cachedAt: Date.now(), messages: safeMessages });
+    if (threadSearchCache.size > 120) threadSearchCache.delete(threadSearchCache.keys().next().value!);
+    return safeMessages;
+  })();
+  threadSearchReads.set(id, read);
+  try { return await read; }
+  finally { threadSearchReads.delete(id); }
+}
 
 // Projects the user has explicitly opened. Persisted so a project appears
 // in the sidebar the moment it's chosen — before (and regardless of) any
@@ -4843,6 +4931,12 @@ function thumbDataUrl(image: NativeImage, max = 112): string {
 
 function pushStatus(status: EngineStatus): void {
   lastStatus = status;
+  if (status.state === "exited") {
+    if (petSettleTimer) clearTimeout(petSettleTimer);
+    petSettleTimer = null;
+    petActivity.reset();
+    updatePet();
+  }
   win?.webContents.send("engine:status", status);
 }
 
@@ -5578,6 +5672,347 @@ function send(channel: string, payload: unknown): void {
   win?.webContents.send(channel, redactSecrets(payload));
 }
 
+function petPreferencesFile(): string {
+  return join(app.getPath("userData"), "pet-window.json");
+}
+
+function savePetPreferences(): void {
+  try {
+    writeFileSync(petPreferencesFile(), JSON.stringify(petPreferences));
+  } catch (error) {
+    console.warn("[pet] could not save preferences:", error);
+  }
+}
+
+function restoreDevDockAfterOverlay(): void {
+  if (process.platform !== "darwin" || productionBuild()) return;
+  if (devDockRestoreTimer) clearTimeout(devDockRestoreTimer);
+  // The cross-Space window temporarily switches macOS to accessory mode.
+  // Restoring the Dock in the same transition makes the Pal disappear again.
+  devDockRestoreTimer = setTimeout(() => {
+    devDockRestoreTimer = null;
+    void app.dock?.show();
+  }, 1200);
+}
+
+function palsSettings(): PalsSettings {
+  return {
+    visible: petPreferences.visible,
+    selected: petPreferences.selection ?? "robot",
+    scale: petScale(petPreferences.scale),
+    choices: [...ROBOT_PALS],
+  };
+}
+
+function selectPal(id: string): { ok: boolean; settings: PalsSettings } {
+  if (!isPalSelection(id)) return { ok: false, settings: palsSettings() };
+  petPreferences.selection = id;
+  savePetPreferences();
+  if (petPreferences.visible) createPetWindow();
+  updatePet();
+  return { ok: true, settings: palsSettings() };
+}
+
+function updatePet(): void {
+  if (!petWin || petWin.isDestroyed()) return;
+  petWin.webContents.send("pet:update", {
+    state: petActivity.state,
+    runningCount: petActivity.runningCount,
+    completedActions: petActivity.completedActions,
+    completedThreads: petActivity.completedThreads,
+    inFlightActions: petActivity.inFlightActions,
+    selection: petPreferences.selection ?? "robot",
+    scale: petScale(petPreferences.scale),
+  });
+}
+
+function hidePetNotice(): void {
+  if (petNoticeTimer) clearTimeout(petNoticeTimer);
+  petNoticeTimer = null;
+  petNotices = [];
+  if (petNoticeWin && !petNoticeWin.isDestroyed()) petNoticeWin.hide();
+}
+
+function positionPetNotice(): void {
+  if (!petWin || petWin.isDestroyed() || !petNoticeWin || petNoticeWin.isDestroyed() || !petNotices.length) return;
+  const bounds = petWin.getBounds();
+  const area = screen.getDisplayNearestPoint({ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }).workArea;
+  petNoticeWin.setBounds(petNoticeStackBounds(bounds, area, petNotices.length));
+}
+
+function updatePetNoticeWindow(): void {
+  if (!petNoticeWin || petNoticeWin.isDestroyed()) return;
+  if (!petNotices.length) {
+    petNoticeWin.hide();
+    return;
+  }
+  positionPetNotice();
+  if (petNoticeWin.webContents.isLoading()) return;
+  petNoticeWin.webContents.send("pet:notice", petNotices.map(({ expiresAt: _expiresAt, ...notice }) => notice));
+  petNoticeWin.showInactive();
+}
+
+function schedulePetNoticeExpiry(): void {
+  if (petNoticeTimer) clearTimeout(petNoticeTimer);
+  petNoticeTimer = null;
+  if (!petNotices.length) return;
+  const nextExpiry = Math.min(...petNotices.map((notice) => notice.expiresAt));
+  petNoticeTimer = setTimeout(() => {
+    petNotices = petNotices.filter((notice) => notice.expiresAt > Date.now());
+    updatePetNoticeWindow();
+    schedulePetNoticeExpiry();
+  }, Math.max(1, nextExpiry - Date.now()));
+}
+
+function showPetNotice(notice: { threadId: string; title: string; response: string }): void {
+  if (!petWin || petWin.isDestroyed()) return;
+  petNotices = [{ ...notice, id: ++nextPetNoticeId, expiresAt: Date.now() + PET_NOTICE_DURATION_MS }, ...petNotices];
+  if (!petNoticeWin || petNoticeWin.isDestroyed()) {
+    petNoticeWin = new BrowserWindow({
+      ...PET_NOTICE_SIZE,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      show: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      hasShadow: false,
+      webPreferences: {
+        preload: join(__dirname, "../preload/petNotice.js"),
+        sandbox: true,
+        partition: "unbiased-pet-overlay",
+        zoomMode: "isolated",
+        zoomFactor: 1,
+      },
+    });
+    petNoticeWin.setAlwaysOnTop(true, "floating");
+    if (process.platform === "darwin") petNoticeWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    restoreDevDockAfterOverlay();
+    petNoticeWin.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    petNoticeWin.webContents.on("will-navigate", (event) => event.preventDefault());
+    petNoticeWin.webContents.on("did-finish-load", () => {
+      if (!petNoticeWin || petNoticeWin.isDestroyed()) return;
+      petNoticeWin.webContents.setZoomFactor(1);
+      updatePetNoticeWindow();
+    });
+    petNoticeWin.on("closed", () => { petNoticeWin = null; });
+    if (process.env.ELECTRON_RENDERER_URL) {
+      void petNoticeWin.loadURL(new URL("pet-notice.html", process.env.ELECTRON_RENDERER_URL).toString());
+    } else {
+      void petNoticeWin.loadFile(join(__dirname, "../renderer/pet-notice.html"));
+    }
+  } else {
+    updatePetNoticeWindow();
+  }
+  schedulePetNoticeExpiry();
+}
+
+function latestPetReply(thread: WireThread): string {
+  return latestPetResponse(thread.turns?.at(-1)?.items ?? []);
+}
+
+async function showCompletedPetNotice(threadId: string, reply: string, streamedReply: string, version: number): Promise<void> {
+  if (!petWin || petWin.isDestroyed()) return;
+  let title = petThreadTitles.get(threadId) ?? "New chat";
+  let cwd = threadCwds.get(threadId) ?? null;
+  try {
+    const result = await engine.request("thread/read", { threadId, includeTurns: true }) as { thread: WireThread };
+    const updatedTitle = threadTitle(result.thread);
+    if (updatedTitle !== "New chat") title = updatedTitle;
+    cwd = result.thread.cwd ?? cwd;
+    if (!reply.trim()) reply = latestPetReply(result.thread);
+  } catch { /* Keep the title and response already captured from events. */ }
+  if (!reply.trim()) reply = streamedReply;
+  if (version !== petNoticeVersion || !petWin || petWin.isDestroyed()) return;
+  const worktrees = loadWorktrees();
+  const effectiveCwd = loadThreadProjects()[threadId] ?? (cwd && worktrees[cwd] ? worktrees[cwd].project : cwd);
+  const project = loadProjects().find((record) => effectiveCwd && record.folders.includes(effectiveCwd));
+  showPetNotice({ threadId, title: project ? `${project.name} / ${title}` : title, response: petResponseFirstLine(reply) });
+}
+
+function petStarted(key: string): void {
+  if (petSettleTimer) clearTimeout(petSettleTimer);
+  petSettleTimer = null;
+  petActivity.start(key);
+  updatePet();
+}
+
+function petFinished(key: string, status: "completed" | "failed" | "interrupted"): void {
+  const before = petActivity.runningCount;
+  petActivity.finish(key, status);
+  if (before === petActivity.runningCount) return;
+  updatePet();
+  if (petActivity.runningCount > 0 || petActivity.state === "idle") return;
+  if (petSettleTimer) clearTimeout(petSettleTimer);
+  petSettleTimer = setTimeout(() => {
+    petActivity.clearRecent();
+    petSettleTimer = null;
+    updatePet();
+  }, 6000);
+}
+
+function petPosition(): { x: number; y: number } {
+  const saved = petPreferences;
+  const size = petWindowSize(petScale(saved.scale));
+  const display = typeof saved.x === "number" && typeof saved.y === "number"
+    ? screen.getDisplayNearestPoint({ x: saved.x, y: saved.y })
+    : screen.getPrimaryDisplay();
+  const area = display.workArea;
+  return clampPetPosition({
+    x: saved.x ?? area.x + area.width - size.width - 28,
+    y: saved.y ?? area.y + area.height - size.height - 40,
+  }, size, area);
+}
+
+function setPetScale(scale: PetScale): void {
+  petPreferences.scale = scale;
+  if (petWin && !petWin.isDestroyed()) {
+    const old = petWin.getBounds();
+    const size = petWindowSize(scale);
+    const area = screen.getDisplayNearestPoint({ x: old.x + old.width - 1, y: old.y + old.height - 1 }).workArea;
+    const position = clampPetPosition({ x: old.x + old.width - size.width, y: old.y + old.height - size.height }, size, area);
+    petPreferences.x = position.x;
+    petPreferences.y = position.y;
+    petWin.setBounds({ ...position, ...size });
+    positionPetNotice();
+    updatePet();
+  }
+  savePetPreferences();
+}
+
+function updatePetHover(force = false): void {
+  if (!petWin || petWin.isDestroyed()) return;
+  // Electron drag regions suppress DOM hover events over the pet artwork.
+  const hovered = pointInPetWindow(screen.getCursorScreenPoint(), petWin.getBounds());
+  if (hovered === petHovered && !force) return;
+  petHovered = hovered;
+  petWin.webContents.send("pet:hover", hovered);
+}
+
+function stopPetHoverTracking(): void {
+  if (petHoverTimer) clearInterval(petHoverTimer);
+  petHoverTimer = null;
+  if (petMotionTimer) clearTimeout(petMotionTimer);
+  petMotionTimer = null;
+  petHovered = false;
+}
+
+function hidePet(): void {
+  petNoticeVersion++;
+  hidePetNotice();
+  stopPetHoverTracking();
+  if (petSaveTimer) clearTimeout(petSaveTimer);
+  petSaveTimer = null;
+  if (petWin && !petWin.isDestroyed()) {
+    const { x, y } = petWin.getBounds();
+    petPreferences.x = x;
+    petPreferences.y = y;
+    petWin.destroy();
+  }
+  petWin = null;
+  petPreferences.visible = false;
+  savePetPreferences();
+}
+
+function createPetWindow(): void {
+  if (petWin && !petWin.isDestroyed()) return;
+  petPreferences.visible = true;
+  savePetPreferences();
+  petWin = new BrowserWindow({
+    ...petPosition(),
+    ...petWindowSize(petScale(petPreferences.scale)),
+    frame: false,
+    transparent: true,
+    resizable: false,
+    show: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    focusable: false,
+    hasShadow: false,
+    webPreferences: {
+      preload: join(__dirname, "../preload/pet.js"),
+      sandbox: true,
+      partition: "unbiased-pet-overlay",
+      zoomMode: "isolated",
+      zoomFactor: 1,
+    },
+  });
+  petWin.setAlwaysOnTop(true, "floating");
+  if (process.platform === "darwin") petWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  restoreDevDockAfterOverlay();
+  petWin.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  petWin.webContents.on("did-finish-load", () => {
+    if (petWin && !petWin.isDestroyed()) {
+      petWin.webContents.setZoomFactor(1);
+      updatePet();
+      updatePetHover(true);
+    }
+  });
+  petWin.webContents.on("will-navigate", (event) => event.preventDefault());
+  petWin.webContents.on("render-process-gone", () => {
+    if (petWin && !petWin.isDestroyed()) petWin.webContents.reload();
+  });
+  let previousPosition = petWin.getBounds();
+  petWin.on("move", () => {
+    if (!petWin || petWin.isDestroyed()) return;
+    const bounds = petWin.getBounds();
+    const { x, y } = bounds;
+    const dx = x - previousPosition.x;
+    const dy = y - previousPosition.y;
+    previousPosition = bounds;
+    petPreferences.x = x;
+    petPreferences.y = y;
+    if (petNoticeWin?.isVisible()) positionPetNotice();
+    if ((dx || dy) && pointInPetWindow(screen.getCursorScreenPoint(), bounds)) {
+      const direction = Math.abs(dx) >= Math.abs(dy)
+        ? (dx > 0 ? "right" : "left")
+        : (dy > 0 ? "down" : "up");
+      petWin.webContents.send("pet:motion", direction);
+      if (petMotionTimer) clearTimeout(petMotionTimer);
+      petMotionTimer = setTimeout(() => {
+        petMotionTimer = null;
+        if (petWin && !petWin.isDestroyed()) petWin.webContents.send("pet:motion", null);
+      }, 220);
+    }
+    if (petSaveTimer) clearTimeout(petSaveTimer);
+    petSaveTimer = setTimeout(() => { petSaveTimer = null; savePetPreferences(); }, 300);
+  });
+  const createdPetWindow = petWin;
+  petWin.on("closed", () => {
+    if (petWin !== createdPetWindow) return;
+    stopPetHoverTracking();
+    petWin = null;
+  });
+  if (process.env.ELECTRON_RENDERER_URL) {
+    void petWin.loadURL(new URL("pet.html", process.env.ELECTRON_RENDERER_URL).toString());
+  } else {
+    void petWin.loadFile(join(__dirname, "../renderer/pet.html"));
+  }
+  petWin.showInactive();
+  petHoverTimer = setInterval(updatePetHover, 120);
+}
+
+function showPetMenu(): void {
+  const sizeMenu: MenuItemConstructorOptions[] = PET_SCALES.map((scale) => ({
+    label: `${Math.round(scale * 100)}%`,
+    type: "radio",
+    checked: petScale(petPreferences.scale) === scale,
+    click: () => setPetScale(scale),
+  }));
+  Menu.buildFromTemplate([
+    ...ROBOT_PALS.map((pal): MenuItemConstructorOptions => ({
+      label: pal.name,
+      type: "radio",
+      checked: (petPreferences.selection ?? "robot") === pal.id,
+      click: () => selectPal(pal.id),
+    })),
+    { type: "separator" },
+    { label: "Pal Size", submenu: sizeMenu },
+    { type: "separator" },
+    { label: "Hide Desktop Pal", click: hidePet },
+  ]).popup({ window: petWin ?? win ?? undefined });
+}
+
 function installAppMenu(): void {
   const command = (name: string) => () => send("app:menu-command", name);
   const template: MenuItemConstructorOptions[] = [
@@ -5597,6 +6032,9 @@ function installAppMenu(): void {
         { label: "Show Main Chat", accelerator: "CommandOrControl+1", click: command("show-main-chat") },
         { label: "Show Side Panel", accelerator: "CommandOrControl+2", click: command("show-side-panel") },
         { label: "Toggle Sidebar", accelerator: "CommandOrControl+B", click: command("toggle-sidebar") },
+        { type: "separator" },
+        { label: "Show Desktop Pal", click: createPetWindow },
+        { label: "Hide Desktop Pal", click: hidePet },
         { type: "separator" },
         { role: "resetZoom" },
         { role: "zoomIn" },
@@ -5676,6 +6114,13 @@ function createWindow(): void {
     title: "Unbiased",
     ...(process.platform !== "darwin" && existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: { preload: join(__dirname, "../preload/index.js") },
+  });
+  win.on("closed", () => {
+    if (petSaveTimer) clearTimeout(petSaveTimer);
+    petSaveTimer = null;
+    savePetPreferences();
+    if (petWin && !petWin.isDestroyed()) petWin.destroy();
+    petWin = null;
   });
   if (bounds.x === undefined) win.center();
 
@@ -6281,6 +6726,9 @@ function wireNotifications(): void {
           // gateway's per-org concurrency.
           learning?.setIdle(false);
           runningTurns.set(threadId, turn.id);
+          petReplies.set(threadId, { stream: "", last: "", final: "" });
+          const petKey = petTurnActivityKey(threadId, scheduledRuns.get(threadId)?.key);
+          if (petKey && !scheduledRuns.has(threadId)) petStarted(petKey);
           metrics.record({ ...metricNow(threadId), kind: "run", turn: turn.id, phase: "started", status: null } satisfies RunRecord);
           bgStream.delete(threadId);
           send("chat:thread-activity", { threadId, running: true });
@@ -6298,6 +6746,10 @@ function wireNotifications(): void {
       }
       case "item/agentMessage/delta": {
         const delta = (params.delta as string) ?? "";
+        if (threadId) {
+          const reply = petReplies.get(threadId);
+          if (reply) reply.stream = (reply.stream + delta).slice(0, 2000);
+        }
         // Always accumulate — this is what seeds the transcript when a
         // backgrounded conversation is reopened mid-stream.
         if (threadId) bgStream.set(threadId, (bgStream.get(threadId) ?? "") + delta);
@@ -6331,6 +6783,13 @@ function wireNotifications(): void {
           | { type?: string; id?: string; status?: string; changes?: { path?: string }[] }
           | undefined;
         const phase = msg.method === "item/started" ? "started" : "completed";
+        if (threadId && item?.id && ["commandExecution", "dynamicToolCall", "mcpToolCall", "fileChange"].includes(item.type ?? "")) {
+          const key = petTurnActivityKey(threadId, scheduledRuns.get(threadId)?.key);
+          const changed = key && (phase === "started"
+            ? petActivity.actionStarted(key, item.id)
+            : petActivity.actionFinished(key, item.id, item.status !== "failed" && item.status !== "interrupted" && (item as { success?: boolean }).success !== false));
+          if (changed) updatePet();
+        }
         // A finished assistant message lands in the engine's history — the
         // partial-stream buffer for it is no longer needed.
         // Same shape as the replay case above: a message delivered whole, in
@@ -6340,6 +6799,11 @@ function wireNotifications(): void {
         if (item?.type === "message" && phase === "completed" && threadId) {
           const m = item as unknown as { role?: string; text?: string; content?: unknown };
           const text = m.text ?? contentToText(m.content);
+          const reply = petReplies.get(threadId);
+          if (reply && m.role !== "user") {
+            reply.last = text || reply.stream;
+            reply.stream = "";
+          }
           // Skip the echo of the user's own message, and anything already
           // streamed — a delta-fed buffer means the pane has it.
           if (text && m.role !== "user" && !bgStream.get(threadId)) {
@@ -6352,6 +6816,14 @@ function wireNotifications(): void {
           bgStream.delete(threadId);
         }
         if (item?.type === "agentMessage" && phase === "completed" && threadId) {
+          const reply = petReplies.get(threadId);
+          if (reply) {
+            const message = item as typeof item & { text?: string; phase?: string | null };
+            const text = message.text || reply.stream;
+            if (message.phase === "final_answer") reply.final = text;
+            else if (message.phase !== "commentary") reply.last = text;
+            reply.stream = "";
+          }
           bgStream.delete(threadId);
           // Message boundary: the next delta belongs to a NEW assistant
           // message. Multi-agent turns emit several messages per turn, and
@@ -6689,6 +7161,14 @@ function wireNotifications(): void {
           // Idle again: nothing of the user's is competing for the gateway.
           if (runningTurns.size <= 1) learning?.setIdle(true);
           runningTurns.delete(threadId);
+          const reply = petReplies.get(threadId);
+          petReplies.delete(threadId);
+          const scheduledKey = scheduledRuns.get(threadId)?.key;
+          if (!scheduledKey) petFinished(`turn:${threadId}`, turn?.status === "failed" ? "failed" : turn?.status === "interrupted" ? "interrupted" : "completed");
+          if (turn?.status === "completed" && !subAgents.has(threadId) && !scheduledKey?.startsWith("tune:")) {
+            const version = petNoticeVersion;
+            void showCompletedPetNotice(threadId, reply?.final || reply?.last || "", reply?.stream || "", version);
+          }
           if (mcpApplyPending.delete(threadId)) {
             // Queued while the turn ran; the thread is idle now.
             void applyThreadMcp(threadId).catch((err) =>
@@ -6758,7 +7238,7 @@ function wireNotifications(): void {
                 "unknown error",
             );
           }
-          send("chat:thread-activity", { threadId, running: false });
+          send("chat:thread-activity", { threadId, running: false, completed: turn?.status === "completed" && !subAgents.has(threadId) });
           // Nicknames, for the case where raws never arrive. The engine emits
           // raw items only for threads STARTED with experimentalRawEvents, so
           // a resumed conversation learns nothing from the live path — and a
@@ -7579,8 +8059,10 @@ async function runScheduledTask(
     return { status: "failed", error: "already running", text: "" };
   }
   runningTaskKeys.set(task.key, { threadId: null, turnId: null });
+  petStarted(`scheduled:${task.key}`);
   send("scheduled:run-state", { key: task.key, running: true });
   let threadId: string | null = null;
+  let petOutcome: "completed" | "failed" | "interrupted" = "failed";
   try {
     const cwd = task.projectPath && existsSync(task.projectPath) ? task.projectPath : defaultChatDir();
     // Browser tools, but NOT schedule_create. Withholding every dynamic tool
@@ -7699,6 +8181,7 @@ async function runScheduledTask(
         (verdict.verdict ? ` (agent reported: ${verdict.verdict}${verdict.note ? ` - ${verdict.note}` : ""})` : ""),
     );
     if (trigger === "schedule") notifyScheduledRun(task, outcome, threadId);
+    petOutcome = outcome.status;
     return outcome;
   } catch (err) {
     const now = new Date().toISOString();
@@ -7722,6 +8205,7 @@ async function runScheduledTask(
       browserNetGrants.delete(threadId);
     }
     runningTaskKeys.delete(task.key);
+    petFinished(`scheduled:${task.key}`, petOutcome);
     send("scheduled:run-state", { key: task.key, running: false });
   }
 }
@@ -7935,6 +8419,54 @@ function registeredInteractiveVisualId(rawUrl: string): string | null {
 protocol.registerSchemesAsPrivileged([{ scheme: INTERACTIVE_VISUAL_SCHEME, privileges: { standard: true, secure: true } }]);
 
 app.whenReady().then(async () => {
+  try {
+    const saved = JSON.parse(readFileSync(petPreferencesFile(), "utf8")) as Partial<PetPreferences> & { folder?: string };
+    petPreferences = {
+      visible: saved.visible !== false,
+      ...(typeof saved.x === "number" && Number.isFinite(saved.x) ? { x: saved.x } : {}),
+      ...(typeof saved.y === "number" && Number.isFinite(saved.y) ? { y: saved.y } : {}),
+      selection: savedPalSelection(saved),
+      scale: petScale(saved.scale),
+    };
+  } catch {
+    petPreferences = { visible: true };
+  }
+  ipcMain.on("pet:ready", (event) => {
+    if (event.sender === petWin?.webContents) updatePet();
+  });
+  ipcMain.on("pet:menu", (event) => {
+    if (event.sender === petWin?.webContents) showPetMenu();
+  });
+  ipcMain.on("pet:notice-dismiss", (event, id: unknown) => {
+    if (event.sender !== petNoticeWin?.webContents || !Number.isSafeInteger(id)) return;
+    petNotices = petNotices.filter((notice) => notice.id !== id);
+    updatePetNoticeWindow();
+    schedulePetNoticeExpiry();
+  });
+  ipcMain.on("pet:notice-open", (event, id: unknown) => {
+    if (event.sender !== petNoticeWin?.webContents || !Number.isSafeInteger(id) || !win || win.isDestroyed()) return;
+    const selected = petNotices.find((notice) => notice.id === id);
+    if (!selected) return;
+    petNotices = petNotices.filter((notice) => notice.id !== id);
+    updatePetNoticeWindow();
+    schedulePetNoticeExpiry();
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    send("pet:notice-open-thread", { threadId: selected.threadId });
+  });
+  ipcMain.handle("pals:get", (event) => event.sender === win?.webContents ? palsSettings() : null);
+  ipcMain.handle("pals:select", (event, id: unknown) =>
+    event.sender === win?.webContents && typeof id === "string" ? selectPal(id) : { ok: false, settings: palsSettings() });
+  ipcMain.handle("pals:visible", (event, visible: unknown) => {
+    if (event.sender !== win?.webContents || typeof visible !== "boolean") return palsSettings();
+    if (visible) createPetWindow(); else hidePet();
+    return palsSettings();
+  });
+  ipcMain.handle("pals:scale", (event, scale: unknown) => {
+    if (event.sender === win?.webContents && PET_SCALES.includes(scale as PetScale)) setPetScale(scale as PetScale);
+    return palsSettings();
+  });
   protocol.handle(INTERACTIVE_VISUAL_SCHEME, (request) => {
     const id = registeredInteractiveVisualId(request.url);
     const source = request.method === "GET" && id ? interactiveVisuals.get(id) : null;
@@ -8220,6 +8752,10 @@ app.whenReady().then(async () => {
       // Record the directory used by this thread so memory and turn policy
       // remain scoped to its project, including a scratch side chat.
       threadCwds.set(started.thread.id, mainCwd ?? pendingCwd ?? defaultChatDir());
+      if (paneId === "main") {
+        const projectContext = configuredProjectContext(threadCwds.get(started.thread.id) ?? null, started.thread.id);
+        if (projectContext) projectContextSeen.set(started.thread.id, projectContext);
+      }
       // The scope-bearing event, using the SAME resolution memory uses: a
       // worktree belongs to its parent project. The sidecar cannot derive
       // this — cwd cannot tell /a/api from /b/api, and it has no worktree
@@ -8240,7 +8776,13 @@ app.whenReady().then(async () => {
     // Mentions preserve attachment metadata in thread history, but local
     // paths in mentions do not reach the model. Supply readable files (or an
     // explicit path to inspect) as text; images remain actual image input.
+    const turnCwd = paneId.startsWith("side") && pane.threadId
+      ? threadCwds.get(pane.threadId) ?? mainCwd
+      : mainCwd;
+    const projectContext = configuredProjectContext(turnCwd, pane.threadId);
+    const needsProjectContext = !!projectContext && !!pane.threadId && projectContextSeen.get(pane.threadId) !== projectContext;
     const input: Record<string, unknown>[] = [{ type: "text", text }];
+    if (needsProjectContext) input.unshift({ type: "text", text: `App project context:\n${projectContext}` });
     const attachmentContext = fileAttachmentContext(attachments ?? []);
     if (attachmentContext) input.push({ type: "text", text: attachmentContext });
     for (const a of attachments ?? []) {
@@ -8253,9 +8795,6 @@ app.whenReady().then(async () => {
     if (computer) input.unshift({ type: "text", text: COMPUTER_DIRECTIVE });
     if (visualize) input.unshift({ type: "text", text: VISUALIZE_DIRECTIVE });
     if (planMode) input.unshift({ type: "text", text: PLAN_DIRECTIVE });
-    const turnCwd = paneId.startsWith("side") && pane.threadId
-      ? threadCwds.get(pane.threadId) ?? mainCwd
-      : mainCwd;
     const result = (await engine.request("turn/start", {
       threadId: pane.threadId,
       input,
@@ -8266,6 +8805,9 @@ app.whenReady().then(async () => {
       sandboxPolicy: planMode ? { type: "readOnly" } : turnSandbox(turnCwd),
     })) as { turn?: { id?: string } };
     if (result.turn?.id) pane.turnId = result.turn.id;
+    if (result.turn?.id && needsProjectContext && pane.threadId && projectContext) {
+      projectContextSeen.set(pane.threadId, projectContext);
+    }
     return { turnId: pane.turnId, threadId: pane.threadId, created };
   });
 
@@ -10684,11 +11226,12 @@ app.whenReady().then(async () => {
     const threadProjectOverrides = loadThreadProjects();
     const recents: ThreadSummary[] = [];
     for (const t of result.data ?? []) {
+      petThreadTitles.set(t.id, threadTitle(t));
       // Scheduled runs are reachable from the Scheduled page (Open run / Open
       // last run) and nowhere else. Two daily tasks would otherwise add ~60
       // rows a month to Recents and bury the conversations the user started.
       if (t.threadSource === SCHEDULED_THREAD_SOURCE || scheduledThreadIds.has(t.id)) continue;
-      const summary: ThreadSummary = { id: t.id, title: threadTitle(t), createdAt: t.createdAt };
+      const summary: ThreadSummary = { id: t.id, title: threadTitle(t), createdAt: t.createdAt, updatedAt: t.updatedAt };
       // Explicit assignment wins, then worktree conversations group under
       // their parent project, then the thread's own cwd.
       const effectiveCwd =
@@ -10711,6 +11254,52 @@ app.whenReady().then(async () => {
       // Threads with a live turn — seeds the sidebar activity indicators.
       running: [...runningTurns.keys()],
     };
+  });
+
+  ipcMain.handle("threads:search", async (_e, request: { query: string; threads: { id: string; updatedAt?: string | number }[]; includeSavedTranscripts?: boolean }) => {
+    const query = typeof request?.query === "string" ? request.query.trim() : "";
+    if (query.length < 2 || !Array.isArray(request?.threads)) return { results: [], failed: 0 };
+    const threads = [...new Map(request.threads
+      .filter((thread) => thread && typeof thread.id === "string" && thread.id.length < 128)
+      .slice(0, 100)
+      .map((thread) => [thread.id, thread] as const)).values()];
+    const results: { id: string; snippet: string; title?: string }[] = [];
+    let failed = 0;
+    let next = 0;
+    if (request.includeSavedTranscripts) {
+      const dir = join(app.getPath("userData"), "transcripts");
+      const names = await readdirAsync(dir).catch(() => [] as string[]);
+      const savedIds = names
+        .filter((name) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i.test(name))
+        .map((name) => name.slice(0, -5));
+      let savedNext = 0;
+      await Promise.all(Array.from({ length: Math.min(4, savedIds.length) }, async () => {
+        while (savedNext < savedIds.length) {
+          const id = savedIds[savedNext++];
+          try {
+            const messages = await searchableThreadMessages(id);
+            const snippet = matchingMessageSnippet(messages, query);
+            if (snippet) results.push({ id, snippet, title: messages[0]?.replace(/\s+/g, " ").trim().slice(0, 90) || "Conversation" });
+          } catch {
+            failed++;
+          }
+        }
+      }));
+    }
+    const savedMatches = new Set(results.map((result) => result.id));
+    await Promise.all(Array.from({ length: Math.min(3, threads.length) }, async () => {
+      while (next < threads.length) {
+        const thread = threads[next++];
+        if (savedMatches.has(thread.id)) continue;
+        try {
+          const snippet = matchingMessageSnippet(await searchableThreadMessages(thread.id, thread.updatedAt), query);
+          if (snippet) results.push({ id: thread.id, snippet });
+        } catch {
+          failed++;
+        }
+      }
+    }));
+    return { results: redactSecrets(results), failed };
   });
 
   // Archive every chat in a project (engine-side thread/archive — they
@@ -10775,6 +11364,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("threads:rename", async (_e, p: { threadId: string; name: string }) => {
     try {
       await engine.request("thread/name/set", { threadId: p.threadId, name: p.name });
+      petThreadTitles.set(p.threadId, p.name);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: String(err) };
@@ -11832,6 +12422,7 @@ app.whenReady().then(async () => {
         }
       }
       runningTurns.delete(subId);
+      petFinished(`turn:${subId}`, "interrupted");
       settleLocalApprovals(subId);
       settleLocalUserInputs(subId);
       subAgents.delete(subId);
@@ -11840,6 +12431,7 @@ app.whenReady().then(async () => {
       bgStream.delete(subId);
     }
     runningTurns.delete(id);
+    petFinished(`turn:${id}`, "interrupted");
     settleLocalApprovals(id);
     settleLocalUserInputs(id);
     threadMcp.delete(id);
@@ -11867,6 +12459,8 @@ app.whenReady().then(async () => {
   });
 
   createWindow();
+  if (petPreferences.visible) createPetWindow();
+  restoreDevDockAfterOverlay();
   installAppMenu();
   void completeDevAccessibilityRecovery();
   // Check for updates shortly after launch (let the window settle first),

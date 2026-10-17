@@ -22,3 +22,10 @@ The packaged application includes the `agent-browser` CLI from
 [Vercel Labs](https://github.com/vercel-labs/agent-browser), licensed under
 Apache-2.0. Its license is included at
 `Contents/Resources/browser/licenses/agent-browser/LICENSE`.
+
+## Robot Head Pal
+
+The packaged application includes an adapted version of
+[robot-heads](https://github.com/fayazara/robot-heads/tree/58ebf6439a8125a769f63b22ffd35bc18834b1b5)
+by Fayaz Ahmed, licensed under MIT. Its copyright and license text are included
+at `Contents/Resources/licenses/robot-heads/LICENSE`.

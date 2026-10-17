@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:;" />
+    <title>Unbiased Pal</title>
+  </head>
+  <body>
+    <div id="pet" class="pet idle" aria-label="Unbiased Pal, idle">
+      <div class="robot-head" id="robot"></div>
+      <div class="status" id="status" aria-live="polite"></div>
+      <button class="menu" id="menu" title="Pal options" aria-label="Pal options" type="button">&#8230;</button>
+    </div>
+    <script type="module" src="./src/pet.ts"></script>
+  </body>
+</html>
