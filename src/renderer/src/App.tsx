@@ -1,4 +1,4 @@
-import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Children, createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 // The changelog SHIPS with the build so the Updates tab works offline and on
@@ -26,8 +26,7 @@ import "prismjs/components/prism-markdown";
 import "prismjs/themes/prism-tomorrow.css";
 import "./side-tab-scrollbar.css";
 import "./mermaid-diagram.css";
-import "@unbiased/iui/styles.css";
-import "@unbiased/iui/openui-styles.css";
+import "@openuidev/react-ui/layered/styles/index.css";
 import "./openui-visual.css";
 import "./markdown-table.css";
 import { tableToMarkdown } from "./markdown-table";
@@ -36,7 +35,7 @@ import { UserMessageMarkdown } from "./user-message-markdown";
 import { MarkdownComposer, type MarkdownComposerHandle } from "./markdown-composer";
 import "./markdown-composer.css";
 import "./user-input-card.css";
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, MessageSquare, MoreHorizontal, RefreshCw } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, MessageSquare, MoreHorizontal, RefreshCw, Sparkles } from "lucide-react";
 import { ConversationDrafts } from "./conversation-drafts";
 import { SettingsRoute } from "./settings-route";
 import { parseAgentStylePrefs, type AgentStylePrefs } from "../../shared/agent-style";
@@ -44,10 +43,12 @@ import { SideChatIdleTracker } from "./side-chat-idle";
 import { settleTurnOutput } from "./turn-completion";
 import { isTranscriptAtBottom } from "./transcript-scroll";
 import { finalAssistantIndices } from "./transcript-actions";
+import { completedWorkDuration } from "./work-duration";
 import { isComposerTypingKey } from "./type-to-focus";
 import { appendCommandOutputDelta, closeFinishedAutoOpenedPanels, commandStatusAfterEvent, settleTurnSteps, settleUnconfirmedSteps, showsCommandOutputPanel } from "./transcript-command-status";
 import { dayMarkerIndices, formatConversationDayMarker, formatConversationTime, hydrateTranscriptTimes } from "../../shared/conversation-time";
 import { visualFenceContent } from "./openui-visual";
+import { isClosedVisualFence } from "./visual-fence";
 import { validateUserInput, withoutUserInputDefaults, type UserInputRequest, type UserInputValue } from "../../shared/user-input";
 import { firstInvalidQuestionIndex, validateQuestion } from "./user-input-navigation";
 
@@ -149,6 +150,7 @@ type QueuedMsg = {
   text: string; // display text for the transcript entry
   wire: string; // what actually goes to the engine
   computer?: boolean; // explicitly prefer desktop tools for this turn
+  visualize?: boolean; // explicitly request a visual for this turn
   attachments: Attachment[];
   annotations?: SentAnnotation[];
 };
@@ -595,7 +597,7 @@ declare global {
         paneId: PaneId,
         text: string,
         attachments?: Attachment[],
-        options?: { computer?: boolean },
+        options?: { computer?: boolean; visualize?: boolean },
       ) => Promise<{ turnId: string | null; threadId: string; created: boolean }>;
       chooseAttachments: () => Promise<{ attachments: Attachment[]; errors?: string[] }>;
       attachPaths: (paths: string[]) => Promise<{ attachments: Attachment[]; errors?: string[] }>;
@@ -1088,7 +1090,7 @@ function parseThemeImport(raw: string): ThemeConfig | null {
 }
 
 const REMARK_PLUGINS = [remarkGfm];
-const StreamingVisualContext = createContext(false);
+const StreamingVisualContext = createContext({ streaming: false, markdown: "" });
 // File previews render embedded HTML (chat markdown stays text-only).
 // Scripts can't run regardless — the CSP has no unsafe-inline.
 const REHYPE_PLUGINS = [rehypeRaw];
@@ -6977,6 +6979,7 @@ function TranscriptChevron({ open }: { open: boolean }) {
 function WorkedGroup({ duration, children }: { duration: number | null; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const [hovering, setHovering] = useState(false);
+  const hasDetails = Children.count(children) > 0;
   // A small bottom margin, not zero: the answer below tightens its own top
   // margin after a fold, and with nothing here the two collapsed to 2px —
   // the metadata line then read as the answer's first line, and the gap
@@ -6987,10 +6990,11 @@ function WorkedGroup({ duration, children }: { duration: number | null; children
     <div style={{ margin: "14px 0 8px" }}>
       <button
         className="u-worked-group"
-        onClick={() => setOpen((o) => !o)}
+        onClick={hasDetails ? () => setOpen((o) => !o) : undefined}
         onMouseEnter={() => setHovering(true)}
         onMouseLeave={() => setHovering(false)}
-        aria-expanded={open}
+        aria-expanded={hasDetails ? open : undefined}
+        disabled={!hasDetails}
         style={{
           display: "flex",
           alignItems: "center",
@@ -7003,7 +7007,7 @@ function WorkedGroup({ duration, children }: { duration: number | null; children
           background: "transparent",
           border: "none",
           padding: "2px 0 2px",
-          color: hovering ? "var(--fg-msg)" : colors.dim,
+          color: hasDetails && hovering ? "var(--fg-msg)" : colors.dim,
           // Set like the answer it introduces — same size, leading and
           // tracking — so the fold reads as a quiet line of the same voice
           // rather than a caption in a different one. Colour alone carries
@@ -7011,14 +7015,15 @@ function WorkedGroup({ duration, children }: { duration: number | null; children
           fontSize: 15.5,
           lineHeight: 1.7,
           letterSpacing: "var(--track-body)",
-          cursor: "pointer",
+          cursor: hasDetails ? "pointer" : "default",
+          opacity: 1,
           fontFamily: "inherit",
         }}
       >
         {duration !== null ? `Worked for ${formatDuration(duration)}` : "Worked"}
-        <TranscriptChevron open={open} />
+        {hasDetails && <TranscriptChevron open={open} />}
       </button>
-      {open && (
+      {hasDetails && open && (
         <>
           {/* A rule only while open: collapsed, the header is a quiet label
               and a full-width line would compete with the transcript; open,
@@ -7236,7 +7241,8 @@ function buildMdComponents(
         </InlineCodeChip>
       );
     },
-    pre: (props: { children?: React.ReactNode }) => <CodeBlock>{props.children}</CodeBlock>,
+    pre: (props: { children?: React.ReactNode; node?: { position?: { start?: { offset?: number }; end?: { offset?: number } } } }) =>
+      <CodeBlock position={props.node?.position}>{props.children}</CodeBlock>,
     a: (props: { href?: string; children?: React.ReactNode }) => {
       const host = linkHost(props.href);
       return (
@@ -7459,7 +7465,7 @@ function SubAgentPane({ threadId, status }: { threadId: string; status: string }
         })}
         {tail !== "" && (
           <div style={{ margin: "12px 0", lineHeight: 1.65, fontSize: 14, color: "var(--fg-msg)" }}>
-            <StreamingVisualContext.Provider value={true}>
+            <StreamingVisualContext.Provider value={{ streaming: true, markdown: tail }}>
               <Markdown remarkPlugins={REMARK_PLUGINS} components={mdComponents}>{tail}</Markdown>
             </StreamingVisualContext.Provider>
           </div>
@@ -8633,6 +8639,7 @@ function ChatPane({
   // tools remain registered for every thread so natural-language desktop
   // requests still work without explicitly selecting this first.
   const [computerSelected, setComputerSelected] = useState(false);
+  const [visualizeSelected, setVisualizeSelected] = useState(false);
   const composerRef = useRef<MarkdownComposerHandle | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>(() => drafts.current().attachments);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -9140,6 +9147,7 @@ function ChatPane({
       setPendingComment(null);
       setQueue([]);
       setComputerSelected(false);
+      setVisualizeSelected(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reset.nonce]);
@@ -9268,11 +9276,10 @@ function ChatPane({
           next = withoutTrailingPlaceholder(next);
           const start = workStart;
           next = settleTurnSteps(next, start);
-          // Fold a completed turn's intermediate output — narration, agent
-          // lifecycle rows, command groups — under a "Worked for Ns" header,
-          // leaving the final message visible (Codex-style). Only turns that
-          // actually did agent/tool work get folded; failed and interrupted
-          // turns stay raw so nothing hides the evidence.
+          // Keep completed-turn duration beside the final answer. Intermediate
+          // narration, agent rows, and commands fold under that header; a
+          // direct answer still gets a duration without an empty disclosure.
+          // Failed and interrupted turns stay raw so evidence remains visible.
           if (p.status === "completed") {
             if (start !== null && start >= 0 && start < next.length) {
               const turnEntries = next.slice(start);
@@ -9316,8 +9323,10 @@ function ChatPane({
                       ...(agents.length > 0 ? { agents } : null),
                     }
                   : finalMsg;
-              if (didWork && foldable.length > 0) {
-                const duration = workStartedAt !== null ? (Date.now() - workStartedAt) / 1000 : null;
+              const duration = completedWorkDuration(
+                workStartedAt, Date.now(), Boolean(answer), didWork && foldable.length > 0,
+              );
+              if (duration !== undefined) {
                 next = [
                   ...next.slice(0, start),
                   { kind: "work", duration, entries: foldable },
@@ -9666,7 +9675,7 @@ function ChatPane({
       return next;
     });
     try {
-      const res = await window.unbiased.sendMessage(paneId, q.wire, q.attachments, { computer: q.computer });
+      const res = await window.unbiased.sendMessage(paneId, q.wire, q.attachments, { computer: q.computer, visualize: q.visualize });
       threadIdRef.current = res.threadId;
       onThreadCreated?.(res.threadId, res.created, q.text);
     } catch (err) {
@@ -9705,6 +9714,7 @@ function ChatPane({
       text,
       wire,
       computer: computerSelected,
+      visualize: visualizeSelected,
       attachments: sentAttachments,
       annotations:
         anns.length > 0
@@ -9743,6 +9753,7 @@ function ChatPane({
     changeAttachments(q.attachments);
     if (q.annotations) setAnnotations(q.annotations);
     setComputerSelected(!!q.computer);
+    setVisualizeSelected(!!q.visualize);
   }
 
   async function decide(itemId: string, requestId: string, decision: ApprovalDecision) {
@@ -10155,7 +10166,7 @@ function ChatPane({
             letterSpacing: "var(--track-body)",
           }}
         >
-          <StreamingVisualContext.Provider value={busy && block.key >= (turnStartIndexRef.current ?? entries.length)}>
+          <StreamingVisualContext.Provider value={{ streaming: busy && block.key >= (turnStartIndexRef.current ?? entries.length), markdown: e.text }}>
             <Markdown remarkPlugins={REMARK_PLUGINS} components={mdComponents}>
               {e.text}
             </Markdown>
@@ -10605,6 +10616,16 @@ function ChatPane({
                 }}
               />
               <MenuItem
+                icon={<Sparkles size={17} aria-hidden="true" />}
+                label="Visualize"
+                desc="Create an interactive visual"
+                trailing={<StatePill on={visualizeSelected} />}
+                onClick={() => {
+                  setVisualizeSelected((selected) => !selected);
+                  setPlusOpen(false);
+                }}
+              />
+              <MenuItem
                 icon={<SkillIcon />}
                 label="Skills"
                 desc="What Pareto knows how to do"
@@ -10974,6 +10995,8 @@ function ChatPane({
                     border: "none",
                     borderRadius: 999,
                     padding: "4px 10px",
+                    height: 28,
+                    boxSizing: "border-box",
                     color: colors.accent,
                     fontSize: 13.5,
                     cursor: "pointer",
@@ -10997,6 +11020,8 @@ function ChatPane({
                     border: "none",
                     borderRadius: 999,
                     padding: "4px 10px",
+                    height: 28,
+                    boxSizing: "border-box",
                     color: colors.accent,
                     fontSize: 13.5,
                     cursor: "pointer",
@@ -11005,6 +11030,31 @@ function ChatPane({
                 >
                   <DesktopIcon />
                   Computer
+                  <CloseIcon />
+                </button>
+              )}
+              {visualizeSelected && (
+                <button
+                  onClick={() => setVisualizeSelected(false)}
+                  title="Create a visual for the next message. Click to remove."
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 7,
+                    background: "var(--chip)",
+                    border: "none",
+                    borderRadius: 999,
+                    padding: "4px 10px",
+                    height: 28,
+                    boxSizing: "border-box",
+                    color: colors.accent,
+                    fontSize: 13.5,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <Sparkles size={15} aria-hidden="true" />
+                  Visualize
                   <CloseIcon />
                 </button>
               )}
@@ -11021,6 +11071,8 @@ function ChatPane({
                     border: "none",
                     borderRadius: 999,
                     padding: "4px 10px",
+                    height: 28,
+                    boxSizing: "border-box",
                     color: accessMode === "full" ? colors.amber : colors.dim,
                     fontSize: 13.5,
                     cursor: "pointer",
@@ -11660,9 +11712,9 @@ function fenceClassOf(children?: React.ReactNode): string {
  *
  *  Streaming still updates the block: the text changes, so the compare fails
  *  and it re-renders, as it should. */
-const CodeBlock = memo(function CodeBlock({ children }: { children?: React.ReactNode }) {
+const CodeBlock = memo(function CodeBlock({ children, position }: { children?: React.ReactNode; position?: { start?: { offset?: number }; end?: { offset?: number } } }) {
   const [copied, setCopied] = useState(false);
-  const streamingVisual = useContext(StreamingVisualContext);
+  const { streaming: streamingVisual, markdown } = useContext(StreamingVisualContext);
   const className: string = fenceClassOf(children);
   const lang = /language-([\w-]+)/.exec(className)?.[1]?.toLowerCase() ?? "";
   const label = LANGUAGE_NAMES[lang] ?? (lang ? lang.toUpperCase() : "Plain text");
@@ -11676,7 +11728,8 @@ const CodeBlock = memo(function CodeBlock({ children }: { children?: React.React
     () => (grammar ? Prism.highlight(text, grammar, prismLang) : null),
     [text, grammar, prismLang],
   );
-  const visual = useMemo(() => visualFenceContent(lang, text, streamingVisual), [lang, text, streamingVisual]);
+  const fenceClosed = isClosedVisualFence(markdown, position);
+  const visual = useMemo(() => visualFenceContent(lang, text, streamingVisual, fenceClosed), [lang, text, streamingVisual, fenceClosed]);
   if (visual) return visual;
 
   return (
@@ -17934,6 +17987,8 @@ function ConversationMcp({ threadId, panelOpen, onOpenMcp }: { threadId: string 
         border: "none",
         borderRadius: 999,
         padding: "4px 10px",
+        height: 28,
+        boxSizing: "border-box",
         color: on ? colors.accent : colors.dim,
         fontSize: 13.5,
         cursor: "pointer",

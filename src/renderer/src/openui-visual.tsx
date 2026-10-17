@@ -1,10 +1,11 @@
-import { Component, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import { Component, type ReactElement, type ReactNode } from "react";
 import { createLibrary, createParser, defineComponent, Renderer } from "@openuidev/react-lang";
-import { iuiOpenUILibrary } from "@unbiased/iui/openui";
-import { guidedExplainerSchema } from "@unbiased/iui";
+import { openuiLibrary } from "@openuidev/react-ui/genui-lib";
 import { z } from "zod/v4";
 import { isInteractiveVisualSource, MAX_INTERACTIVE_VISUAL_LENGTH } from "../../shared/interactive-visual";
 import { InteractiveHtmlVisual } from "./interactive-html-visual";
+import { GeneratedVisualViewport } from "./generated-visual-viewport";
+import { openUIThemeStyle } from "./openui-theme";
 import { MermaidDiagram } from "./mermaid-diagram";
 import { mermaidDiagramSchema, MAX_MERMAID_LENGTH } from "./mermaid-model";
 import { Whiteboard } from "./whiteboard";
@@ -38,7 +39,7 @@ const VisualHtmlComponent = defineComponent({
 export const appOpenUILibrary = createLibrary({
   root: "Stack",
   components: [
-    ...Object.values(iuiOpenUILibrary.components),
+    ...Object.values(openuiLibrary.components),
     WhiteboardComponent,
     MermaidComponent,
     VisualHtmlComponent,
@@ -62,7 +63,6 @@ function inspectTree(value: unknown, depth: number, state: { count: number }): b
   if (item.type === "element") {
     const element = item as Element;
     if (!knownComponents.has(element.typeName) || ++state.count > MAX_COMPONENTS) return false;
-    if (element.typeName === "GuidedExplainer" && !guidedExplainerSchema.safeParse(element.props).success) return false;
     if (element.typeName === "Whiteboard" && !whiteboardSchema.safeParse(element.props).success) return false;
     if (element.typeName === "Mermaid" && !mermaidDiagramSchema.safeParse(element.props).success) return false;
     if (element.typeName === "VisualHtml") {
@@ -87,10 +87,55 @@ export function inspectOpenUI(source: string): { valid: boolean; reason?: string
     const children = result.root.props.children;
     const first = Array.isArray(children) ? children[0] as Element | undefined : undefined;
     const selfFramed = Array.isArray(children) && children.length === 1 && first?.type === "element" &&
-      ["GuidedExplainer", "Whiteboard", "VisualHtml"].includes(first.typeName);
+      ["Whiteboard", "VisualHtml"].includes(first.typeName);
     return { valid: true, selfFramed };
   } catch {
     return { valid: false, reason: "parse" };
+  }
+}
+
+function normalizeStandaloneVisualHtml(source: string): string {
+  if (!source.trim() || source.length > MAX_PROGRAM_LENGTH) return source;
+  try {
+    const result = parser.parse(source);
+    if (result.root?.typeName !== "VisualHtml" || result.meta.incomplete ||
+        result.meta.errors.length || result.meta.unresolved.length || result.meta.statementCount !== 1 ||
+        result.queryStatements.length || result.mutationStatements.length) return source;
+    const props = visualHtmlSchema.safeParse(result.root.props);
+    if (!props.success) return source;
+    return `root = Stack([VisualHtml(${JSON.stringify(props.data.source)})])`;
+  } catch {
+    return source;
+  }
+}
+
+// A bespoke scene is sometimes emitted inside VisualHtml("...") with bare
+// quotes in SVG handlers. Recover only a final VisualHtml call in a Stack;
+// the rebuilt program must still pass the ordinary parser and safety checks.
+function recoverQuotedVisualHtml(source: string): string | null {
+  const marker = 'VisualHtml("';
+  const start = source.indexOf(marker);
+  if (start < 0 || source.indexOf(marker, start + marker.length) >= 0 ||
+      !/^\s*root\s*=\s*Stack\(\s*\[/.test(source.slice(0, start))) return null;
+  const ending = /"\s*\)\s*\]\s*\)\s*$/.exec(source);
+  if (!ending || ending.index <= start + marker.length) return null;
+  const raw = source.slice(start + marker.length, ending.index);
+  let quoted = '"';
+  let backslashes = 0;
+  for (const char of raw) {
+    if (char === '"' && backslashes % 2 === 0) quoted += '\\';
+    quoted += char === "\n" ? "\\n" : char === "\r" ? "\\r" : char === "\t" ? "\\t" : char;
+    backslashes = char === "\\" ? backslashes + 1 : 0;
+  }
+  quoted += '"';
+  try {
+    const html = JSON.parse(quoted) as unknown;
+    if (!isInteractiveVisualSource(html)) return null;
+    const tail = ending[0].replace(/^"\s*\)/, "");
+    const repaired = `${source.slice(0, start)}VisualHtml(${JSON.stringify(html)})${tail}`;
+    return inspectOpenUI(repaired).valid ? repaired : null;
+  } catch {
+    return null;
   }
 }
 
@@ -112,22 +157,17 @@ class VisualRenderBoundary extends Component<{ children: ReactNode }, { failed: 
 
 function OpenUIVisualSurface({ source, selfFramed }: { source: string; selfFramed: boolean }) {
   return (
-    <VisualRenderBoundary key={source}>
-      <div
-        className={`iui-openui app-openui-visual${selfFramed ? " app-openui-visual--bare" : ""}`}
-        aria-label="Interactive visual"
-        style={{
-          "--openui-background": "var(--panel)",
-          "--openui-foreground": "var(--panel-2)",
-          "--openui-text-neutral-primary": "var(--fg-msg)",
-          "--openui-text-neutral-secondary": "var(--dim)",
-          "--openui-border-default": "var(--border)",
-          "--openui-interactive-accent-default": "var(--accent)",
-        } as CSSProperties}
-      >
-        <Renderer response={source} library={appOpenUILibrary} isStreaming={false} toolProvider={null} publishObservability={false} />
-      </div>
-    </VisualRenderBoundary>
+    <GeneratedVisualViewport>
+      <VisualRenderBoundary key={source}>
+        <div
+          className={`app-openui-visual${selfFramed ? " app-openui-visual--bare" : ""}`}
+          aria-label="Interactive visual"
+          style={openUIThemeStyle}
+        >
+          <Renderer response={source} library={appOpenUILibrary} isStreaming={false} toolProvider={null} publishObservability={false} />
+        </div>
+      </VisualRenderBoundary>
+    </GeneratedVisualViewport>
   );
 }
 
@@ -139,27 +179,67 @@ function VisualFenceStatus({ pending = false }: { pending?: boolean }) {
   );
 }
 
-function renderProgram(source: string, streaming: boolean): ReactElement {
-  if (streaming) return <VisualFenceStatus pending />;
-  const inspected = inspectOpenUI(source);
-  if (!inspected.valid) {
-    console.warn("[visual] OpenUI source rejected:", inspected.reason);
-    return <VisualFenceStatus />;
+type VisualFenceProps = { language: string; source: string; streaming: boolean; fenceClosed: boolean };
+type ValidatedVisual = { source: string; selfFramed: boolean };
+
+function validatedVisual({ language, source, streaming, fenceClosed }: VisualFenceProps): ValidatedVisual | null {
+  let program = source;
+  if (language === "openui") {
+    // A complete OpenUI program is safe to show even before the closing Markdown fence arrives.
+    program = normalizeStandaloneVisualHtml(source);
+  } else if (language === "mermaid") {
+    if ((streaming && !fenceClosed) || source.length > MAX_MERMAID_LENGTH ||
+        !mermaidDiagramSchema.safeParse({ diagram: source }).success) return null;
+    program = `root = Stack([Mermaid(${JSON.stringify(source)})])`;
+  } else if (language === "visual-html") {
+    // Never run a script fragment until its fence is closed.
+    if ((streaming && !fenceClosed) || !isInteractiveVisualSource(source)) return null;
+    program = `root = Stack([VisualHtml(${JSON.stringify(source)})])`;
+  } else {
+    return null;
   }
-  return <OpenUIVisualSurface source={source} selfFramed={Boolean(inspected.selfFramed)} />;
+  const inspected = inspectOpenUI(program);
+  if (!inspected.valid && language === "openui" && fenceClosed) {
+    const recovered = recoverQuotedVisualHtml(program);
+    if (recovered) {
+      const repaired = inspectOpenUI(recovered);
+      return { source: recovered, selfFramed: Boolean(repaired.selfFramed) };
+    }
+  }
+  if (!inspected.valid && !streaming && language === "openui") {
+    console.warn("[visual] OpenUI source rejected:", inspected.reason);
+  }
+  return inspected.valid ? { source: program, selfFramed: Boolean(inspected.selfFramed) } : null;
 }
 
-export function visualFenceContent(language: string, source: string, streaming: boolean): ReactElement | null {
-  if (language === "openui") return renderProgram(source, streaming);
-  if (language === "mermaid") {
-    if (streaming) return <VisualFenceStatus pending />;
-    if (!mermaidDiagramSchema.safeParse({ diagram: source }).success || source.length > MAX_MERMAID_LENGTH) return <VisualFenceStatus />;
-    return renderProgram(`root = Stack([Mermaid(${JSON.stringify(source)})])`, false);
+type VisualFenceState = VisualFenceProps & { current: ValidatedVisual | null; lastValid: ValidatedVisual | null };
+
+class ProgressiveVisualFence extends Component<VisualFenceProps, VisualFenceState> {
+  constructor(props: VisualFenceProps) {
+    super(props);
+    const current = validatedVisual(props);
+    this.state = { ...props, current, lastValid: current };
   }
-  if (language === "visual-html") {
-    if (streaming) return <VisualFenceStatus pending />;
-    if (!isInteractiveVisualSource(source)) return <VisualFenceStatus />;
-    return renderProgram(`root = Stack([VisualHtml(${JSON.stringify(source)})])`, false);
+
+  static getDerivedStateFromProps(props: VisualFenceProps, state: VisualFenceState): VisualFenceState | null {
+    if (props.language === state.language && props.source === state.source &&
+        props.streaming === state.streaming && props.fenceClosed === state.fenceClosed) return null;
+    const current = validatedVisual(props);
+    return {
+      ...props,
+      current,
+      lastValid: current ?? (props.language === state.language ? state.lastValid : null),
+    };
   }
-  return null;
+
+  render() {
+    const visual = this.state.current ?? (this.props.streaming ? this.state.lastValid : null);
+    if (visual) return <OpenUIVisualSurface source={visual.source} selfFramed={visual.selfFramed} />;
+    return <VisualFenceStatus pending={this.props.streaming} />;
+  }
+}
+
+export function visualFenceContent(language: string, source: string, streaming: boolean, fenceClosed = !streaming): ReactElement | null {
+  if (language !== "openui" && language !== "mermaid" && language !== "visual-html") return null;
+  return <ProgressiveVisualFence language={language} source={source} streaming={streaming} fenceClosed={fenceClosed} />;
 }

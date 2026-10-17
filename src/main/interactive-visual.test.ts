@@ -22,12 +22,36 @@ test("accepts bounded HTML fragments but not whole documents or empty prose", ()
 test("the visual document has a resize and theme bridge but no app bridge", () => {
   const document = interactiveVisualDocument('<button type="button">Next</button>');
   assert.match(document, /ResizeObserver/);
+  assert.match(document, /document\.body\.scrollHeight/);
+  assert.match(document, /observer\.observe\(document\.body\)/);
   assert.match(document, /unbiased-visual-height/);
   assert.match(document, /unbiased-visual-ready/);
   assert.match(document, /unbiased-visual-error/);
   assert.match(document, /--visual-accent/);
+  assert.match(document, /body \{ margin: 0; padding: 16px;/);
   assert.match(document, /<button type="button">Next<\/button>/);
   assert.doesNotMatch(document, /window\.unbiased/);
+});
+
+test("frame height follows content instead of the current viewport height", async () => {
+  const heights: number[] = [];
+  const dom = new JSDOM(interactiveVisualDocument("<div>Small visual</div>"), {
+    url: "https://visual.test", runScripts: "dangerously",
+    beforeParse(window) {
+      window.postMessage = ((data: { type: string; height?: number }) => {
+        if (data.type === "unbiased-visual-height" && data.height !== undefined) heights.push(data.height);
+      }) as typeof window.postMessage;
+    },
+  });
+  try {
+    await new Promise<void>((resolve) => dom.window.addEventListener("load", () => resolve(), { once: true }));
+    Object.defineProperty(dom.window.document.documentElement, "scrollHeight", { configurable: true, value: 1600 });
+    Object.defineProperty(dom.window.document.body, "scrollHeight", { configurable: true, value: 574 });
+    dom.window.dispatchEvent(new dom.window.Event("DOMContentLoaded"));
+    assert.equal(heights.at(-1), 574);
+  } finally {
+    dom.window.close();
+  }
 });
 
 test("a completed visual reports its initialization failure rather than silently leaving a blank panel", async () => {
