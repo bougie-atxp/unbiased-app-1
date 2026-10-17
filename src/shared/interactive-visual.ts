@@ -41,7 +41,8 @@ export function interactiveVisualDocument(source: string): string {
 <style>
   :root { color-scheme: dark; --visual-bg: #1f1f1f; --visual-fg: #f5f5f5; --visual-muted: #999; --visual-accent: #ff5546; }
   * { box-sizing: border-box; }
-  body { margin: 0; min-width: 0; overflow-x: hidden; background: var(--visual-bg); color: var(--visual-fg); font: 14px/1.5 system-ui, sans-serif; }
+  body { margin: 0; padding: 16px; min-width: 0; overflow-x: hidden; background: var(--visual-bg); color: var(--visual-fg); font: 14px/1.5 system-ui, sans-serif; }
+  @media (max-width: 600px) { body { padding: 12px; } }
 </style>
 <script>
   (() => {
@@ -56,10 +57,16 @@ export function interactiveVisualDocument(source: string): string {
       if (['bg', 'fg', 'muted', 'accent'].includes(key) && /^#[0-9a-f]{6}$/i.test(value))
         document.documentElement.style.setProperty('--visual-' + key, value);
     }
+    if (event.data.scheme === 'light' || event.data.scheme === 'dark')
+      document.documentElement.style.colorScheme = event.data.scheme;
   });
   addEventListener('DOMContentLoaded', () => {
-    const report = () => parent.postMessage({ type: 'unbiased-visual-height', height: Math.ceil(document.documentElement.scrollHeight) }, '*');
-    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(report).observe(document.documentElement);
+    const report = () => parent.postMessage({ type: 'unbiased-visual-height', height: Math.ceil(document.body.scrollHeight) }, '*');
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(report);
+      observer.observe(document.body);
+      observer.observe(document.documentElement);
+    }
     report();
     parent.postMessage({ type: 'unbiased-visual-ready' }, '*');
   });
