@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:;" />
+    <title>Unbiased Pal</title>
+  </head>
+  <body>
+    <div id="pet" class="pet idle" aria-label="Unbiased Pal, idle">
+      <canvas class="sprite" id="sprite" width="104" height="112"></canvas>
+      <div class="mascot" id="mascot">
+        <div class="ear ear-left"></div><div class="ear ear-right"></div>
+        <div class="body"><div class="eye eye-left"></div><div class="eye eye-right"></div><div class="mouth"></div><div class="brand"></div></div>
+        <div class="foot foot-left"></div><div class="foot foot-right"></div>
+      </div>
+      <div class="status" id="status" aria-live="polite"></div>
+      <button class="menu" id="menu" title="Pal options" aria-label="Pal options" type="button">&#8230;</button>
+    </div>
+    <script type="module" src="./src/pet.ts"></script>
+  </body>
+</html>
