@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { activePalFolder, readPetName, readPetSprite, readPetSummary } from "./pet-sprite";
@@ -10,6 +10,17 @@ test("Noir is the default without replacing an explicitly selected Pal", () => {
   assert.equal(activePalFolder("/pals/tiko", "/pals/noir"), "/pals/tiko");
   assert.equal(activePalFolder("default", "/pals/noir"), null);
   assert.equal(activePalFolder(undefined, null), null);
+});
+
+test("bundled CodePet Pals have readable manifests and sprites", () => {
+  const bundle = join(__dirname, "../../resources/pals/codepet");
+  assert.equal(existsSync(join(bundle, "LICENSE")), true);
+  for (const slug of ["cat", "robot", "axolotl"]) {
+    const folder = join(bundle, slug);
+    assert.match(readPetSprite(folder) ?? "", /^data:image\/webp;base64,/);
+    assert.ok(readPetName(folder));
+    assert.ok(readPetSummary(folder)?.description);
+  }
 });
 
 test("locally installed WebP pets are accepted without Electron nativeImage", () => {

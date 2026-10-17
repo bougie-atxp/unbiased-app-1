@@ -26,7 +26,7 @@ import { fileActionError, localFileForAction, saveLocalFileCopy } from "./file-a
 import { PetActivity, petTurnActivityKey } from "./pet-activity";
 import { clampPetPosition, PET_SCALES, petScale, petWindowSize, pointInPetWindow, type PetScale } from "./pet-layout";
 import { PET_NOTICE_DURATION_MS, PET_NOTICE_SIZE, latestPetResponse, petNoticeStackBounds, petResponseFirstLine } from "./pet-notice";
-import { activePalFolder, readPetSprite, readPetSummary } from "./pet-sprite";
+import { activePalFolder, readPetName, readPetSprite, readPetSummary } from "./pet-sprite";
 import type { PalsSettings } from "../shared/pals";
 import { resolveEngineDir } from "./engine-path";
 import { matchingMessageSnippet, messagesFromTranscriptEntries } from "./thread-search";
@@ -5679,9 +5679,21 @@ function petPreferencesFile(): string {
   return join(app.getPath("userData"), "pet-window.json");
 }
 
+function bundledCodepetDir(): string {
+  return productionBuild()
+    ? join(process.resourcesPath, "pals", "codepet")
+    : join(app.getAppPath(), "resources", "pals", "codepet");
+}
+
 function preferredPetFolder(): string | null {
-  const folder = join(homedir(), ".petdex", "pets", featuredPalSlugs[0]);
-  return readPetSprite(folder) ? folder : null;
+  const noir = join(homedir(), ".petdex", "pets", featuredPalSlugs[0]);
+  if (readPetSprite(noir)) return noir;
+  const cat = join(bundledCodepetDir(), "cat");
+  return readPetSprite(cat) ? cat : null;
+}
+
+function palName(folder: string): string {
+  return basename(folder) === "noir-webling" ? "Noir" : readPetName(folder) ?? "Pal";
 }
 
 function savePetPreferences(): void {
@@ -5706,6 +5718,7 @@ function restoreDevDockAfterOverlay(): void {
 function palsSettings(): PalsSettings {
   const petdexFolder = join(homedir(), ".petdex", "pets");
   const folders = new Set(featuredPalSlugs.map((slug) => join(petdexFolder, slug)));
+  for (const slug of ["cat", "robot", "axolotl"]) folders.add(join(bundledCodepetDir(), slug));
   for (const folder of petPreferences.folders ?? []) folders.add(folder);
   if (petPreferences.folder && petPreferences.folder !== "default") folders.add(petPreferences.folder);
   try {
@@ -5719,7 +5732,7 @@ function palsSettings(): PalsSettings {
     if (summary) choices.push({
       id: folder,
       ...summary,
-      name: folder === defaultPalFolder ? "Noir" : summary.name,
+      name: palName(folder),
       description: summary.description?.replace(/\bpets\b/gi, "Pals").replace(/\bpet\b/gi, "Pal").replace(/宠物/g, "伙伴") ?? "Custom Pal",
     });
   }
@@ -6068,7 +6081,7 @@ function showPetMenu(): void {
   }));
   Menu.buildFromTemplate([
     { label: "Choose Pal...", click: () => void choosePetFolder() },
-    { label: defaultPalFolder ? "Use Noir" : "Use Original Pal", enabled: activePalFolder(petPreferences.folder, defaultPalFolder) !== defaultPalFolder, click: () => { delete petPreferences.folder; savePetPreferences(); updatePet(); } },
+    { label: defaultPalFolder ? `Use ${palName(defaultPalFolder)}` : "Use Original Pal", enabled: activePalFolder(petPreferences.folder, defaultPalFolder) !== defaultPalFolder, click: () => { delete petPreferences.folder; savePetPreferences(); updatePet(); } },
     { label: "Pal Size", submenu: sizeMenu },
     { type: "separator" },
     { label: "Hide Desktop Pal", click: hidePet },
@@ -8486,20 +8499,17 @@ app.whenReady().then(async () => {
   defaultPalFolder = preferredFolder;
   try {
     const saved = JSON.parse(readFileSync(petPreferencesFile(), "utf8")) as Partial<PetPreferences>;
-    const seedPreferred = !saved.seededDefault && !saved.folder && !!preferredFolder;
     petPreferences = {
       visible: saved.visible !== false,
       ...(typeof saved.x === "number" && Number.isFinite(saved.x) ? { x: saved.x } : {}),
       ...(typeof saved.y === "number" && Number.isFinite(saved.y) ? { y: saved.y } : {}),
-      ...(typeof saved.folder === "string" ? { folder: saved.folder } : seedPreferred ? { folder: preferredFolder! } : {}),
+      ...(typeof saved.folder === "string" ? { folder: saved.folder } : {}),
       ...(Array.isArray(saved.folders) ? { folders: saved.folders.filter((folder): folder is string => typeof folder === "string").slice(-30) } : {}),
       scale: petScale(saved.scale),
-      seededDefault: saved.seededDefault === true || typeof saved.folder === "string" || seedPreferred,
+      seededDefault: saved.seededDefault === true || typeof saved.folder === "string",
     };
-    if (seedPreferred) savePetPreferences();
   } catch {
-    petPreferences = { visible: true, ...(preferredFolder ? { folder: preferredFolder, seededDefault: true } : {}) };
-    if (preferredFolder) savePetPreferences();
+    petPreferences = { visible: true };
   }
   ipcMain.on("pet:ready", (event) => {
     if (event.sender === petWin?.webContents) updatePet();
