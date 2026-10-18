@@ -58,6 +58,7 @@ import { isClosedVisualFence } from "./visual-fence";
 import { validateUserInput, withoutUserInputDefaults, type UserInputRequest, type UserInputValue } from "../../shared/user-input";
 import { firstInvalidQuestionIndex, validateQuestion } from "./user-input-navigation";
 import { initialNavigationHistory, navigationTarget, pushNavigation, replaceNavigation, type NavigationLocation } from "./navigation-history";
+import { addMultiViewChat, MAX_MULTI_VIEW_CHATS, multiViewColumns } from "./multi-view-layout";
 
 type EngineStatus =
   | { state: "starting" }
@@ -788,10 +789,14 @@ declare global {
         approvals: HeldApproval[];
         userInputs: UserInputRequest[];
         failure: string | null;
+        runningTurnStart?: number | null;
+        runningTurnStartedAt?: number | null;
         /** Engine-assigned sub-agent nicknames, recovered from the rollout and
          *  carried with the transcript so they cannot lose a race against it. */
         subAgentNames?: Record<string, string>;
       }>;
+      mountThread: (id: string) => Promise<Awaited<ReturnType<Window["unbiased"]["openThread"]>> & { lease: string }>;
+      unmountThread: (id: string, lease: string) => Promise<{ ok: boolean }>;
       detachThread: (cwd?: string) => Promise<{ ok: boolean }>;
       deleteThread: (id: string) => Promise<{ ok: boolean }>;
       resetSideChat: (paneId?: string) => Promise<{ ok: boolean }>;
@@ -1226,11 +1231,19 @@ export function App() {
   /** The thread of a scheduled run that is going right now, if any. */
   const [runningScheduledThread, setRunningScheduledThread] = useState<string | null>(null);
   const [connectorsOpen, setConnectorsOpen] = useState(false);
+  const [multiOpen, setMultiOpen] = useState(false);
+  const [multiIds, setMultiIds] = useState<string[]>(() => {
+    try {
+      const value = JSON.parse(localStorage.getItem("multiViewChats") ?? "[]") as unknown;
+      return Array.isArray(value) ? [...new Set(value.filter((id): id is string => typeof id === "string"))].slice(0, MAX_MULTI_VIEW_CHATS) : [];
+    } catch { return []; }
+  });
+  useEffect(() => { localStorage.setItem("multiViewChats", JSON.stringify(multiIds)); }, [multiIds]);
   /** True while a full-page destination covers the chat. Sidebar rows key off
    *  this rather than testing each flag: with one flag per view, adding a view
    *  meant remembering to exclude it in three separate `active` expressions,
    *  and forgetting left two rows lit at once. */
-  const pageOpen = scheduledOpen || connectorsOpen;
+  const pageOpen = scheduledOpen || connectorsOpen || multiOpen;
   /** Set when arriving from a "View task" link, so the row the agent just
    *  created is identifiable among the others rather than left to be found. */
   const [scheduledFocus, setScheduledFocus] = useState<string | null>(null);
@@ -1343,6 +1356,9 @@ export function App() {
     const removeKey = localStorage.getItem("signoutKeepsKey") === "false";
     await window.unbiased.authLogout(removeKey);
     localStorage.removeItem("unbiased.authed");
+    localStorage.removeItem("multiViewChats");
+    setMultiOpen(false);
+    setMultiIds([]);
     setShowSettings(false);
     setAuthed("out");
   }
@@ -1984,6 +2000,7 @@ export function App() {
 
   function showConnectorsPage(record = true) {
     ++openSeqRef.current;
+    setMultiOpen(false);
     setScheduledOpen(false);
     setConnectorsOpen(true);
     if (record) visit({ kind: "connectors" });
@@ -1991,6 +2008,7 @@ export function App() {
 
   function showScheduledPage(focus?: string, record = true) {
     ++openSeqRef.current;
+    setMultiOpen(false);
     setConnectorsOpen(false);
     if (focus) setScheduledFocus(focus);
     setScheduledOpen(true);
@@ -1998,18 +2016,34 @@ export function App() {
   }
 
   function showHome() {
-    if (!scheduledOpen && !connectorsOpen) {
+    if (!scheduledOpen && !connectorsOpen && !multiOpen) {
       showNavPeek("home");
       return;
     }
     setNavPeekOpen(false);
     setScheduledOpen(false);
     setConnectorsOpen(false);
+    setMultiOpen(false);
     visit(activeThreadId
       ? { kind: "thread", id: activeThreadId }
       : activeProject
         ? { kind: "project", path: activeProject.path, name: activeProject.name }
         : { kind: "home" });
+  }
+
+  function showMultiView(record = true) {
+    ++openSeqRef.current;
+    setNavPeekOpen(false);
+    setScheduledOpen(false);
+    setConnectorsOpen(false);
+    setMultiOpen(true);
+    setSideOpenPersisted(false);
+    if (record) visit({ kind: "multi" });
+  }
+
+  function addToMultiView(id: string) {
+    setMultiIds((ids) => addMultiViewChat(ids, id));
+    showMultiView();
   }
 
   function showNavPeek(section: RailPeekSection) {
@@ -2261,6 +2295,7 @@ export function App() {
     const seq = ++openSeqRef.current;
     setScheduledOpen(false);
     setConnectorsOpen(false);
+    setMultiOpen(false);
     snapshotSideView();
     await window.unbiased.detachThread(project?.path);
     if (openSeqRef.current !== seq) return;
@@ -2318,6 +2353,7 @@ export function App() {
     // view never outlives the row that is lit.
     setScheduledOpen(false);
     setConnectorsOpen(false);
+    setMultiOpen(false);
     if (id === activeThreadId) {
       setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
       if (record) visit({ kind: "thread", id });
@@ -2445,6 +2481,7 @@ export function App() {
       else if (target.kind === "project") pending = newChat({ name: target.name, path: target.path }, false);
       else if (target.kind === "home") pending = newChat(undefined, false);
       else if (target.kind === "scheduled") showScheduledPage(undefined, false);
+      else if (target.kind === "multi") showMultiView(false);
       else showConnectorsPage(false);
       const seq = openSeqRef.current;
       if (pending) await pending;
@@ -2459,6 +2496,7 @@ export function App() {
   async function deleteThread(id: string) {
     sidePanelSnapshots.current.delete(id);
     await window.unbiased.deleteThread(id);
+    setMultiIds((ids) => ids.filter((current) => current !== id));
     setPinnedThreads((current) => current.filter((t) => t.id !== id));
     setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
     mainDraftsRef.current?.deleteThread(id);
@@ -3174,7 +3212,7 @@ export function App() {
    *  The one exception is the Agent browser: a scheduled run drives it, and
    *  watching that run happen is the reason to be on the Scheduled page at
    *  all (the mirror is already wired to the running task's thread). */
-  const sideVisible = sideOpen && (!pageOpen || panelMode === "agentmirror");
+  const sideVisible = sideOpen && (!pageOpen || multiOpen || panelMode === "agentmirror");
   const sidebarWidth = NAV_RAIL_WIDTH + (navOpen ? navWidth : 0);
   const sideOverlayLayout = windowWidth < sidebarWidth + 320 + 300 + 8;
   const sideOverlay = sideVisible && sideOverlayLayout;
@@ -3403,10 +3441,10 @@ export function App() {
         </div>
         <span aria-hidden="true" style={{ width: 1, height: 22, background: colors.border }} />
         <span
-          title={scheduledOpen ? "Scheduled" : connectorsOpen ? "Connectors" : mainTitle}
+          title={multiOpen ? "Multi-view" : scheduledOpen ? "Scheduled" : connectorsOpen ? "Connectors" : mainTitle}
           style={{ marginLeft: windowWidth < 480 ? 10 : 16, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, fontWeight: 500 }}
         >
-          {scheduledOpen ? "Scheduled" : connectorsOpen ? "Connectors" : mainTitle}
+          {multiOpen ? "Multi-view" : scheduledOpen ? "Scheduled" : connectorsOpen ? "Connectors" : mainTitle}
         </span>
         <span style={{ flex: 1, minWidth: 0 }} />
         <span ref={setToolbarActionsEl} style={{ display: "flex", flexShrink: 0, marginRight: sideVisible ? 8 : 0 }} />
@@ -3436,6 +3474,15 @@ export function App() {
           <SidebarRailButton label="Home" active={!pageOpen} onClick={showHome} {...railPeekHandlers("home")}>
             <Home size={18} />
           </SidebarRailButton>
+          <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => {
+            e.preventDefault();
+            const id = e.dataTransfer.getData("application/x-unbiased-thread");
+            if (id) addToMultiView(id);
+          }}>
+            <SidebarRailButton label="Multi-view" active={multiOpen} onClick={showMultiView}>
+              <LayoutGrid size={18} />
+            </SidebarRailButton>
+          </div>
           <SidebarRailButton label="Open project" onClick={() => { setNavPeekOpen(false); void openProjectDialog(); }} {...railPeekHandlers("projects")}>
             <FolderPlusIcon />
           </SidebarRailButton>
@@ -3520,6 +3567,9 @@ export function App() {
         <div style={{ flexShrink: 0, padding: "8px 8px 8px" }}>
           <SidebarAction onClick={() => { setSidebarSearchOpen(false); setSidebarSearchQuery(""); void newChat(); }} disabled={false} icon={<NewChatIcon size={16} />}>
             New chat
+          </SidebarAction>
+          <SidebarAction onClick={showMultiView} disabled={false} icon={<LayoutGrid size={16} />}>
+            Multi-view
           </SidebarAction>
         </div>
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
@@ -4070,7 +4120,30 @@ export function App() {
           />
         ) : (
           <>
-          {mainStarted && toolbarActionsEl && createPortal(
+          {multiOpen && (
+            <MultiView
+              ids={multiIds}
+              threads={[...sidebarView.projects.flatMap((project) => project.threads), ...sidebarView.recents]}
+              width={windowWidth - (navOpen ? sidebarWidth : NAV_RAIL_WIDTH)}
+              connected={connected}
+              accessMode={accessMode}
+              onAccessModeChange={changeAccessMode}
+              planMode={planMode}
+              onTogglePlanMode={togglePlanMode}
+              onAdd={(id) => setMultiIds((ids) => addMultiViewChat(ids, id))}
+              onRemove={(id) => setMultiIds((ids) => ids.filter((current) => current !== id))}
+              onTurnLanded={refreshThreads}
+              onOpenFile={(path) => void openFileInPanel(path)}
+              onPreviewImage={(attachment) => void openImagePreview(attachment)}
+              onOpenLink={openInBrowser}
+              onOpenMcp={() => setMcpOpen(true)}
+              onOpenConnectors={() => setConnectorsPanelOpen(true)}
+              onOpenSkills={() => setSkillsOpen(true)}
+            />
+          )}
+          <div style={{ display: multiOpen ? "none" : "flex", flex: 1, minHeight: 0, flexDirection: "column" }}>
+          <>
+          {!multiOpen && mainStarted && toolbarActionsEl && createPortal(
             <span ref={envRef} style={{ position: "relative", display: "flex" }}>
               <IconButton title="Environment" onClick={() => (envOpen ? setEnvOpen(false) : void openEnvMenu())}>
                 <EnvIcon />
@@ -4832,6 +4905,8 @@ export function App() {
           accessMode={accessMode}
           onAccessModeChange={changeAccessMode}
         />
+          </>
+          </div>
           </>
         )}
       </div>
@@ -9043,6 +9118,141 @@ function useEntryTransition(open = true): boolean {
     };
   }, [open]);
   return shown;
+}
+
+function MultiView({ ids, threads, width, connected, accessMode, onAccessModeChange, planMode, onTogglePlanMode, onAdd, onRemove, onTurnLanded, onOpenFile, onPreviewImage, onOpenLink, onOpenMcp, onOpenConnectors, onOpenSkills }: {
+  ids: string[];
+  threads: ThreadSummary[];
+  width: number;
+  connected: boolean;
+  accessMode: AccessMode;
+  onAccessModeChange: (mode: AccessMode) => void;
+  planMode: boolean;
+  onTogglePlanMode: () => void;
+  onAdd: (id: string) => void;
+  onRemove: (id: string) => void;
+  onTurnLanded: () => void;
+  onOpenFile: (path: string) => void;
+  onPreviewImage: (attachment: Attachment) => void;
+  onOpenLink: (url: string) => void;
+  onOpenMcp: () => void;
+  onOpenConnectors: () => void;
+  onOpenSkills: () => void;
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const columns = multiViewColumns(ids.length, width);
+  const rows = Math.ceil(ids.length / columns);
+  const available = [...new Map(threads.map((thread) => [thread.id, thread])).values()]
+    .filter((thread) => !ids.includes(thread.id) && thread.title.toLowerCase().includes(query.toLowerCase()));
+  return (
+    <div
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        const id = event.dataTransfer.getData("application/x-unbiased-thread");
+        if (id) onAdd(id);
+      }}
+      style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: `1px solid ${colors.border}` }}>
+        <strong style={{ fontSize: 14 }}>Multi-view</strong>
+        <span style={{ color: colors.dim, fontSize: 12 }}>{ids.length}/{MAX_MULTI_VIEW_CHATS}</span>
+        <span style={{ flex: 1 }} />
+        <div style={{ position: "relative" }}>
+          {ids.length < MAX_MULTI_VIEW_CHATS && <IconButton title="Add chat" onClick={() => setPickerOpen((open) => !open)}><Plus size={17} /></IconButton>}
+          {pickerOpen && (
+            <div style={{ position: "absolute", zIndex: 40, right: 0, top: "calc(100% + 8px)", width: 320, maxWidth: "calc(100vw - 90px)", maxHeight: 380, display: "flex", flexDirection: "column", background: colors.panel, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 12px 28px rgba(0,0,0,.35)" }}>
+              <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search chats" aria-label="Search chats" style={{ margin: 8, padding: 8, border: `1px solid ${colors.border}`, borderRadius: 6, color: colors.fg, background: colors.bg }} />
+              <div style={{ overflowY: "auto", padding: 6 }}>
+                {available.map((thread) => <button key={thread.id} onClick={() => { onAdd(thread.id); setPickerOpen(false); setQuery(""); }} style={{ display: "block", width: "100%", padding: "9px 10px", border: 0, background: "transparent", color: colors.fg, textAlign: "left", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{thread.title}</button>)}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      {ids.length === 0 ? (
+        <div style={{ flex: 1, display: "grid", placeItems: "center", color: colors.dim }}>No chats in Multi-view</div>
+      ) : (
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", display: "grid", gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(${rows === 1 ? 0 : 420}px, 1fr))`, gap: 6, padding: 6 }}>
+          {ids.map((id) => <MultiViewTile key={id} id={id} title={threads.find((thread) => thread.id === id)?.title ?? "Chat"} connected={connected} accessMode={accessMode} onAccessModeChange={onAccessModeChange} planMode={planMode} onTogglePlanMode={onTogglePlanMode} onRemove={() => onRemove(id)} onTurnLanded={onTurnLanded} onOpenFile={onOpenFile} onPreviewImage={onPreviewImage} onOpenLink={onOpenLink} onOpenMcp={onOpenMcp} onOpenConnectors={onOpenConnectors} onOpenSkills={onOpenSkills} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MultiViewTile({ id, title, connected, accessMode, onAccessModeChange, planMode, onTogglePlanMode, onRemove, onTurnLanded, onOpenFile, onPreviewImage, onOpenLink, onOpenMcp, onOpenConnectors, onOpenSkills }: {
+  id: string;
+  title: string;
+  connected: boolean;
+  accessMode: AccessMode;
+  onAccessModeChange: (mode: AccessMode) => void;
+  planMode: boolean;
+  onTogglePlanMode: () => void;
+  onRemove: () => void;
+  onTurnLanded: () => void;
+  onOpenFile: (path: string) => void;
+  onPreviewImage: (attachment: Attachment) => void;
+  onOpenLink: (url: string) => void;
+  onOpenMcp: () => void;
+  onOpenConnectors: () => void;
+  onOpenSkills: () => void;
+}) {
+  const [loaded, setLoaded] = useState<Awaited<ReturnType<Window["unbiased"]["mountThread"]>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    let lease: string | null = null;
+    void window.unbiased.mountThread(id).then(async (result) => {
+      lease = result.lease;
+      if (!active) { void window.unbiased.unmountThread(id, lease); return; }
+      const cached = await window.unbiased.loadTranscript(id);
+      if (!active) return;
+      const richness = (entries: Entry[]) => entries.reduce((total, entry) => total + (entry.kind === "work" ? Math.max(1, entry.entries.length) : 1), 0);
+      const entries = cached.entries && richness(cached.entries) > richness(result.entries)
+        ? hydrateTranscriptTimes(cached.entries, result.entries)
+        : result.entries;
+      setLoaded({ ...result, entries });
+    }).catch((cause) => { if (active) setError(String(cause)); });
+    return () => { active = false; if (lease) void window.unbiased.unmountThread(id, lease); };
+  }, [id]);
+  const entries = loaded?.entries ?? [];
+  const streamText = loaded?.running ? loaded.streamText : "";
+  const last = entries[entries.length - 1];
+  const resetEntries = streamText
+    ? [...(last?.kind === "assistant" && streamText.startsWith(last.text) ? entries.slice(0, -1) : entries), { kind: "assistant" as const, text: streamText }]
+    : entries;
+  return (
+    <section style={{ minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", border: `1px solid ${colors.border}`, borderRadius: 6, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px 6px 12px", borderBottom: `1px solid ${colors.border}` }}>
+        <span title={title} style={{ minWidth: 0, flex: 1, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", fontSize: 13, fontWeight: 600 }}>{title}</span>
+        <IconButton title={`Remove ${title} from Multi-view`} onClick={onRemove}><X size={15} /></IconButton>
+      </div>
+      {loaded ? (
+        <ChatPane
+          paneId={`multi:${id}`}
+          canTypeToFocus={() => false}
+          connected={connected}
+          threadId={id}
+          reset={{ entries: resetEntries, nonce: 0, resume: loaded.running ? { running: true, approvals: loaded.approvals, userInputs: loaded.userInputs } : null, runningTurnStart: loaded.runningTurnStart, runningTurnStartedAt: loaded.runningTurnStartedAt }}
+          emptyState={null}
+          accessMode={accessMode}
+          onAccessModeChange={onAccessModeChange}
+          planMode={planMode}
+          onTogglePlanMode={onTogglePlanMode}
+          onTurnLanded={onTurnLanded}
+          onOpenFile={onOpenFile}
+          onPreviewImage={onPreviewImage}
+          onOpenLink={onOpenLink}
+          onOpenMcp={onOpenMcp}
+          onOpenConnectors={onOpenConnectors}
+          onOpenSkills={onOpenSkills}
+          persistTranscript
+        />
+      ) : <div style={{ padding: 16, color: colors.dim }}>{error ?? "Loading chat..."}</div>}
+    </section>
+  );
 }
 
 function ChatPane({
@@ -19145,6 +19355,12 @@ function ThreadRow({
 }) {
   return (
     <div
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = "copy";
+        event.dataTransfer.setData("application/x-unbiased-thread", thread.id);
+        event.dataTransfer.setData("text/plain", thread.title);
+      }}
       onMouseEnter={() => onHover(thread.id)}
       onMouseLeave={() => onHover(null)}
       className="u-sidebar-row"

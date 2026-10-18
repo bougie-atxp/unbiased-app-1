@@ -162,6 +162,8 @@ contextBridge.exposeInMainWorld("unbiased", {
   searchThreads: (query: string, threads: { id: string; updatedAt?: string | number }[], includeSavedTranscripts = false) =>
     ipcRenderer.invoke("threads:search", { query, threads, includeSavedTranscripts }),
   openThread: (id: string) => ipcRenderer.invoke("threads:open", id),
+  mountThread: (id: string) => ipcRenderer.invoke("threads:mount", id),
+  unmountThread: (id: string, lease: string) => ipcRenderer.invoke("threads:unmount", id, lease),
   detachThread: (cwd?: string) => ipcRenderer.invoke("threads:detach", cwd),
   deleteThread: (id: string) => ipcRenderer.invoke("threads:delete", id),
   resetSideChat: (paneId?: string) => ipcRenderer.invoke("side:reset", paneId),
