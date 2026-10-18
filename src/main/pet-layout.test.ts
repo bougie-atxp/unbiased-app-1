@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { clampPetPosition, petScale, petWindowSize, pointInPetWindow } from "./pet-layout";
+import { clampPetPosition, initialPetPosition, petScale, petWindowSize, pointInPetWindow } from "./pet-layout";
 
 test("pet scale accepts menu choices and rejects saved invalid values", () => {
   assert.equal(petScale(1.5), 1.5);
@@ -18,6 +18,11 @@ test("resized pet stays inside a display work area", () => {
   const area = { x: 100, y: 50, width: 400, height: 300 };
   assert.deepEqual(clampPetPosition({ x: 450, y: 290 }, petWindowSize(2), area), { x: 276, y: 90 });
   assert.deepEqual(clampPetPosition({ x: -20, y: -30 }, petWindowSize(1), area), { x: 100, y: 50 });
+});
+
+test("new pet starts at the bottom right with margins on its display", () => {
+  const area = { x: 1920, y: 25, width: 1440, height: 875 };
+  assert.deepEqual(initialPetPosition(petWindowSize(1), area), { x: 3220, y: 730 });
 });
 
 test("pet hover tracks the visible window bounds", () => {

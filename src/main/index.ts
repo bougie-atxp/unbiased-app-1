@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { fileActionError, localFileForAction, saveLocalFileCopy } from "./file-actions";
 import { PetActivity, petTurnActivityKey } from "./pet-activity";
-import { clampPetPosition, PET_SCALES, petScale, petWindowSize, pointInPetWindow, type PetScale } from "./pet-layout";
+import { clampPetPosition, initialPetPosition, PET_SCALES, petScale, petWindowSize, pointInPetWindow, type PetScale } from "./pet-layout";
 import { PET_NOTICE_DURATION_MS, PET_NOTICE_SIZE, latestPetResponse, petNoticeStackBounds, petResponseFirstLine } from "./pet-notice";
 import { savedPalSelection, type PalSelection } from "./pal-selection";
 import { isPalSelection, ROBOT_PALS, type PalsSettings } from "../shared/pals";
@@ -5770,6 +5770,7 @@ function showPetNotice(notice: { threadId: string; title: string; response: stri
   if (!petNoticeWin || petNoticeWin.isDestroyed()) {
     petNoticeWin = new BrowserWindow({
       ...PET_NOTICE_SIZE,
+      ...(process.platform === "darwin" ? { type: "panel" } : {}),
       frame: false,
       transparent: true,
       resizable: false,
@@ -5854,14 +5855,14 @@ function petFinished(key: string, status: "completed" | "failed" | "interrupted"
 function petPosition(): { x: number; y: number } {
   const saved = petPreferences;
   const size = petWindowSize(petScale(saved.scale));
-  const display = typeof saved.x === "number" && typeof saved.y === "number"
-    ? screen.getDisplayNearestPoint({ x: saved.x, y: saved.y })
-    : screen.getPrimaryDisplay();
+  const hasSavedPosition = typeof saved.x === "number" && typeof saved.y === "number";
+  const display = hasSavedPosition
+    ? screen.getDisplayNearestPoint({ x: saved.x!, y: saved.y! })
+    : win && !win.isDestroyed() ? screen.getDisplayMatching(win.getBounds()) : screen.getPrimaryDisplay();
   const area = display.workArea;
-  return clampPetPosition({
-    x: saved.x ?? area.x + area.width - size.width - 28,
-    y: saved.y ?? area.y + area.height - size.height - 40,
-  }, size, area);
+  return hasSavedPosition
+    ? clampPetPosition({ x: saved.x!, y: saved.y! }, size, area)
+    : initialPetPosition(size, area);
 }
 
 function setPetScale(scale: PetScale): void {
@@ -5904,23 +5905,31 @@ function hidePet(): void {
   if (petSaveTimer) clearTimeout(petSaveTimer);
   petSaveTimer = null;
   if (petWin && !petWin.isDestroyed()) {
-    const { x, y } = petWin.getBounds();
-    petPreferences.x = x;
-    petPreferences.y = y;
-    petWin.destroy();
+    petWin.hide();
   }
-  petWin = null;
   petPreferences.visible = false;
   savePetPreferences();
 }
 
 function createPetWindow(): void {
-  if (petWin && !petWin.isDestroyed()) return;
+  if (petWin && !petWin.isDestroyed()) {
+    if (petPreferences.visible) return;
+    const position = petPosition();
+    petWin.setPosition(position.x, position.y);
+    petWin.showInactive();
+    petWin.setPosition(position.x, position.y);
+    petPreferences.visible = true;
+    savePetPreferences();
+    petHoverTimer = setInterval(updatePetHover, 120);
+    updatePetHover(true);
+    return;
+  }
   petPreferences.visible = true;
   savePetPreferences();
   petWin = new BrowserWindow({
     ...petPosition(),
     ...petWindowSize(petScale(petPreferences.scale)),
+    ...(process.platform === "darwin" ? { type: "panel" } : {}),
     frame: false,
     transparent: true,
     resizable: false,
@@ -5928,6 +5937,7 @@ function createPetWindow(): void {
     skipTaskbar: true,
     alwaysOnTop: true,
     focusable: false,
+    fullscreenable: false,
     hasShadow: false,
     webPreferences: {
       preload: join(__dirname, "../preload/pet.js"),
@@ -5953,6 +5963,12 @@ function createPetWindow(): void {
     if (petWin && !petWin.isDestroyed()) petWin.webContents.reload();
   });
   let previousPosition = petWin.getBounds();
+  petWin.on("will-move", (_event, bounds) => {
+    petPreferences.x = bounds.x;
+    petPreferences.y = bounds.y;
+    if (petSaveTimer) clearTimeout(petSaveTimer);
+    petSaveTimer = setTimeout(() => { petSaveTimer = null; savePetPreferences(); }, 300);
+  });
   petWin.on("move", () => {
     if (!petWin || petWin.isDestroyed()) return;
     const bounds = petWin.getBounds();
@@ -5960,8 +5976,10 @@ function createPetWindow(): void {
     const dx = x - previousPosition.x;
     const dy = y - previousPosition.y;
     previousPosition = bounds;
-    petPreferences.x = x;
-    petPreferences.y = y;
+    if (process.platform === "linux") {
+      petPreferences.x = x;
+      petPreferences.y = y;
+    }
     if (petNoticeWin?.isVisible()) positionPetNotice();
     if ((dx || dy) && pointInPetWindow(screen.getCursorScreenPoint(), bounds)) {
       const direction = Math.abs(dx) >= Math.abs(dy)
@@ -5974,8 +5992,10 @@ function createPetWindow(): void {
         if (petWin && !petWin.isDestroyed()) petWin.webContents.send("pet:motion", null);
       }, 220);
     }
-    if (petSaveTimer) clearTimeout(petSaveTimer);
-    petSaveTimer = setTimeout(() => { petSaveTimer = null; savePetPreferences(); }, 300);
+    if (process.platform === "linux") {
+      if (petSaveTimer) clearTimeout(petSaveTimer);
+      petSaveTimer = setTimeout(() => { petSaveTimer = null; savePetPreferences(); }, 300);
+    }
   });
   const createdPetWindow = petWin;
   petWin.on("closed", () => {
@@ -5989,6 +6009,8 @@ function createPetWindow(): void {
     void petWin.loadFile(join(__dirname, "../renderer/pet.html"));
   }
   petWin.showInactive();
+  const position = petPosition();
+  petWin.setPosition(position.x, position.y);
   petHoverTimer = setInterval(updatePetHover, 120);
 }
 

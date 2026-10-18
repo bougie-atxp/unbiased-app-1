@@ -1928,6 +1928,9 @@ export function App() {
 
   const [navOpen, setNavOpen] = useState(() => localStorage.getItem("navOpen") !== "false");
   const [navPeekOpen, setNavPeekOpen] = useState(false);
+  // Once a collapsed-nav preview has floated over the chat, keep its panel
+  // detached when it closes so the width transition cannot reflow the chat.
+  const [navPeekDetached, setNavPeekDetached] = useState(false);
   const [navPeekSection, setNavPeekSection] = useState<RailPeekSection>("home");
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
@@ -1936,6 +1939,8 @@ export function App() {
   const [navHistory, setNavHistory] = useState(initialNavigationHistory);
   const [navigatingHistory, setNavigatingHistory] = useState(false);
   const navPeekCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const navMenuOpenRef = useRef(false);
+  navMenuOpenRef.current = !!threadMenu || !!projMenu;
   const NAV_BAR_SIZE = 52;
   const NAV_RAIL_WIDTH = NAV_BAR_SIZE;
   // The panel beside the fixed icon rail is user-draggable and persisted.
@@ -1966,6 +1971,7 @@ export function App() {
 
   function toggleNav() {
     setNavPeekOpen(false);
+    setNavPeekDetached(false);
     setNavOpen((o) => {
       localStorage.setItem("navOpen", String(!o));
       return !o;
@@ -2010,6 +2016,7 @@ export function App() {
     if (navPeekCloseTimer.current) clearTimeout(navPeekCloseTimer.current);
     navPeekCloseTimer.current = null;
     if (!navOpen) {
+      setNavPeekDetached(true);
       setNavPeekSection(section);
       setNavPeekOpen(true);
     }
@@ -2017,8 +2024,18 @@ export function App() {
 
   function hideNavPeekSoon() {
     if (navPeekCloseTimer.current) clearTimeout(navPeekCloseTimer.current);
-    navPeekCloseTimer.current = setTimeout(() => setNavPeekOpen(false), 180);
+    navPeekCloseTimer.current = setTimeout(() => {
+      if (!navMenuOpenRef.current) setNavPeekOpen(false);
+    }, 180);
   }
+
+  useEffect(() => {
+    if (!navPeekOpen || threadMenu || projMenu) return;
+    const stillInSidebar = [...document.querySelectorAll(".u-sidebar")].some(
+      (sidebar) => sidebar.matches(":hover") || !!sidebar.querySelector(":focus-visible"),
+    );
+    if (!stillInSidebar) hideNavPeekSoon();
+  }, [navPeekOpen, threadMenu, projMenu]);
 
   function railPeekHandlers(section: RailPeekSection) {
     return {
@@ -2044,7 +2061,7 @@ export function App() {
   useEffect(() => {
     if (!navPeekOpen) return;
     function dismissPeek(e: PointerEvent) {
-      if (!(e.target as Element).closest(".u-sidebar")) setNavPeekOpen(false);
+      if (!(e.target as Element).closest(".u-sidebar, [data-threadmenu], [data-projmenu]")) setNavPeekOpen(false);
     }
     function dismissPeekOnEscape(e: KeyboardEvent) {
       if (e.key === "Escape") setNavPeekOpen(false);
@@ -3473,10 +3490,10 @@ export function App() {
           display: "flex",
           flexDirection: "column",
           fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif',
-          position: navHomePeek ? "fixed" : "relative",
-          left: navHomePeek ? NAV_RAIL_WIDTH : undefined,
-          top: navHomePeek ? NAV_BAR_SIZE + 8 : undefined,
-          bottom: navHomePeek ? 8 : undefined,
+          position: navPeekDetached ? "fixed" : "relative",
+          left: navPeekDetached ? NAV_RAIL_WIDTH : undefined,
+          top: navPeekDetached ? NAV_BAR_SIZE + 8 : undefined,
+          bottom: navPeekDetached ? 8 : undefined,
           zIndex: navHomePeek ? 30 : 2,
           borderRadius: navHomePeek ? 12 : 0,
           border: navHomePeek ? "1px solid color-mix(in srgb, var(--fg) 12%, transparent)" : undefined,
@@ -3903,6 +3920,7 @@ export function App() {
             if (!navOpen) {
               setNavOpen(true);
               setNavPeekOpen(false);
+              setNavPeekDetached(false);
               localStorage.setItem("navOpen", "true");
             }
             setProjectsCollapsed(false);
