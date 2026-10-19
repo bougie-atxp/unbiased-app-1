@@ -25,6 +25,7 @@ import "prismjs/components/prism-sql";
 import "prismjs/components/prism-markdown";
 import "prismjs/themes/prism-tomorrow.css";
 import "./side-tab-scrollbar.css";
+import "./project-picker.css";
 import "./mermaid-diagram.css";
 import "@openuidev/react-ui/layered/styles/index.css";
 import "./openui-visual.css";
@@ -1462,6 +1463,7 @@ export function App() {
     color: string | null;
     pickerOpen: boolean;
     error: string | null;
+    targetFreshId?: string;
   } | null>(null);
   // Per-thread ⋯ menu (fixed-positioned like the project menu) and its dialogs.
   const [threadMenu, setThreadMenu] = useState<{ id: string; title: string; inProject: boolean; x: number; y: number } | null>(null);
@@ -1538,6 +1540,25 @@ export function App() {
       });
       if (!r.path || !r.name) {
         setEditProj((e) => (e ? { ...e, error: r.error ?? "Couldn't create the project" } : e));
+        return;
+      }
+      if (editProj.targetFreshId && freshMultiIds.has(editProj.targetFreshId)) {
+        try {
+          await selectFreshEnvironment(editProj.targetFreshId, { name: r.name, path: r.path }, "local");
+        } catch (cause) {
+          setEditProj((e) => e ? {
+            ...e,
+            mode: "edit",
+            path: r.path!,
+            primary: r.path!,
+            folders: e.folders.length ? e.folders : [r.path!],
+            error: `Project created, but couldn't attach it to this chat: ${String(cause)}`,
+          } : e);
+          void refreshThreads();
+          return;
+        }
+        setEditProj(null);
+        void refreshThreads();
         return;
       }
       setEditProj(null);
@@ -2073,6 +2094,32 @@ export function App() {
     setFreshMultiProjects((projects) => ({ ...projects, [id]: null }));
     setFreshMultiWork((work) => ({ ...work, [id]: { mode: "local", cwd, branch: null } }));
     setMultiIds((ids) => addMultiViewChat(ids, id));
+  }
+
+  async function selectFreshEnvironment(id: string, project: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) {
+    const { id: nextId, cwd, branch } = await window.unbiased.createMultiThread(project?.path, id, mode, worktreeDir);
+    const previous = multiDraftsRef.current.get(id)?.current();
+    const nextDraft = new ConversationDrafts<Attachment>(nextId, 0);
+    if (previous) {
+      nextDraft.setText(previous.text);
+      nextDraft.updateAttachments(nextDraft.identity(), previous.attachments);
+    }
+    multiDraftsRef.current.delete(id);
+    multiDraftsRef.current.set(nextId, nextDraft);
+    setMultiIds((ids) => ids.map((current) => current === id ? nextId : current));
+    setFreshMultiIds((ids) => { const next = new Set(ids); next.delete(id); next.add(nextId); return next; });
+    setFreshMultiProjects((projects) => {
+      const next = { ...projects };
+      delete next[id];
+      next[nextId] = project;
+      return next;
+    });
+    setFreshMultiWork((work) => {
+      const next = { ...work };
+      delete next[id];
+      next[nextId] = { mode, cwd, branch };
+      return next;
+    });
   }
 
   function showNavPeek(section: RailPeekSection) {
@@ -4205,36 +4252,13 @@ export function App() {
               onCreate={createMosaicChat}
               onOpenChat={(id) => { setNavPeekOpen(false); void openThread(id); }}
               onRemove={removeFromMultiView}
+              onCreateProject={(id) => setEditProj({ mode: "create", path: "", name: "", folders: [], primary: "", icon: "folder", color: null, pickerOpen: false, error: null, targetFreshId: id })}
               onFreshTurnLanded={(id) => {
                 setFreshMultiIds((ids) => { const next = new Set(ids); next.delete(id); return next; });
                 setFreshMultiProjects((projects) => { const next = { ...projects }; delete next[id]; return next; });
                 setFreshMultiWork((work) => { const next = { ...work }; delete next[id]; return next; });
               }}
-              onSelectFreshEnvironment={async (id, project, mode, worktreeDir) => {
-                const { id: nextId, cwd, branch } = await window.unbiased.createMultiThread(project?.path, id, mode, worktreeDir);
-                const previous = multiDraftsRef.current.get(id)?.current();
-                const nextDraft = new ConversationDrafts<Attachment>(nextId, 0);
-                if (previous) {
-                  nextDraft.setText(previous.text);
-                  nextDraft.updateAttachments(nextDraft.identity(), previous.attachments);
-                }
-                multiDraftsRef.current.delete(id);
-                multiDraftsRef.current.set(nextId, nextDraft);
-                setMultiIds((ids) => ids.map((current) => current === id ? nextId : current));
-                setFreshMultiIds((ids) => { const next = new Set(ids); next.delete(id); next.add(nextId); return next; });
-                setFreshMultiProjects((projects) => {
-                  const next = { ...projects };
-                  delete next[id];
-                  next[nextId] = project;
-                  return next;
-                });
-                setFreshMultiWork((work) => {
-                  const next = { ...work };
-                  delete next[id];
-                  next[nextId] = { mode, cwd, branch };
-                  return next;
-                });
-              }}
+              onSelectFreshEnvironment={selectFreshEnvironment}
               onTurnLanded={refreshThreads}
               onOpenFile={(path) => void openFileInPanel(path)}
               onPreviewImage={(attachment) => void openImagePreview(attachment)}
@@ -4668,7 +4692,7 @@ export function App() {
                   // this box upward; children truncate themselves.
                 }}
               >
-                <NewChatProjectPicker selected={activeProjectPath ? { name: activeProjectName ?? activeProjectPath, path: activeProjectPath } : null} projects={sidebarView.projects} onSelect={selectNewChatProject} />
+                <NewChatProjectPicker selected={activeProjectPath ? { name: activeProjectName ?? activeProjectPath, path: activeProjectPath } : null} projects={sidebarView.projects} onSelect={selectNewChatProject} onCreateProject={() => setEditProj({ mode: "create", path: "", name: "", folders: [], primary: "", icon: "folder", color: null, pickerOpen: false, error: null })} />
                 {activeProjectPath && <>
                 <span data-workmenu style={{ position: "relative", display: "flex", flexShrink: 0 }}>
                   <button
@@ -9218,7 +9242,7 @@ function useEntryTransition(open = true): boolean {
   return shown;
 }
 
-function MultiView({ ids, freshIds, freshProjects, freshWork, drafts, projects, threads, width, connected, accessMode, onAccessModeChange, planMode, onTogglePlanMode, onAdd, onCreate, onOpenChat, onRemove, onFreshTurnLanded, onSelectFreshEnvironment, onTurnLanded, onOpenFile, onPreviewImage, onOpenLink, onOpenMcp, onOpenConnectors, onOpenSkills }: {
+function MultiView({ ids, freshIds, freshProjects, freshWork, drafts, projects, threads, width, connected, accessMode, onAccessModeChange, planMode, onTogglePlanMode, onAdd, onCreate, onOpenChat, onRemove, onCreateProject, onFreshTurnLanded, onSelectFreshEnvironment, onTurnLanded, onOpenFile, onPreviewImage, onOpenLink, onOpenMcp, onOpenConnectors, onOpenSkills }: {
   ids: string[];
   freshIds: Set<string>;
   freshProjects: Record<string, { name: string; path: string } | null>;
@@ -9236,6 +9260,7 @@ function MultiView({ ids, freshIds, freshProjects, freshWork, drafts, projects, 
   onCreate: () => Promise<void>;
   onOpenChat: (id: string) => void;
   onRemove: (id: string) => void;
+  onCreateProject: (id: string) => void;
   onFreshTurnLanded: (id: string) => void;
   onSelectFreshEnvironment: (id: string, project: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
   onTurnLanded: () => void;
@@ -9264,7 +9289,7 @@ function MultiView({ ids, freshIds, freshProjects, freshWork, drafts, projects, 
         <MosaicEmptyState onCreate={onCreate} />
       ) : (
         <div style={{ flex: 1, minHeight: 0, overflow: "auto", display: "grid", gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(${rows === 1 ? 0 : 420}px, 1fr))`, gap: 6, padding: 6 }}>
-          {ids.map((id, index) => <MultiViewTile key={id} id={id} columnSpan={columnSpans[index]} fresh={freshIds.has(id)} project={freshProjects[id] ?? null} work={freshWork[id]} projects={projects} drafts={drafts.get(id)} onSelectEnvironment={(project, mode, dir) => onSelectFreshEnvironment(id, project, mode, dir)} title={threads.find((thread) => thread.id === id)?.title ?? "New chat"} connected={connected} accessMode={accessMode} onAccessModeChange={onAccessModeChange} planMode={planMode} onTogglePlanMode={onTogglePlanMode} onOpenChat={() => onOpenChat(id)} onRemove={() => onRemove(id)} onTurnLanded={() => { onTurnLanded(); if (freshIds.has(id)) onFreshTurnLanded(id); }} onOpenFile={onOpenFile} onPreviewImage={onPreviewImage} onOpenLink={onOpenLink} onOpenMcp={onOpenMcp} onOpenConnectors={onOpenConnectors} onOpenSkills={onOpenSkills} />)}
+          {ids.map((id, index) => <MultiViewTile key={id} id={id} columnSpan={columnSpans[index]} fresh={freshIds.has(id)} project={freshProjects[id] ?? null} work={freshWork[id]} projects={projects} drafts={drafts.get(id)} onSelectEnvironment={(project, mode, dir) => onSelectFreshEnvironment(id, project, mode, dir)} onCreateProject={() => onCreateProject(id)} title={threads.find((thread) => thread.id === id)?.title ?? "New chat"} connected={connected} accessMode={accessMode} onAccessModeChange={onAccessModeChange} planMode={planMode} onTogglePlanMode={onTogglePlanMode} onOpenChat={() => onOpenChat(id)} onRemove={() => onRemove(id)} onTurnLanded={() => { onTurnLanded(); if (freshIds.has(id)) onFreshTurnLanded(id); }} onOpenFile={onOpenFile} onPreviewImage={onPreviewImage} onOpenLink={onOpenLink} onOpenMcp={onOpenMcp} onOpenConnectors={onOpenConnectors} onOpenSkills={onOpenSkills} />)}
         </div>
       )}
     </div>
@@ -9294,20 +9319,52 @@ function MosaicEmptyState({ onCreate }: { onCreate: () => Promise<void> }) {
   );
 }
 
-function NewChatProjectPicker({ selected, projects, onSelect, disabled = false }: {
+function NewChatProjectPicker({ selected, projects, onSelect, onCreateProject, disabled = false }: {
   selected: { name: string; path: string } | null;
-  projects: { name: string; path: string }[];
+  projects: ProjectInfo[];
   onSelect: (project: { name: string; path: string } | null) => Promise<void>;
+  onCreateProject: () => void;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [position, setPosition] = useState<{ top?: number; bottom?: number; left: number; maxHeight: number; theme: CSSProperties } | null>(null);
   const ref = useRef<HTMLSpanElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const updatePosition = () => {
+      const bounds = ref.current?.getBoundingClientRect();
+      if (!bounds) return;
+      const width = Math.min(360, window.innerWidth - 24);
+      const above = bounds.top - 16;
+      const below = window.innerHeight - bounds.bottom - 16;
+      const placeAbove = above >= 220 || above >= below;
+      const computed = getComputedStyle(ref.current!);
+      const theme = Object.fromEntries(
+        ["--panel", "--border", "--fg", "--dim", "--chip", "--accent"].map((key) => [key, computed.getPropertyValue(key)]),
+      ) as CSSProperties;
+      setPosition({
+        left: Math.max(12, Math.min(bounds.left, window.innerWidth - width - 12)),
+        ...(placeAbove ? { bottom: window.innerHeight - bounds.top + 8 } : { top: bounds.bottom + 8 }),
+        maxHeight: Math.max(80, Math.min(360, placeAbove ? above : below)),
+        theme: { ...theme, fontFamily: computed.fontFamily },
+      });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    document.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      document.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: MouseEvent) => {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+      if (!ref.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
     document.addEventListener("mousedown", onPointerDown);
@@ -9327,27 +9384,54 @@ function NewChatProjectPicker({ selected, projects, onSelect, disabled = false }
       setBusy(false);
     }
   };
+  const search = query.trim().toLocaleLowerCase();
+  const filtered = projects.filter((project) => `${project.name} ${project.path}`.toLocaleLowerCase().includes(search));
+  const showNone = !search || "none".includes(search);
+  const selectedProject = projects.find((project) => project.path === selected?.path);
   return <span ref={ref} style={{ position: "relative", display: "flex", minWidth: 0, flexShrink: 0 }}>
-    <button type="button" title="Choose where this chat works" aria-label="Choose where this chat works" aria-expanded={open} aria-haspopup="menu" disabled={disabled || busy} onClick={() => setOpen((value) => !value)} style={{ display: "flex", alignItems: "center", gap: 7, maxWidth: 220, padding: "3px 5px", border: 0, background: "transparent", color: selected ? colors.fg : colors.dim, fontSize: 13, fontFamily: "inherit", cursor: disabled || busy ? "default" : "pointer" }}>
-      <FolderOutlineIcon size={14} />
+    <button type="button" title="Choose where this chat works" aria-label="Choose where this chat works" aria-expanded={open} aria-haspopup="dialog" disabled={disabled || busy} onClick={() => { setQuery(""); setError(null); setOpen((value) => !value); }} style={{ display: "flex", alignItems: "center", gap: 7, maxWidth: 220, padding: "3px 5px", border: 0, background: "transparent", color: selected ? colors.fg : colors.dim, fontSize: 13, fontFamily: "inherit", cursor: disabled || busy ? "default" : "pointer" }}>
+      {selected ? <ProjectIcon icon={selectedProject?.icon} color={selectedProject?.color} size={14} /> : <FolderOutlineIcon size={14} />}
       <span style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{selected?.name ?? "Choose a project"}</span>
       <ChevronDown size={13} />
     </button>
-    {open && <div role="menu" aria-label="Choose project" style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, zIndex: 35, width: 260, maxWidth: "min(260px, calc(100vw - 40px))", maxHeight: 320, overflowY: "auto", padding: 6, background: colors.panel, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,.35)" }}>
-      {[null, ...projects].map((project) => <button type="button" role="menuitemradio" aria-checked={project?.path === selected?.path} key={project?.path ?? "outside"} disabled={busy} onClick={() => void choose(project)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", border: 0, borderRadius: 6, background: project?.path === selected?.path ? "var(--chip)" : "transparent", color: colors.fg, fontSize: 13, fontFamily: "inherit", textAlign: "left", cursor: "pointer" }}>
-        <span style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", flex: 1 }}>{project?.name ?? "Outside a project"}</span>
-        {project?.path === selected?.path && <CheckIcon />}
-      </button>)}
-      {error && <div role="alert" style={{ padding: "6px 10px", color: colors.err, fontSize: 12 }}>{error}</div>}
-    </div>}
+    {open && createPortal(<div ref={menuRef} role="dialog" aria-label="Choose project" className="u-project-picker" style={{ ...position?.theme, visibility: position ? "visible" : "hidden", width: "min(360px, calc(100vw - 24px))", maxHeight: position?.maxHeight ?? 360, top: position?.top, bottom: position?.bottom, left: position?.left ?? 12 }}>
+      <div className="u-project-picker-search">
+        <Search size={16} aria-hidden="true" />
+        <input autoFocus aria-label="Search projects" placeholder="Search projects" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            if (filtered[0]) void choose(filtered[0]);
+            else if (showNone) void choose(null);
+          }
+        }} />
+      </div>
+      <div className="u-project-picker-list">
+        {showNone && <button type="button" className="u-project-picker-row" aria-pressed={!selected} disabled={busy} onClick={() => void choose(null)}>
+          <FolderOutlineIcon size={17} />
+          <span className="u-project-picker-name">None</span>
+          {!selected && <Check size={16} className="u-project-picker-check" />}
+        </button>}
+        {showNone && filtered.length > 0 && <div className="u-project-picker-separator" />}
+        {filtered.map((project) => <button type="button" className="u-project-picker-row" aria-pressed={project.path === selected?.path} key={project.path} title={project.path} disabled={busy} onClick={() => void choose(project)}>
+          <ProjectIcon icon={project.icon} color={project.color} size={18} />
+          <span className="u-project-picker-project"><span className="u-project-picker-name">{project.name}</span><span className="u-project-picker-path">{project.path.split(/[\\/]/).filter(Boolean).at(-1)}</span></span>
+          {project.path === selected?.path && <Check size={16} className="u-project-picker-check" />}
+        </button>)}
+        {!showNone && filtered.length === 0 && <div className="u-project-picker-empty">No matching projects</div>}
+      </div>
+      <div className="u-project-picker-footer">
+        <button type="button" className="u-project-picker-row" disabled={busy} onClick={() => { setOpen(false); onCreateProject(); }}><Plus size={18} aria-hidden="true" /><span>New project</span></button>
+      </div>
+      {error && <div role="alert" className="u-project-picker-error">{error}</div>}
+    </div>, document.body)}
   </span>;
 }
 
-function MosaicNewChatEnvironment({ project, work, projects, onSelect, disabled }: {
+function MosaicNewChatEnvironment({ project, work, projects, onSelect, onCreateProject, disabled }: {
   project: { name: string; path: string } | null;
   work?: { mode: "local" | "worktree" | "existing"; cwd: string; branch: string | null };
   projects: ProjectInfo[];
   onSelect: (project: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
+  onCreateProject: () => void;
   disabled: boolean;
 }) {
   const [changing, setChanging] = useState(false);
@@ -9438,7 +9522,7 @@ function MosaicNewChatEnvironment({ project, work, projects, onSelect, disabled 
   const choiceStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", border: 0, borderRadius: 6, background: "transparent", color: colors.fg, fontSize: 13, fontFamily: "inherit", textAlign: "left", cursor: "pointer" };
   const triggerStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 6, maxWidth: 180, padding: "3px 5px", border: 0, background: "transparent", color: colors.dim, fontSize: 13, fontFamily: "inherit", cursor: "pointer" };
   return <div data-mosaic-environment style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", minWidth: 0, maxWidth: 804, margin: "0 auto 8px", padding: "4px 18px", boxSizing: "border-box" }}>
-    <NewChatProjectPicker selected={project} projects={projects} disabled={disabled || changing} onSelect={(next) => selectEnvironment(next, "local")} />
+    <NewChatProjectPicker selected={project} projects={projects} disabled={disabled || changing} onSelect={(next) => selectEnvironment(next, "local")} onCreateProject={onCreateProject} />
     {project && <>
       <span style={{ position: "relative", display: "flex" }}>
         <button type="button" title="Choose checkout for this chat" aria-expanded={workOpen} disabled={disabled || changing} onClick={() => workOpen ? setWorkOpen(false) : void openWork()} style={triggerStyle}>
@@ -9481,7 +9565,7 @@ function MultiViewAddButton({ count, onCreate }: { count: number; onCreate: () =
   );
 }
 
-function MultiViewTile({ id, columnSpan, fresh, project, work, projects, drafts, onSelectEnvironment, title, connected, accessMode, onAccessModeChange, planMode, onTogglePlanMode, onOpenChat, onRemove, onTurnLanded, onOpenFile, onPreviewImage, onOpenLink, onOpenMcp, onOpenConnectors, onOpenSkills }: {
+function MultiViewTile({ id, columnSpan, fresh, project, work, projects, drafts, onSelectEnvironment, onCreateProject, title, connected, accessMode, onAccessModeChange, planMode, onTogglePlanMode, onOpenChat, onRemove, onTurnLanded, onOpenFile, onPreviewImage, onOpenLink, onOpenMcp, onOpenConnectors, onOpenSkills }: {
   id: string;
   columnSpan: number;
   fresh: boolean;
@@ -9490,6 +9574,7 @@ function MultiViewTile({ id, columnSpan, fresh, project, work, projects, drafts,
   projects: ProjectInfo[];
   drafts?: ConversationDrafts<Attachment>;
   onSelectEnvironment: (project: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
+  onCreateProject: () => void;
   title: string;
   connected: boolean;
   accessMode: AccessMode;
@@ -9557,7 +9642,7 @@ function MultiViewTile({ id, columnSpan, fresh, project, work, projects, drafts,
           composerDrafts={drafts}
           reset={{ entries: resetEntries, nonce: 0, resume: loaded?.running ? { running: true, approvals: loaded.approvals, userInputs: loaded.userInputs } : null, runningTurnStart: loaded?.runningTurnStart, runningTurnStartedAt: loaded?.runningTurnStartedAt }}
           emptyState={null}
-          composerHeader={fresh ? <MosaicNewChatEnvironment project={project} work={work} projects={projects} onSelect={onSelectEnvironment} disabled={busy} /> : undefined}
+          composerHeader={fresh ? <MosaicNewChatEnvironment project={project} work={work} projects={projects} onSelect={onSelectEnvironment} onCreateProject={onCreateProject} disabled={busy} /> : undefined}
           onBusyChange={setBusy}
           accessMode={accessMode}
           onAccessModeChange={onAccessModeChange}
