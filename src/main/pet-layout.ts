@@ -22,6 +22,16 @@ export function clampPetPosition(
   };
 }
 
+export function initialPetPosition(
+  size: Pick<Rect, "width" | "height">,
+  area: Rect,
+): Pick<Rect, "x" | "y"> {
+  return clampPetPosition({
+    x: area.x + area.width - size.width - 28,
+    y: area.y + area.height - size.height - 40,
+  }, size, area);
+}
+
 export function pointInPetWindow(point: Pick<Rect, "x" | "y">, bounds: Rect): boolean {
   return point.x >= bounds.x && point.x < bounds.x + bounds.width
     && point.y >= bounds.y && point.y < bounds.y + bounds.height;
