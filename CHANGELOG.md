@@ -6,6 +6,12 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
+## 1.13.17 — October 19, 2026
+
+### Fixed
+
+- **The Recents new-chat button no longer gets a gray box on hover.** Its plus icon stays on the sidebar background.
+
 ## 1.13.16 — October 19, 2026
 
 ### Improved
