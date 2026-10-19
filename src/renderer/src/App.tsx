@@ -1,4 +1,4 @@
-import { Children, createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Children, createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 // The changelog SHIPS with the build so the Updates tab works offline and on
@@ -35,7 +35,8 @@ import { UserMessageMarkdown } from "./user-message-markdown";
 import { MarkdownComposer, type MarkdownComposerHandle } from "./markdown-composer";
 import "./markdown-composer.css";
 import "./user-input-card.css";
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Heart, Home, LayoutGrid, MessageSquare, MoreHorizontal, Pin, PinOff, Plus, RefreshCw, Search, Sparkles, Trash2, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Heart, Home, LayoutGrid, MessageSquare, MoreHorizontal, Pin, PinOff, Plus, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
+import { CloseIcon } from "./close-icon";
 import { ConversationDrafts } from "./conversation-drafts";
 import { SettingsRoute } from "./settings-route";
 import { PalsGallery } from "./pals-gallery";
@@ -58,6 +59,7 @@ import { isClosedVisualFence } from "./visual-fence";
 import { validateUserInput, withoutUserInputDefaults, type UserInputRequest, type UserInputValue } from "../../shared/user-input";
 import { firstInvalidQuestionIndex, validateQuestion } from "./user-input-navigation";
 import { initialNavigationHistory, navigationTarget, pushNavigation, replaceNavigation, type NavigationLocation } from "./navigation-history";
+import { addMultiViewChat, MAX_MULTI_VIEW_CHATS, multiViewColumns, multiViewColumnSpans } from "./multi-view-layout";
 
 type EngineStatus =
   | { state: "starting" }
@@ -316,7 +318,7 @@ type ProjectInfo = {
   folders?: string[];
   threads: ThreadSummary[];
 };
-type RailPeekSection = "home" | "projects" | "connectors" | "scheduled" | "updates" | "whats-new" | "settings";
+type RailPeekSection = "home" | "mosaic" | "projects" | "connectors" | "scheduled" | "updates" | "whats-new" | "settings";
 type SettingsTab = "appearance" | "agent" | "pals" | "account" | "updates" | "resources";
 /** A thread we know exists because we just created it, but which the engine
  *  will not return from thread/list yet — verified: a list issued straight
@@ -619,6 +621,7 @@ declare global {
         cb: (p: { paneId: PaneId; status: string; error?: string | null; narrated?: boolean }) => void,
       ) => () => void;
       onThreadActivity: (cb: (p: { threadId: string; running: boolean; completed?: boolean }) => void) => () => void;
+      setVisibleChats: (threadIds: string[], paneIds: string[]) => void;
       setAccessMode: (mode: AccessMode) => Promise<{ mode: string }>;
       setWorkMode: (mode: string, dir?: string) => Promise<{ ok: boolean }>;
       setPlanMode: (on: boolean) => Promise<{ planMode: boolean }>;
@@ -788,10 +791,15 @@ declare global {
         approvals: HeldApproval[];
         userInputs: UserInputRequest[];
         failure: string | null;
+        runningTurnStart?: number | null;
+        runningTurnStartedAt?: number | null;
         /** Engine-assigned sub-agent nicknames, recovered from the rollout and
          *  carried with the transcript so they cannot lose a race against it. */
         subAgentNames?: Record<string, string>;
       }>;
+      mountThread: (id: string) => Promise<Awaited<ReturnType<Window["unbiased"]["openThread"]>> & { lease: string }>;
+      createMultiThread: (projectPath?: string | null, replaceId?: string, workMode?: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<{ id: string; cwd: string; branch: string | null }>;
+      unmountThread: (id: string, lease: string) => Promise<{ ok: boolean }>;
       detachThread: (cwd?: string) => Promise<{ ok: boolean }>;
       deleteThread: (id: string) => Promise<{ ok: boolean }>;
       resetSideChat: (paneId?: string) => Promise<{ ok: boolean }>;
@@ -1226,11 +1234,23 @@ export function App() {
   /** The thread of a scheduled run that is going right now, if any. */
   const [runningScheduledThread, setRunningScheduledThread] = useState<string | null>(null);
   const [connectorsOpen, setConnectorsOpen] = useState(false);
+  const [multiOpen, setMultiOpen] = useState(false);
+  const [multiIds, setMultiIds] = useState<string[]>(() => {
+    try {
+      const value = JSON.parse(localStorage.getItem("multiViewChats") ?? "[]") as unknown;
+      return Array.isArray(value) ? [...new Set(value.filter((id): id is string => typeof id === "string"))].slice(0, MAX_MULTI_VIEW_CHATS) : [];
+    } catch { return []; }
+  });
+  const [freshMultiIds, setFreshMultiIds] = useState<Set<string>>(() => new Set());
+  const [freshMultiProjects, setFreshMultiProjects] = useState<Record<string, { name: string; path: string } | null>>({});
+  const [freshMultiWork, setFreshMultiWork] = useState<Record<string, { mode: "local" | "worktree" | "existing"; cwd: string; branch: string | null }>>({});
+  const multiDraftsRef = useRef(new Map<string, ConversationDrafts<Attachment>>());
+  useEffect(() => { localStorage.setItem("multiViewChats", JSON.stringify(multiIds.filter((id) => !freshMultiIds.has(id)))); }, [multiIds, freshMultiIds]);
   /** True while a full-page destination covers the chat. Sidebar rows key off
    *  this rather than testing each flag: with one flag per view, adding a view
    *  meant remembering to exclude it in three separate `active` expressions,
    *  and forgetting left two rows lit at once. */
-  const pageOpen = scheduledOpen || connectorsOpen;
+  const pageOpen = scheduledOpen || connectorsOpen || multiOpen;
   /** Set when arriving from a "View task" link, so the row the agent just
    *  created is identifiable among the others rather than left to be found. */
   const [scheduledFocus, setScheduledFocus] = useState<string | null>(null);
@@ -1343,6 +1363,9 @@ export function App() {
     const removeKey = localStorage.getItem("signoutKeepsKey") === "false";
     await window.unbiased.authLogout(removeKey);
     localStorage.removeItem("unbiased.authed");
+    localStorage.removeItem("multiViewChats");
+    setMultiOpen(false);
+    setMultiIds([]);
     setShowSettings(false);
     setAuthed("out");
   }
@@ -1359,8 +1382,7 @@ export function App() {
     () => parseUnreadCompletedThreads(localStorage.getItem("navUnreadCompletedThreads")),
   );
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  const visibleThreadIdRef = useRef<string | null>(null);
-  visibleThreadIdRef.current = !pageOpen && !showSettings && !showChangelog ? activeThreadId : null;
+  const visibleThreadIdsRef = useRef<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
     localStorage.setItem("navUnreadCompletedThreads", JSON.stringify([...unreadCompletedThreads]));
@@ -1368,8 +1390,11 @@ export function App() {
 
   useEffect(() => {
     const markVisibleRead = () => {
-      const id = visibleThreadIdRef.current;
-      if (id && document.hasFocus()) setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
+      if (document.hasFocus()) setUnreadCompletedThreads((current) => {
+        let next = current;
+        for (const id of visibleThreadIdsRef.current) next = setThreadUnread(next, id, false);
+        return next;
+      });
     };
     window.addEventListener("focus", markVisibleRead);
     document.addEventListener("visibilitychange", markVisibleRead);
@@ -1380,9 +1405,12 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const id = visibleThreadIdRef.current;
-    if (id && document.hasFocus()) setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
-  }, [activeThreadId, pageOpen, showSettings, showChangelog]);
+    if (document.hasFocus()) setUnreadCompletedThreads((current) => {
+      let next = current;
+      for (const id of visibleThreadIdsRef.current) next = setThreadUnread(next, id, false);
+      return next;
+    });
+  }, [authed, activeThreadId, pageOpen, multiOpen, multiIds, showSettings, showChangelog]);
 
   useEffect(() => {
     return window.unbiased.onThreadActivity((p) => {
@@ -1393,7 +1421,7 @@ export function App() {
         return next;
       });
       if (!p.running && p.completed) setUnreadCompletedThreads((current) =>
-        unreadAfterThreadActivity(current, p, visibleThreadIdRef.current, document.hasFocus()));
+        unreadAfterThreadActivity(current, p, visibleThreadIdsRef.current, document.hasFocus()));
       // A finished background turn may retitle/reorder its thread. Once that
       // list is in, the stand-in row hands over to the real one — or drops,
       // if the turn ended without the engine ever having anything to list.
@@ -1984,6 +2012,7 @@ export function App() {
 
   function showConnectorsPage(record = true) {
     ++openSeqRef.current;
+    setMultiOpen(false);
     setScheduledOpen(false);
     setConnectorsOpen(true);
     if (record) visit({ kind: "connectors" });
@@ -1991,6 +2020,7 @@ export function App() {
 
   function showScheduledPage(focus?: string, record = true) {
     ++openSeqRef.current;
+    setMultiOpen(false);
     setConnectorsOpen(false);
     if (focus) setScheduledFocus(focus);
     setScheduledOpen(true);
@@ -1998,18 +2028,51 @@ export function App() {
   }
 
   function showHome() {
-    if (!scheduledOpen && !connectorsOpen) {
+    if (!scheduledOpen && !connectorsOpen && !multiOpen) {
       showNavPeek("home");
       return;
     }
     setNavPeekOpen(false);
     setScheduledOpen(false);
     setConnectorsOpen(false);
+    setMultiOpen(false);
     visit(activeThreadId
       ? { kind: "thread", id: activeThreadId }
       : activeProject
         ? { kind: "project", path: activeProject.path, name: activeProject.name }
         : { kind: "home" });
+  }
+
+  function showMultiView(record = true) {
+    ++openSeqRef.current;
+    setNavPeekOpen(false);
+    setScheduledOpen(false);
+    setConnectorsOpen(false);
+    setMultiOpen(true);
+    setSideOpenPersisted(false);
+    if (record) visit({ kind: "multi" });
+  }
+
+  function addToMultiView(id: string) {
+    setMultiIds((ids) => addMultiViewChat(ids, id));
+    showMultiView();
+  }
+
+  function removeFromMultiView(id: string) {
+    multiDraftsRef.current.delete(id);
+    setMultiIds((ids) => ids.filter((current) => current !== id));
+    setFreshMultiIds((ids) => { const next = new Set(ids); next.delete(id); return next; });
+    setFreshMultiProjects((projects) => { const next = { ...projects }; delete next[id]; return next; });
+    setFreshMultiWork((work) => { const next = { ...work }; delete next[id]; return next; });
+  }
+
+  async function createMosaicChat() {
+    const { id, cwd } = await window.unbiased.createMultiThread();
+    multiDraftsRef.current.set(id, new ConversationDrafts(id, 0));
+    setFreshMultiIds((ids) => new Set(ids).add(id));
+    setFreshMultiProjects((projects) => ({ ...projects, [id]: null }));
+    setFreshMultiWork((work) => ({ ...work, [id]: { mode: "local", cwd, branch: null } }));
+    setMultiIds((ids) => addMultiViewChat(ids, id));
   }
 
   function showNavPeek(section: RailPeekSection) {
@@ -2261,6 +2324,7 @@ export function App() {
     const seq = ++openSeqRef.current;
     setScheduledOpen(false);
     setConnectorsOpen(false);
+    setMultiOpen(false);
     snapshotSideView();
     await window.unbiased.detachThread(project?.path);
     if (openSeqRef.current !== seq) return;
@@ -2270,6 +2334,15 @@ export function App() {
     setMainStarted(false);
     setMainReset((r) => ({ entries: [], nonce: r.nonce + 1 }));
     resetSideView();
+  }
+
+  async function selectNewChatProject(project: { name: string; path: string } | null) {
+    await window.unbiased.detachThread(project?.path);
+    const mode = project ? workModeStore()[project.path] ?? "local" : "local";
+    await window.unbiased.setWorkMode(mode);
+    setActiveProject(project);
+    setActiveThreadId(null);
+    visit(project ? { kind: "project", path: project.path, name: project.name } : { kind: "home" });
   }
 
   async function openProjectDialog() {
@@ -2318,6 +2391,7 @@ export function App() {
     // view never outlives the row that is lit.
     setScheduledOpen(false);
     setConnectorsOpen(false);
+    setMultiOpen(false);
     if (id === activeThreadId) {
       setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
       if (record) visit({ kind: "thread", id });
@@ -2445,6 +2519,7 @@ export function App() {
       else if (target.kind === "project") pending = newChat({ name: target.name, path: target.path }, false);
       else if (target.kind === "home") pending = newChat(undefined, false);
       else if (target.kind === "scheduled") showScheduledPage(undefined, false);
+      else if (target.kind === "multi") showMultiView(false);
       else showConnectorsPage(false);
       const seq = openSeqRef.current;
       if (pending) await pending;
@@ -2459,6 +2534,7 @@ export function App() {
   async function deleteThread(id: string) {
     sidePanelSnapshots.current.delete(id);
     await window.unbiased.deleteThread(id);
+    setMultiIds((ids) => ids.filter((current) => current !== id));
     setPinnedThreads((current) => current.filter((t) => t.id !== id));
     setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
     mainDraftsRef.current?.deleteThread(id);
@@ -3077,6 +3153,8 @@ export function App() {
   // is never missing from the nav between pressing Enter and the engine
   // deciding it exists. A stand-in disappears the moment the real row lands.
   const sidebarView = useMemo(() => mergePendingThreads(sidebar, pendingThreads), [sidebar, pendingThreads]);
+  const mosaicThreads = [...sidebarView.projects.flatMap((project) => project.threads), ...sidebarView.recents];
+  const mosaicChats = multiIds.map((id) => ({ id, title: mosaicThreads.find((thread) => thread.id === id)?.title ?? "New chat" }));
   const pinnedThreadIds = useMemo(() => new Set(pinnedThreads.map((t) => t.id)), [pinnedThreads]);
   const pinnedSidebarThreads = useMemo(() => {
     const listed = new Map<string, { thread: ThreadSummary; inProject: boolean }>();
@@ -3174,7 +3252,15 @@ export function App() {
    *  The one exception is the Agent browser: a scheduled run drives it, and
    *  watching that run happen is the reason to be on the Scheduled page at
    *  all (the mirror is already wired to the running task's thread). */
-  const sideVisible = sideOpen && (!pageOpen || panelMode === "agentmirror");
+  const sideVisible = sideOpen && (!pageOpen || multiOpen || panelMode === "agentmirror");
+  const visibleThreadIds = authed !== "in" || showSettings || showChangelog ? []
+    : multiOpen ? multiIds
+      : !pageOpen && activeThreadId ? [activeThreadId] : [];
+  const visiblePaneIds = authed === "in" && !showSettings && !showChangelog && sideVisible && panelMode.startsWith("side:") ? [panelMode] : [];
+  visibleThreadIdsRef.current = new Set(visibleThreadIds);
+  useEffect(() => {
+    window.unbiased.setVisibleChats?.(visibleThreadIds, visiblePaneIds);
+  }, [authed, activeThreadId, pageOpen, multiOpen, multiIds, showSettings, showChangelog, sideVisible, panelMode]);
   const sidebarWidth = NAV_RAIL_WIDTH + (navOpen ? navWidth : 0);
   const sideOverlayLayout = windowWidth < sidebarWidth + 320 + 300 + 8;
   const sideOverlay = sideVisible && sideOverlayLayout;
@@ -3403,12 +3489,19 @@ export function App() {
         </div>
         <span aria-hidden="true" style={{ width: 1, height: 22, background: colors.border }} />
         <span
-          title={scheduledOpen ? "Scheduled" : connectorsOpen ? "Connectors" : mainTitle}
+          title={multiOpen ? "Mosaic" : scheduledOpen ? "Scheduled" : connectorsOpen ? "Connectors" : mainTitle}
           style={{ marginLeft: windowWidth < 480 ? 10 : 16, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, fontWeight: 500 }}
         >
-          {scheduledOpen ? "Scheduled" : connectorsOpen ? "Connectors" : mainTitle}
+          {multiOpen ? "Mosaic" : scheduledOpen ? "Scheduled" : connectorsOpen ? "Connectors" : mainTitle}
         </span>
+        {multiOpen && <span style={{ marginLeft: 8, color: colors.dim, fontSize: 12, flexShrink: 0 }}>{multiIds.length}/{MAX_MULTI_VIEW_CHATS}</span>}
         <span style={{ flex: 1, minWidth: 0 }} />
+        {multiOpen && multiIds.length > 0 && (
+          <MultiViewAddButton
+            count={multiIds.length}
+            onCreate={createMosaicChat}
+          />
+        )}
         <span ref={setToolbarActionsEl} style={{ display: "flex", flexShrink: 0, marginRight: sideVisible ? 8 : 0 }} />
         {sideVisible && (
           <div style={{ width: (sideHeaderWidth || (sideOverlay ? sideOverlayWidth : Math.max(300, (windowWidth - sidebarWidth - 12) * sideFrac))) + 4, boxSizing: "border-box", flexShrink: 1, minWidth: 0, display: "flex", alignItems: "center", borderLeft: `1px solid ${colors.border}`, marginLeft: 4, paddingLeft: 6 }}>
@@ -3434,10 +3527,19 @@ export function App() {
       >
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "15px 2px 12px" }}>
           <SidebarRailButton label="Home" active={!pageOpen} onClick={showHome} {...railPeekHandlers("home")}>
-            <Home size={18} />
+            <Home size={18} strokeWidth={1.5} />
           </SidebarRailButton>
+          <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => {
+            e.preventDefault();
+            const id = e.dataTransfer.getData("application/x-unbiased-thread");
+            if (id) addToMultiView(id);
+          }}>
+            <SidebarRailButton label="Mosaic" active={multiOpen} onClick={showMultiView} {...railPeekHandlers("mosaic")}>
+              <MosaicIcon size={18} />
+            </SidebarRailButton>
+          </div>
           <SidebarRailButton label="Open project" onClick={() => { setNavPeekOpen(false); void openProjectDialog(); }} {...railPeekHandlers("projects")}>
-            <FolderPlusIcon />
+            <FolderOpen size={18} strokeWidth={1.5} />
           </SidebarRailButton>
           <SidebarRailButton label="Connectors" active={connectorsOpen} onClick={() => { setNavPeekOpen(false); showConnectorsPage(); }} {...railPeekHandlers("connectors")}>
             <PlugIcon />
@@ -3520,6 +3622,9 @@ export function App() {
         <div style={{ flexShrink: 0, padding: "8px 8px 8px" }}>
           <SidebarAction onClick={() => { setSidebarSearchOpen(false); setSidebarSearchQuery(""); void newChat(); }} disabled={false} icon={<NewChatIcon size={16} />}>
             New chat
+          </SidebarAction>
+          <SidebarAction onClick={showMultiView} disabled={false} icon={<MosaicIcon size={16} />}>
+            Mosaic
           </SidebarAction>
         </div>
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
@@ -3965,6 +4070,17 @@ export function App() {
             key={navPeekSection}
             section={navPeekSection}
             projects={sidebarView.projects}
+            mosaicChats={mosaicChats}
+            onCreateMosaicChat={async () => { await createMosaicChat(); showMultiView(); }}
+            onOpenMosaicChat={(id) => {
+              showMultiView();
+              requestAnimationFrame(() => {
+                [...document.querySelectorAll<HTMLElement>("[data-mosaic-chat-id]")]
+                  .find((tile) => tile.dataset.mosaicChatId === id)
+                  ?.scrollIntoView({ block: "nearest" });
+              });
+            }}
+            onRemoveMosaicChat={removeFromMultiView}
             updateVersion={update?.version ?? null}
             latestRelease={releases[0]?.version ?? null}
             onOpenProject={() => { setNavPeekOpen(false); void openProjectDialog(); }}
@@ -4070,7 +4186,67 @@ export function App() {
           />
         ) : (
           <>
-          {mainStarted && toolbarActionsEl && createPortal(
+          {multiOpen && (
+            <MultiView
+              ids={multiIds}
+              freshIds={freshMultiIds}
+              freshProjects={freshMultiProjects}
+              freshWork={freshMultiWork}
+              drafts={multiDraftsRef.current}
+              projects={sidebarView.projects}
+              threads={mosaicThreads}
+              width={windowWidth - (navOpen ? sidebarWidth : NAV_RAIL_WIDTH)}
+              connected={connected}
+              accessMode={accessMode}
+              onAccessModeChange={changeAccessMode}
+              planMode={planMode}
+              onTogglePlanMode={togglePlanMode}
+              onAdd={(id) => setMultiIds((ids) => addMultiViewChat(ids, id))}
+              onCreate={createMosaicChat}
+              onOpenChat={(id) => { setNavPeekOpen(false); void openThread(id); }}
+              onRemove={removeFromMultiView}
+              onFreshTurnLanded={(id) => {
+                setFreshMultiIds((ids) => { const next = new Set(ids); next.delete(id); return next; });
+                setFreshMultiProjects((projects) => { const next = { ...projects }; delete next[id]; return next; });
+                setFreshMultiWork((work) => { const next = { ...work }; delete next[id]; return next; });
+              }}
+              onSelectFreshEnvironment={async (id, project, mode, worktreeDir) => {
+                const { id: nextId, cwd, branch } = await window.unbiased.createMultiThread(project?.path, id, mode, worktreeDir);
+                const previous = multiDraftsRef.current.get(id)?.current();
+                const nextDraft = new ConversationDrafts<Attachment>(nextId, 0);
+                if (previous) {
+                  nextDraft.setText(previous.text);
+                  nextDraft.updateAttachments(nextDraft.identity(), previous.attachments);
+                }
+                multiDraftsRef.current.delete(id);
+                multiDraftsRef.current.set(nextId, nextDraft);
+                setMultiIds((ids) => ids.map((current) => current === id ? nextId : current));
+                setFreshMultiIds((ids) => { const next = new Set(ids); next.delete(id); next.add(nextId); return next; });
+                setFreshMultiProjects((projects) => {
+                  const next = { ...projects };
+                  delete next[id];
+                  next[nextId] = project;
+                  return next;
+                });
+                setFreshMultiWork((work) => {
+                  const next = { ...work };
+                  delete next[id];
+                  next[nextId] = { mode, cwd, branch };
+                  return next;
+                });
+              }}
+              onTurnLanded={refreshThreads}
+              onOpenFile={(path) => void openFileInPanel(path)}
+              onPreviewImage={(attachment) => void openImagePreview(attachment)}
+              onOpenLink={openInBrowser}
+              onOpenMcp={() => setMcpOpen(true)}
+              onOpenConnectors={() => setConnectorsPanelOpen(true)}
+              onOpenSkills={() => setSkillsOpen(true)}
+            />
+          )}
+          <div style={{ display: multiOpen ? "none" : "flex", flex: 1, minHeight: 0, flexDirection: "column" }}>
+          <>
+          {!multiOpen && mainStarted && toolbarActionsEl && createPortal(
             <span ref={envRef} style={{ position: "relative", display: "flex" }}>
               <IconButton title="Environment" onClick={() => (envOpen ? setEnvOpen(false) : void openEnvMenu())}>
                 <EnvIcon />
@@ -4475,7 +4651,7 @@ export function App() {
           composerHeader={
             // Only before the chat exists — once active, the header's
             // Environment popover carries this information instead.
-            activeProjectPath && !mainStarted ? (
+            !mainStarted && !activeThreadId ? (
               <div
                 style={{
                   maxWidth: 768,
@@ -4492,14 +4668,8 @@ export function App() {
                   // this box upward; children truncate themselves.
                 }}
               >
-                <span style={{ display: "flex", alignItems: "center", gap: 7, color: colors.fg, minWidth: 0 }}>
-                  <span style={{ color: colors.accent, display: "flex" }}>
-                    <FolderOutlineIcon size={14} />
-                  </span>
-                  <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {activeProjectName}
-                  </span>
-                </span>
+                <NewChatProjectPicker selected={activeProjectPath ? { name: activeProjectName ?? activeProjectPath, path: activeProjectPath } : null} projects={sidebarView.projects} onSelect={selectNewChatProject} />
+                {activeProjectPath && <>
                 <span data-workmenu style={{ position: "relative", display: "flex", flexShrink: 0 }}>
                   <button
                     onClick={() => (workMenuOpen ? setWorkMenuOpen(false) : void openWorkMenu())}
@@ -4789,6 +4959,7 @@ export function App() {
                     )}
                   </span>
                 )}
+                </>}
               </div>
             ) : undefined
           }
@@ -4832,6 +5003,8 @@ export function App() {
           accessMode={accessMode}
           onAccessModeChange={changeAccessMode}
         />
+          </>
+          </div>
           </>
         )}
       </div>
@@ -9043,6 +9216,365 @@ function useEntryTransition(open = true): boolean {
     };
   }, [open]);
   return shown;
+}
+
+function MultiView({ ids, freshIds, freshProjects, freshWork, drafts, projects, threads, width, connected, accessMode, onAccessModeChange, planMode, onTogglePlanMode, onAdd, onCreate, onOpenChat, onRemove, onFreshTurnLanded, onSelectFreshEnvironment, onTurnLanded, onOpenFile, onPreviewImage, onOpenLink, onOpenMcp, onOpenConnectors, onOpenSkills }: {
+  ids: string[];
+  freshIds: Set<string>;
+  freshProjects: Record<string, { name: string; path: string } | null>;
+  freshWork: Record<string, { mode: "local" | "worktree" | "existing"; cwd: string; branch: string | null }>;
+  drafts: Map<string, ConversationDrafts<Attachment>>;
+  projects: ProjectInfo[];
+  threads: ThreadSummary[];
+  width: number;
+  connected: boolean;
+  accessMode: AccessMode;
+  onAccessModeChange: (mode: AccessMode) => void;
+  planMode: boolean;
+  onTogglePlanMode: () => void;
+  onAdd: (id: string) => void;
+  onCreate: () => Promise<void>;
+  onOpenChat: (id: string) => void;
+  onRemove: (id: string) => void;
+  onFreshTurnLanded: (id: string) => void;
+  onSelectFreshEnvironment: (id: string, project: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
+  onTurnLanded: () => void;
+  onOpenFile: (path: string) => void;
+  onPreviewImage: (attachment: Attachment) => void;
+  onOpenLink: (url: string) => void;
+  onOpenMcp: () => void;
+  onOpenConnectors: () => void;
+  onOpenSkills: () => void;
+}) {
+  const columns = multiViewColumns(ids.length, width);
+  const columnSpans = multiViewColumnSpans(ids.length, columns);
+  const rows = Math.ceil(ids.length / columns);
+  const gridColumns = ids.length === 5 && columns === 3 ? 6 : columns;
+  return (
+    <div
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        const id = event.dataTransfer.getData("application/x-unbiased-thread");
+        if (id) onAdd(id);
+      }}
+      style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+    >
+      {ids.length === 0 ? (
+        <MosaicEmptyState onCreate={onCreate} />
+      ) : (
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", display: "grid", gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(${rows === 1 ? 0 : 420}px, 1fr))`, gap: 6, padding: 6 }}>
+          {ids.map((id, index) => <MultiViewTile key={id} id={id} columnSpan={columnSpans[index]} fresh={freshIds.has(id)} project={freshProjects[id] ?? null} work={freshWork[id]} projects={projects} drafts={drafts.get(id)} onSelectEnvironment={(project, mode, dir) => onSelectFreshEnvironment(id, project, mode, dir)} title={threads.find((thread) => thread.id === id)?.title ?? "New chat"} connected={connected} accessMode={accessMode} onAccessModeChange={onAccessModeChange} planMode={planMode} onTogglePlanMode={onTogglePlanMode} onOpenChat={() => onOpenChat(id)} onRemove={() => onRemove(id)} onTurnLanded={() => { onTurnLanded(); if (freshIds.has(id)) onFreshTurnLanded(id); }} onOpenFile={onOpenFile} onPreviewImage={onPreviewImage} onOpenLink={onOpenLink} onOpenMcp={onOpenMcp} onOpenConnectors={onOpenConnectors} onOpenSkills={onOpenSkills} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MosaicEmptyState({ onCreate }: { onCreate: () => Promise<void> }) {
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "grid", placeItems: "center", padding: 24, boxSizing: "border-box" }}>
+      <section aria-label="About Mosaic" style={{ maxWidth: 480, textAlign: "center" }}>
+        <div style={{ display: "flex", justifyContent: "center", color: colors.dim, marginBottom: 18 }}><MosaicIcon size={36} /></div>
+        <h2 style={{ margin: 0, color: colors.fg, fontSize: 22, fontWeight: 600 }}>Keep your chats together</h2>
+        <p style={{ margin: "12px 0 0", color: colors.dim, fontSize: 14, lineHeight: 1.6 }}>
+          Mosaic puts up to six chats in one view. Each chat has its own conversation and composer, and the panes resize as you add or remove them.
+        </p>
+        <p style={{ margin: "10px 0 24px", color: colors.dim, fontSize: 14, lineHeight: 1.6 }}>
+          Drag a chat here from the sidebar, or start a new one.
+        </p>
+        <button type="button" disabled={creating} onClick={() => { setCreating(true); setError(null); void onCreate().catch((cause) => setError(String(cause))).finally(() => setCreating(false)); }} style={{ ...btnPrimaryStyle, margin: "0 auto", opacity: creating ? 0.5 : 1, cursor: creating ? "wait" : "pointer" }}>
+          <Plus size={16} /> New chat
+        </button>
+        {error && <p role="alert" style={{ margin: "12px 0 0", color: colors.err, fontSize: 13 }}>Could not create chat: {error}</p>}
+      </section>
+    </div>
+  );
+}
+
+function NewChatProjectPicker({ selected, projects, onSelect, disabled = false }: {
+  selected: { name: string; path: string } | null;
+  projects: { name: string; path: string }[];
+  onSelect: (project: { name: string; path: string } | null) => Promise<void>;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => { document.removeEventListener("mousedown", onPointerDown); document.removeEventListener("keydown", onKeyDown); };
+  }, [open]);
+  const choose = async (project: { name: string; path: string } | null) => {
+    if (project?.path === selected?.path) { setOpen(false); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      await onSelect(project);
+      setOpen(false);
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <span ref={ref} style={{ position: "relative", display: "flex", minWidth: 0, flexShrink: 0 }}>
+    <button type="button" title="Choose where this chat works" aria-label="Choose where this chat works" aria-expanded={open} aria-haspopup="menu" disabled={disabled || busy} onClick={() => setOpen((value) => !value)} style={{ display: "flex", alignItems: "center", gap: 7, maxWidth: 220, padding: "3px 5px", border: 0, background: "transparent", color: selected ? colors.fg : colors.dim, fontSize: 13, fontFamily: "inherit", cursor: disabled || busy ? "default" : "pointer" }}>
+      <FolderOutlineIcon size={14} />
+      <span style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{selected?.name ?? "Choose a project"}</span>
+      <ChevronDown size={13} />
+    </button>
+    {open && <div role="menu" aria-label="Choose project" style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, zIndex: 35, width: 260, maxWidth: "min(260px, calc(100vw - 40px))", maxHeight: 320, overflowY: "auto", padding: 6, background: colors.panel, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,.35)" }}>
+      {[null, ...projects].map((project) => <button type="button" role="menuitemradio" aria-checked={project?.path === selected?.path} key={project?.path ?? "outside"} disabled={busy} onClick={() => void choose(project)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", border: 0, borderRadius: 6, background: project?.path === selected?.path ? "var(--chip)" : "transparent", color: colors.fg, fontSize: 13, fontFamily: "inherit", textAlign: "left", cursor: "pointer" }}>
+        <span style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", flex: 1 }}>{project?.name ?? "Outside a project"}</span>
+        {project?.path === selected?.path && <CheckIcon />}
+      </button>)}
+      {error && <div role="alert" style={{ padding: "6px 10px", color: colors.err, fontSize: 12 }}>{error}</div>}
+    </div>}
+  </span>;
+}
+
+function MosaicNewChatEnvironment({ project, work, projects, onSelect, disabled }: {
+  project: { name: string; path: string } | null;
+  work?: { mode: "local" | "worktree" | "existing"; cwd: string; branch: string | null };
+  projects: ProjectInfo[];
+  onSelect: (project: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
+  disabled: boolean;
+}) {
+  const [changing, setChanging] = useState(false);
+  const [workOpen, setWorkOpen] = useState(false);
+  const [branchOpen, setBranchOpen] = useState(false);
+  const [worktrees, setWorktrees] = useState<{ dir: string; branch: string }[]>([]);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [branch, setBranch] = useState<string | null>(work?.branch ?? null);
+  const [dirty, setDirty] = useState(false);
+  const [creatingBranch, setCreatingBranch] = useState(false);
+  const [newBranchName, setNewBranchName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const cwd = project ? work?.cwd ?? project.path : null;
+  useEffect(() => {
+    setBranch(work?.branch ?? null);
+    if (!cwd) return;
+    let current = true;
+    void window.unbiased.gitBranch(cwd).then((result) => { if (current) setBranch(result.branch); });
+    return () => { current = false; };
+  }, [cwd, work?.branch]);
+  useEffect(() => {
+    if (!workOpen && !branchOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!(event.target as HTMLElement).closest("[data-mosaic-environment]")) {
+        setWorkOpen(false);
+        setBranchOpen(false);
+      }
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setWorkOpen(false); setBranchOpen(false); }
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", escape); };
+  }, [workOpen, branchOpen]);
+  const selectEnvironment = async (nextProject: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", dir?: string) => {
+    setChanging(true);
+    setError(null);
+    try {
+      await onSelect(nextProject, mode, dir);
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setChanging(false);
+      setWorkOpen(false);
+    }
+  };
+  const openWork = async () => {
+    if (!project) return;
+    setError(null);
+    try {
+      const result = await window.unbiased.listWorktrees(project.path);
+      setWorktrees(result.worktrees);
+      setBranchOpen(false);
+      setWorkOpen(true);
+    } catch (cause) { setError(String(cause)); }
+  };
+  const openBranches = async () => {
+    if (!cwd) return;
+    setError(null);
+    try {
+      const result = await window.unbiased.gitBranches(cwd);
+      if (result.error) { setError(result.error); return; }
+      setBranches(result.branches);
+      setBranch(result.current);
+      setDirty(result.dirty.length > 0);
+      setWorkOpen(false);
+      setCreatingBranch(false);
+      setNewBranchName("");
+      setBranchOpen(true);
+    } catch (cause) { setError(String(cause)); }
+  };
+  const selectBranch = async (next: string, create = false) => {
+    if (!cwd || (!create && next === branch)) { setBranchOpen(false); return; }
+    if (!next.trim()) { setError("Enter a branch name"); return; }
+    if (dirty) { setError("Uncommitted changes in this checkout. Switch branches after saving them."); return; }
+    setChanging(true);
+    setError(null);
+    try {
+      const result = await window.unbiased.gitCheckout(cwd, next.trim(), create);
+      if (!result.ok) { setError(result.error ?? "Could not switch branch"); return; }
+      setBranch(next.trim());
+      setBranchOpen(false);
+    } catch (cause) { setError(String(cause)); }
+    finally { setChanging(false); }
+  };
+  const menuStyle: CSSProperties = { position: "absolute", bottom: "calc(100% + 7px)", left: 0, zIndex: 36, width: 230, maxWidth: "min(230px, calc(100vw - 40px))", maxHeight: 260, overflowY: "auto", padding: 6, background: colors.panel, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,.35)" };
+  const choiceStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", border: 0, borderRadius: 6, background: "transparent", color: colors.fg, fontSize: 13, fontFamily: "inherit", textAlign: "left", cursor: "pointer" };
+  const triggerStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 6, maxWidth: 180, padding: "3px 5px", border: 0, background: "transparent", color: colors.dim, fontSize: 13, fontFamily: "inherit", cursor: "pointer" };
+  return <div data-mosaic-environment style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", minWidth: 0, maxWidth: 804, margin: "0 auto 8px", padding: "4px 18px", boxSizing: "border-box" }}>
+    <NewChatProjectPicker selected={project} projects={projects} disabled={disabled || changing} onSelect={(next) => selectEnvironment(next, "local")} />
+    {project && <>
+      <span style={{ position: "relative", display: "flex" }}>
+        <button type="button" title="Choose checkout for this chat" aria-expanded={workOpen} disabled={disabled || changing} onClick={() => workOpen ? setWorkOpen(false) : void openWork()} style={triggerStyle}>
+          {work?.mode === "local" || !work ? <LaptopIcon /> : <SteerIcon />}
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{work?.mode === "worktree" ? "New worktree" : work?.mode === "existing" ? work.branch ?? "Worktree" : "Local"}</span>
+          <ChevronDown size={13} />
+        </button>
+        {workOpen && <div role="menu" aria-label="Choose checkout" style={menuStyle}>
+          <button type="button" role="menuitemradio" aria-checked={work?.mode === "local"} onClick={() => work?.mode === "local" ? setWorkOpen(false) : void selectEnvironment(project, "local")} style={choiceStyle}><LaptopIcon />Local{work?.mode === "local" && <CheckIcon />}</button>
+          <button type="button" role="menuitemradio" aria-checked={work?.mode === "worktree"} onClick={() => void selectEnvironment(project, "worktree")} style={choiceStyle}><SteerIcon />New worktree{work?.mode === "worktree" && <CheckIcon />}</button>
+          {worktrees.length > 0 && <div style={{ padding: "8px 10px 4px", color: colors.dim, fontSize: 12, borderTop: `1px solid ${colors.border}` }}>Existing worktrees</div>}
+          {worktrees.map((item) => <button type="button" role="menuitemradio" aria-checked={work?.cwd === item.dir} key={item.dir} onClick={() => work?.cwd === item.dir ? setWorkOpen(false) : void selectEnvironment(project, "existing", item.dir)} style={choiceStyle}><BranchIcon /><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{item.branch}</span>{work?.cwd === item.dir && <CheckIcon />}</button>)}
+        </div>}
+      </span>
+      {branch && <span style={{ position: "relative", display: "flex", minWidth: 0 }}>
+        <button type="button" title="Choose branch for this chat" aria-expanded={branchOpen} disabled={disabled || changing} onClick={() => branchOpen ? setBranchOpen(false) : void openBranches()} style={triggerStyle}><BranchIcon /><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{branch}</span><ChevronDown size={13} /></button>
+        {branchOpen && <div role="menu" aria-label="Choose branch" style={menuStyle}>
+          {branches.map((item) => <button type="button" role="menuitemradio" aria-checked={item === branch} key={item} onClick={() => void selectBranch(item)} style={choiceStyle}><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{item}</span>{item === branch && <CheckIcon />}</button>)}
+          <div style={{ borderTop: `1px solid ${colors.border}`, marginTop: 5, paddingTop: 5 }}>
+            {creatingBranch ? <div style={{ display: "flex", gap: 4 }}>
+              <input autoFocus aria-label="New branch name" value={newBranchName} onChange={(event) => setNewBranchName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void selectBranch(newBranchName, true); }} placeholder="Branch name" style={{ minWidth: 0, flex: 1, padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: 6, color: colors.fg, background: colors.bg, fontFamily: "inherit" }} />
+              <button type="button" aria-label="Create branch" disabled={changing} onClick={() => void selectBranch(newBranchName, true)} style={{ ...choiceStyle, width: "auto" }}><CheckIcon /></button>
+            </div> : <button type="button" onClick={() => { setError(null); setCreatingBranch(true); }} style={choiceStyle}><Plus size={14} />Create branch</button>}
+          </div>
+        </div>}
+      </span>}
+    </>}
+    {error && <span role="alert" style={{ color: colors.err, fontSize: 12 }}>{error}</span>}
+  </div>;
+}
+
+function MultiViewAddButton({ count, onCreate }: { count: number; onCreate: () => Promise<void> }) {
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div style={{ position: "relative", flexShrink: 0, marginRight: 12 }}>
+      {count < MAX_MULTI_VIEW_CHATS && <button type="button" title="New chat in Mosaic" aria-label="New chat in Mosaic" disabled={creating} onClick={() => { setCreating(true); setError(null); void onCreate().catch((cause) => setError(String(cause))).finally(() => setCreating(false)); }} style={{ display: "flex", alignItems: "center", padding: 4, border: 0, background: "transparent", color: colors.dim, cursor: creating ? "wait" : "pointer", opacity: creating ? 0.5 : 1 }}><Plus size={17} /></button>}
+      {error && <div role="alert" style={{ position: "absolute", zIndex: 40, right: 0, top: "calc(100% + 8px)", width: 250, padding: 10, background: colors.panel, color: colors.fg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: "0 12px 28px rgba(0,0,0,.35)" }}>Could not create chat: {error}</div>}
+    </div>
+  );
+}
+
+function MultiViewTile({ id, columnSpan, fresh, project, work, projects, drafts, onSelectEnvironment, title, connected, accessMode, onAccessModeChange, planMode, onTogglePlanMode, onOpenChat, onRemove, onTurnLanded, onOpenFile, onPreviewImage, onOpenLink, onOpenMcp, onOpenConnectors, onOpenSkills }: {
+  id: string;
+  columnSpan: number;
+  fresh: boolean;
+  project: { name: string; path: string } | null;
+  work?: { mode: "local" | "worktree" | "existing"; cwd: string; branch: string | null };
+  projects: ProjectInfo[];
+  drafts?: ConversationDrafts<Attachment>;
+  onSelectEnvironment: (project: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
+  title: string;
+  connected: boolean;
+  accessMode: AccessMode;
+  onAccessModeChange: (mode: AccessMode) => void;
+  planMode: boolean;
+  onTogglePlanMode: () => void;
+  onOpenChat: () => void;
+  onRemove: () => void;
+  onTurnLanded: () => void;
+  onOpenFile: (path: string) => void;
+  onPreviewImage: (attachment: Attachment) => void;
+  onOpenLink: (url: string) => void;
+  onOpenMcp: () => void;
+  onOpenConnectors: () => void;
+  onOpenSkills: () => void;
+}) {
+  const [loaded, setLoaded] = useState<Awaited<ReturnType<Window["unbiased"]["mountThread"]>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (fresh) return;
+    let active = true;
+    let lease: string | null = null;
+    void window.unbiased.mountThread(id).then(async (result) => {
+      lease = result.lease;
+      if (!active) { void window.unbiased.unmountThread(id, lease); return; }
+      const cached = await window.unbiased.loadTranscript(id);
+      if (!active) return;
+      const richness = (entries: Entry[]) => entries.reduce((total, entry) => total + (entry.kind === "work" ? Math.max(1, entry.entries.length) : 1), 0);
+      const entries = cached.entries && richness(cached.entries) > richness(result.entries)
+        ? hydrateTranscriptTimes(cached.entries, result.entries)
+        : result.entries;
+      setLoaded({ ...result, entries });
+    }).catch((cause) => { if (active) setError(String(cause)); });
+    return () => { active = false; if (lease) void window.unbiased.unmountThread(id, lease); };
+  }, [id, fresh]);
+  const entries = loaded?.entries ?? [];
+  const streamText = loaded?.running ? loaded.streamText : "";
+  const last = entries[entries.length - 1];
+  const resetEntries = streamText
+    ? [...(last?.kind === "assistant" && streamText.startsWith(last.text) ? entries.slice(0, -1) : entries), { kind: "assistant" as const, text: streamText }]
+    : entries;
+  return (
+    <section data-mosaic-chat-id={id} style={{ gridColumn: `span ${columnSpan}`, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", border: `1px solid ${colors.border}`, borderRadius: 6, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px 6px 12px", borderBottom: `1px solid ${colors.border}` }}>
+        <span title={title} style={{ minWidth: 0, flex: 1, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", fontSize: 13, fontWeight: 600 }}>{title}</span>
+        <IconButton title={`Open ${title} outside Mosaic`} onClick={onOpenChat}>
+          <svg width="16" height="16" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+            <g stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M25 11H13C6.5 11 2 15.5 2 22v13c0 6.5 4.5 11 11 11h13c6.5 0 11-4.5 11-11V22" />
+              <path d="M26 22 45 3M31 3h14v14" />
+            </g>
+          </svg>
+        </IconButton>
+        <IconButton title={`Remove ${title} from Mosaic`} onClick={onRemove}>
+          <CloseIcon size={16} strokeWidth={0.95} viewBox="3 3 18 18" />
+        </IconButton>
+      </div>
+      {fresh || loaded ? (
+        <ChatPane
+          paneId={`multi:${id}`}
+          canTypeToFocus={() => false}
+          connected={connected}
+          threadId={id}
+          composerDrafts={drafts}
+          reset={{ entries: resetEntries, nonce: 0, resume: loaded?.running ? { running: true, approvals: loaded.approvals, userInputs: loaded.userInputs } : null, runningTurnStart: loaded?.runningTurnStart, runningTurnStartedAt: loaded?.runningTurnStartedAt }}
+          emptyState={null}
+          composerHeader={fresh ? <MosaicNewChatEnvironment project={project} work={work} projects={projects} onSelect={onSelectEnvironment} disabled={busy} /> : undefined}
+          onBusyChange={setBusy}
+          accessMode={accessMode}
+          onAccessModeChange={onAccessModeChange}
+          planMode={planMode}
+          onTogglePlanMode={onTogglePlanMode}
+          onTurnLanded={onTurnLanded}
+          onOpenFile={onOpenFile}
+          onPreviewImage={onPreviewImage}
+          onOpenLink={onOpenLink}
+          onOpenMcp={onOpenMcp}
+          onOpenConnectors={onOpenConnectors}
+          onOpenSkills={onOpenSkills}
+          persistTranscript
+        />
+      ) : <div style={{ padding: 16, color: colors.dim }}>{error ?? "Loading chat..."}</div>}
+    </section>
+  );
 }
 
 function ChatPane({
@@ -13753,13 +14285,13 @@ function ScheduledView({
                               border: "none",
                               background: "rgba(0,0,0,0.6)",
                               color: "#fff",
-                              fontSize: 10,
-                              lineHeight: "16px",
+                              display: "grid",
+                              placeItems: "center",
                               padding: 0,
                               cursor: "pointer",
                             }}
                           >
-                            ×
+                            <CloseIcon size={10} />
                           </button>
                         </span>
                       ))}
@@ -16571,8 +17103,8 @@ function SettingsView({
       <div className="u-settings-body" style={{ display: "flex", flex: 1, minHeight: 0, padding: "0 4px 4px 0" }}>
         <nav aria-label="Sidebar shortcuts" className="u-sidebar u-settings-rail" style={{ width: 52, flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center" }}>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, paddingTop: 15 }}>
-            <SidebarRailButton label="Home" onClick={onBack}><Home size={18} /></SidebarRailButton>
-            <SidebarRailButton label="Open project" onClick={onOpenProject}><FolderPlusIcon /></SidebarRailButton>
+            <SidebarRailButton label="Home" onClick={onBack}><Home size={18} strokeWidth={1.5} /></SidebarRailButton>
+            <SidebarRailButton label="Open project" onClick={onOpenProject}><FolderOpen size={18} strokeWidth={1.5} /></SidebarRailButton>
             <SidebarRailButton label="Connectors" onClick={onOpenConnectors}><PlugIcon /></SidebarRailButton>
             <SidebarRailButton label="Scheduled" badge={missedCount} onClick={onOpenScheduled}><ClockIcon /></SidebarRailButton>
           </div>
@@ -17539,7 +18071,7 @@ function ChangelogModal({
               fontSize: 14,
             }}
           >
-            ×
+            <CloseIcon size={14} />
           </button>
         </div>
         {/* overflowX explicit: with only overflowY set, CSS computes the x
@@ -17687,7 +18219,7 @@ function ChatSearchDialog({
             onChange={(event) => { onQueryChange(event.target.value); setSelected(0); }}
             style={{ flex: 1, minWidth: 0, boxSizing: "border-box", padding: "18px 20px", border: 0, outline: "none", background: "transparent", color: colors.fg, font: "inherit", fontSize: 19 }}
           />
-          {query && <button type="button" aria-label="Clear search" title="Clear search" onClick={() => { onQueryChange(""); setSelected(0); document.getElementById("chat-search-input")?.focus(); }} style={{ width: 30, height: 30, marginRight: 14, display: "grid", placeItems: "center", border: 0, borderRadius: 7, background: "transparent", color: colors.dim, cursor: "pointer" }}><X size={17} strokeWidth={1.8} /></button>}
+          {query && <button type="button" aria-label="Clear search" title="Clear search" onClick={() => { onQueryChange(""); setSelected(0); document.getElementById("chat-search-input")?.focus(); }} style={{ width: 30, height: 30, marginRight: 14, display: "grid", placeItems: "center", border: 0, borderRadius: 7, background: "transparent", color: colors.dim, cursor: "pointer" }}><CloseIcon size={17} /></button>}
         </div>
         <div style={{ overflowY: "auto", padding: "12px 8px 14px" }}>
           {resultCount === 0 && <div style={{ padding: "10px 12px 18px", color: colors.dim, fontSize: 13 }}>{searching ? "Searching chat contents…" : "No matching chats or projects"}</div>}
@@ -17817,11 +18349,34 @@ function SidebarPreviewRow({
   );
 }
 
+function MosaicPreviewRow({
+  title,
+  onFocus,
+  onRemove,
+}: {
+  title: string;
+  onFocus: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", minWidth: 0, borderRadius: 8 }}>
+      <SidebarPreviewRow icon={<MessageSquare size={16} />} title={title} onClick={onFocus} />
+      <button type="button" className="u-sidebar-icon-button" title={`Remove ${title} from Mosaic`} aria-label={`Remove ${title} from Mosaic`} onClick={onRemove} style={{ width: 30, height: 30, flexShrink: 0, display: "grid", placeItems: "center", border: 0, borderRadius: 8, background: "transparent", color: colors.dim, cursor: "pointer" }}>
+        <CloseIcon size={15} />
+      </button>
+    </div>
+  );
+}
+
 function SidebarSectionPreview({
   section,
   projects,
+  mosaicChats,
   updateVersion,
   latestRelease,
+  onCreateMosaicChat,
+  onOpenMosaicChat,
+  onRemoveMosaicChat,
   onOpenProject,
   onCreateProject,
   onStartProjectChat,
@@ -17835,8 +18390,12 @@ function SidebarSectionPreview({
 }: {
   section: Exclude<RailPeekSection, "home">;
   projects: ProjectInfo[];
+  mosaicChats: { id: string; title: string }[];
   updateVersion: string | null;
   latestRelease: string | null;
+  onCreateMosaicChat: () => Promise<void>;
+  onOpenMosaicChat: (id: string) => void;
+  onRemoveMosaicChat: (id: string) => void;
   onOpenProject: () => void;
   onCreateProject: () => void;
   onStartProjectChat: (project: ProjectInfo) => void;
@@ -17880,6 +18439,7 @@ function SidebarSectionPreview({
   }, [section]);
 
   const title = {
+    mosaic: "Mosaic",
     projects: "Projects",
     connectors: "Connectors",
     scheduled: "Scheduled",
@@ -17900,6 +18460,7 @@ function SidebarSectionPreview({
     <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 12px 20px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 32, padding: "0 8px" }}>
         <h2 style={{ margin: 0, fontSize: 19, fontWeight: 600, color: colors.fg }}>{title}</h2>
+        {section === "mosaic" && <MultiViewAddButton count={mosaicChats.length} onCreate={onCreateMosaicChat} />}
         {searchable && (
           <button
             type="button"
@@ -17924,9 +18485,17 @@ function SidebarSectionPreview({
         />
       )}
       <div style={{ marginTop: 18 }}>
+        {section === "mosaic" && (
+          <>
+            {mosaicChats.map((chat) => (
+              <MosaicPreviewRow key={chat.id} title={chat.title} onFocus={() => onOpenMosaicChat(chat.id)} onRemove={() => onRemoveMosaicChat(chat.id)} />
+            ))}
+            {mosaicChats.length === 0 && <SidebarPreviewEmpty>No chats in Mosaic yet</SidebarPreviewEmpty>}
+          </>
+        )}
         {section === "projects" && (
           <>
-            <SidebarPreviewRow icon={<FolderPlusIcon />} title="Open project..." onClick={onOpenProject} />
+            <SidebarPreviewRow icon={<FolderOpen size={16} />} title="Open project..." onClick={onOpenProject} />
             <SidebarPreviewRow icon={<Plus size={16} />} title="Create project" onClick={onCreateProject} />
             <SidebarPreviewLabel>Projects</SidebarPreviewLabel>
             {projectRows.map((project) => (
@@ -18234,6 +18803,16 @@ function SectionLabel({
   );
 }
 
+function MosaicIcon({ size = 16 }: { size?: number } = {}) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" fill="none" stroke="currentColor" strokeWidth="4" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <rect x="8" y="8" width="22" height="48" rx="4" />
+      <rect x="36" y="8" width="20" height="21" rx="4" />
+      <rect x="36" y="35" width="20" height="21" rx="4" />
+    </svg>
+  );
+}
+
 function FolderPlusIcon({ size = 15 }: { size?: number } = {}) {
   return (
     <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
@@ -18319,10 +18898,7 @@ function RemoveBadge({ label, onClick }: { label: string; onClick: () => void })
         padding: 0,
       }}
     >
-      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
-        <path d="M18 6 6 18" />
-        <path d="M6 6l12 12" />
-      </svg>
+      <CloseIcon size={9} />
     </button>
   );
 }
@@ -19055,15 +19631,6 @@ function AnnotationIcon() {
   );
 }
 
-function CloseIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M18 6 6 18" />
-      <path d="M6 6l12 12" />
-    </svg>
-  );
-}
-
 function PlugIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -19145,6 +19712,12 @@ function ThreadRow({
 }) {
   return (
     <div
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = "copy";
+        event.dataTransfer.setData("application/x-unbiased-thread", thread.id);
+        event.dataTransfer.setData("text/plain", thread.title);
+      }}
       onMouseEnter={() => onHover(thread.id)}
       onMouseLeave={() => onHover(null)}
       className="u-sidebar-row"

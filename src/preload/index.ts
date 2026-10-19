@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld("unbiased", {
   onDelta: (cb: (p: unknown) => void) => subscribe("chat:delta", cb),
   onTurnCompleted: (cb: (p: unknown) => void) => subscribe("chat:turn-completed", cb),
   onThreadActivity: (cb: (p: unknown) => void) => subscribe("chat:thread-activity", cb),
+  setVisibleChats: (threadIds: string[], paneIds: string[]) => ipcRenderer.send("pet:visible-chats", { threadIds, paneIds }),
 
   setAccessMode: (mode: string) => ipcRenderer.invoke("policy:set-mode", mode),
   setWorkMode: (mode: string, dir?: string) => ipcRenderer.invoke("workmode:set", { mode, dir }),
@@ -162,6 +163,9 @@ contextBridge.exposeInMainWorld("unbiased", {
   searchThreads: (query: string, threads: { id: string; updatedAt?: string | number }[], includeSavedTranscripts = false) =>
     ipcRenderer.invoke("threads:search", { query, threads, includeSavedTranscripts }),
   openThread: (id: string) => ipcRenderer.invoke("threads:open", id),
+  mountThread: (id: string) => ipcRenderer.invoke("threads:mount", id),
+  createMultiThread: (projectPath?: string | null, replaceId?: string, workMode?: "local" | "worktree" | "existing", worktreeDir?: string) => ipcRenderer.invoke("threads:create-multi", { projectPath, replaceId, workMode, worktreeDir }),
+  unmountThread: (id: string, lease: string) => ipcRenderer.invoke("threads:unmount", id, lease),
   detachThread: (cwd?: string) => ipcRenderer.invoke("threads:detach", cwd),
   deleteThread: (id: string) => ipcRenderer.invoke("threads:delete", id),
   resetSideChat: (paneId?: string) => ipcRenderer.invoke("side:reset", paneId),

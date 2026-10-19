@@ -3,7 +3,8 @@ export type NavigationLocation =
   | { kind: "project"; path: string; name: string }
   | { kind: "thread"; id: string }
   | { kind: "connectors" }
-  | { kind: "scheduled" };
+  | { kind: "scheduled" }
+  | { kind: "multi" };
 
 export type NavigationHistory = {
   entries: NavigationLocation[];

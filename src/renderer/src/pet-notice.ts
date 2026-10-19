@@ -1,6 +1,6 @@
 import { createElement, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { X } from "lucide-react";
+import { CloseIcon } from "./close-icon";
 
 type Notice = { id: number; title: string; response: string };
 
@@ -36,7 +36,7 @@ function NoticeStack() {
         title: "Dismiss notification",
         "aria-label": `Dismiss notification from ${notice.title}`,
         onClick: () => window.petNotice.dismiss(notice.id),
-      }, createElement(X, { size: 16, strokeWidth: 2 })),
+      }, createElement(CloseIcon, { size: 16 })),
     )),
   );
 }
