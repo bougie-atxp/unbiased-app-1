@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { INTERACTIVE_VISUAL_CSP, MAX_INTERACTIVE_VISUAL_LENGTH, interactiveVisualDocument, interactiveVisualId, isInteractiveVisualSource } from "../shared/interactive-visual";
+import { INTERACTIVE_VISUAL_CSP, INTERACTIVE_VISUAL_PREVIEW_URL, MAX_INTERACTIVE_VISUAL_LENGTH, interactiveVisualDocument, interactiveVisualId, interactiveVisualPreviewCsp, interactiveVisualPreviewDocument, isInteractiveVisualPreviewUrl, isInteractiveVisualSource } from "../shared/interactive-visual";
 
 test("only a visual URL with an exact ID can resolve a frame", () => {
   const url = "unbiased-visual://view/fe84ba18-a111-4c40-a556-f882ae77cb7d";
@@ -88,4 +88,20 @@ test("the frame policy permits inline interaction without network or nested fram
   assert.match(INTERACTIVE_VISUAL_CSP, /frame-src 'none'/);
   assert.match(INTERACTIVE_VISUAL_CSP, /form-action 'none'/);
   assert.doesNotMatch(INTERACTIVE_VISUAL_CSP, /https?:/);
+});
+
+test("the preview route uses only app-owned script and no generated script permission", () => {
+  const nonce = "safe-preview-nonce";
+  const doc = interactiveVisualPreviewDocument(nonce);
+  const csp = interactiveVisualPreviewCsp(nonce);
+  assert.equal(isInteractiveVisualPreviewUrl(INTERACTIVE_VISUAL_PREVIEW_URL), true);
+  assert.equal(isInteractiveVisualPreviewUrl(`${INTERACTIVE_VISUAL_PREVIEW_URL}?next=1`), false);
+  assert.match(doc, /visual-preview-style/);
+  assert.match(doc, /unbiased-visual-preview-ready/);
+  assert.match(doc, /script nonce="safe-preview-nonce"/);
+  assert.match(csp, /script-src 'nonce-safe-preview-nonce'/);
+  assert.doesNotMatch(csp.match(/script-src[^;]*/)?.[0] ?? "", /unsafe-inline/);
+  assert.match(csp, /connect-src 'none'/);
+  assert.match(csp, /frame-src 'none'/);
+  assert.doesNotMatch(doc, /window\.unbiased/);
 });

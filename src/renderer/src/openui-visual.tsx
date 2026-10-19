@@ -54,7 +54,7 @@ const UNSAFE_URL = /(?:https?:\/\/|file:\/\/|javascript:|data:)/i;
 
 type Element = { type: "element"; typeName: string; props: Record<string, unknown> };
 
-function inspectTree(value: unknown, depth: number, state: { count: number }): boolean {
+function inspectTree(value: unknown, depth: number, state: { count: number; hasHtml: boolean }): boolean {
   if (depth > 12) return false;
   if (typeof value === "string") return !UNSAFE_URL.test(value);
   if (Array.isArray(value)) return value.every((item) => inspectTree(item, depth + 1, state));
@@ -66,6 +66,7 @@ function inspectTree(value: unknown, depth: number, state: { count: number }): b
     if (element.typeName === "Whiteboard" && !whiteboardSchema.safeParse(element.props).success) return false;
     if (element.typeName === "Mermaid" && !mermaidDiagramSchema.safeParse(element.props).success) return false;
     if (element.typeName === "VisualHtml") {
+      state.hasHtml = true;
       if (!visualHtmlSchema.safeParse(element.props).success) return false;
       return Object.entries(element.props).every(([key, child]) => key === "source" || inspectTree(child, depth + 1, state));
     }
@@ -73,7 +74,7 @@ function inspectTree(value: unknown, depth: number, state: { count: number }): b
   return Object.values(item).every((child) => inspectTree(child, depth + 1, state));
 }
 
-export function inspectOpenUI(source: string): { valid: boolean; reason?: string; selfFramed?: boolean } {
+export function inspectOpenUI(source: string): { valid: boolean; reason?: string; selfFramed?: boolean; hasHtml?: boolean } {
   if (!source.trim() || source.length > MAX_PROGRAM_LENGTH) return { valid: false, reason: "size" };
   try {
     const result = parser.parse(source);
@@ -82,13 +83,13 @@ export function inspectOpenUI(source: string): { valid: boolean; reason?: string
         result.queryStatements.length || result.mutationStatements.length) {
       return { valid: false, reason: "parse" };
     }
-    const state = { count: 0 };
+    const state = { count: 0, hasHtml: false };
     if (!inspectTree(result.root, 0, state)) return { valid: false, reason: "content" };
     const children = result.root.props.children;
     const first = Array.isArray(children) ? children[0] as Element | undefined : undefined;
     const selfFramed = Array.isArray(children) && children.length === 1 && first?.type === "element" &&
       ["Whiteboard", "VisualHtml"].includes(first.typeName);
-    return { valid: true, selfFramed };
+    return { valid: true, selfFramed, ...(state.hasHtml ? { hasHtml: true } : {}) };
   } catch {
     return { valid: false, reason: "parse" };
   }
@@ -192,13 +193,13 @@ function validatedVisual({ language, source, streaming, fenceClosed }: VisualFen
         !mermaidDiagramSchema.safeParse({ diagram: source }).success) return null;
     program = `root = Stack([Mermaid(${JSON.stringify(source)})])`;
   } else if (language === "visual-html") {
-    // Never run a script fragment until its fence is closed.
-    if ((streaming && !fenceClosed) || !isInteractiveVisualSource(source)) return null;
+    if (!fenceClosed || !isInteractiveVisualSource(source)) return null;
     program = `root = Stack([VisualHtml(${JSON.stringify(source)})])`;
   } else {
     return null;
   }
   const inspected = inspectOpenUI(program);
+  if (language === "openui" && !fenceClosed && inspected.hasHtml) return null;
   if (!inspected.valid && language === "openui" && fenceClosed) {
     const recovered = recoverQuotedVisualHtml(program);
     if (recovered) {
@@ -233,6 +234,16 @@ class ProgressiveVisualFence extends Component<VisualFenceProps, VisualFenceStat
   }
 
   render() {
+    if (this.props.language === "visual-html") {
+      if (!this.props.streaming && this.props.fenceClosed && !this.state.current) return <VisualFenceStatus />;
+      return <GeneratedVisualViewport>
+        <InteractiveHtmlVisual
+          source={this.state.current ? this.props.source : null}
+          previewSource={this.props.streaming || !this.props.fenceClosed ? this.props.source : undefined}
+          incomplete={!this.props.streaming && !this.props.fenceClosed}
+        />
+      </GeneratedVisualViewport>;
+    }
     const visual = this.state.current ?? (this.props.streaming ? this.state.lastValid : null);
     if (visual) return <OpenUIVisualSurface source={visual.source} selfFramed={visual.selfFramed} />;
     return <VisualFenceStatus pending={this.props.streaming} />;
