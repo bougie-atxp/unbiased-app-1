@@ -98,7 +98,13 @@
   max-width: none;
   flex: none;
   margin: 0;
-  zoom: var(--visual-zoom, 1.35);
+  zoom: var(--visual-zoom, 1);
+}
+
+.app-generated-visual-viewport:popover-open > .app-interactive-html-visual {
+  flex: none;
+  margin: 0;
+  zoom: var(--visual-zoom, 1);
 }
 
 @media (max-width: 900px) {
@@ -111,10 +117,6 @@
     width: calc(100vw - 24px);
     max-height: calc(100dvh - 24px);
     padding: 12px;
-  }
-
-  .app-generated-visual-viewport:popover-open .app-openui-visual {
-    zoom: var(--visual-zoom, 1);
   }
 }
 

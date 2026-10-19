@@ -21,7 +21,7 @@ import { homedir, hostname } from "node:os";
 import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile as readFileAsync, readdir as readdirAsync, stat as statAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fileActionError, localFileForAction, saveLocalFileCopy } from "./file-actions";
 import { PetActivity, petTurnActivityKey } from "./pet-activity";
 import { clampPetPosition, initialPetPosition, PET_SCALES, petScale, petWindowSize, pointInPetWindow, type PetScale } from "./pet-layout";
@@ -38,7 +38,7 @@ import { agentStyleInstructions, DEFAULT_AGENT_STYLE, parseAgentStylePrefs, type
 import { projectContextForDirectory } from "./project-context";
 import { OPENUI_VISUAL_INSTRUCTIONS, VISUALIZE_DIRECTIVE } from "./visual-instructions";
 import { epochMillis } from "../shared/conversation-time";
-import { INTERACTIVE_VISUAL_CSP, INTERACTIVE_VISUAL_SCHEME, interactiveVisualDocument, interactiveVisualId, isInteractiveVisualSource } from "../shared/interactive-visual";
+import { INTERACTIVE_VISUAL_CSP, INTERACTIVE_VISUAL_SCHEME, interactiveVisualDocument, interactiveVisualId, interactiveVisualPreviewCsp, interactiveVisualPreviewDocument, isInteractiveVisualPreviewUrl, isInteractiveVisualSource } from "../shared/interactive-visual";
 import { agentInputFields, codexInputResponse, mcpInputFields, mcpInputResponse, validateUserInput, type UserInputRequest, type UserInputValue } from "../shared/user-input";
 import { startSecretProxy, type SecretConnector } from "./oauth-proxy";
 import {
@@ -6218,7 +6218,7 @@ function createWindow(): void {
     return { action: "deny" };
   });
   win.webContents.on("will-frame-navigate", (event) => {
-    if (!event.isMainFrame && !registeredInteractiveVisualId(event.url)) {
+    if (!event.isMainFrame && !registeredInteractiveVisualId(event.url) && !isInteractiveVisualPreviewUrl(event.url)) {
       event.preventDefault();
     }
   });
@@ -8544,6 +8544,17 @@ app.whenReady().then(async () => {
     return palsSettings();
   });
   protocol.handle(INTERACTIVE_VISUAL_SCHEME, (request) => {
+    if (request.method === "GET" && isInteractiveVisualPreviewUrl(request.url)) {
+      const nonce = randomBytes(16).toString("base64");
+      return new Response(interactiveVisualPreviewDocument(nonce), {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Security-Policy": interactiveVisualPreviewCsp(nonce),
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
     const id = registeredInteractiveVisualId(request.url);
     const source = request.method === "GET" && id ? interactiveVisuals.get(id) : null;
     if (!source) return new Response("Not found", { status: 404 });

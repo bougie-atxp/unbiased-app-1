@@ -22,12 +22,17 @@ remote URLs, and unsafe HTML are rejected. The renderer has no tool provider
 or model-to-Electron IPC path. Upstream package updates and app extensions
 must be reviewed and bundled by the app before the agent can use them.
 
-Standalone `mermaid` and `visual-html` fences are wrapped as OpenUI components
-and use the same rendering path. Mermaid runs in strict security mode. HTML
-fragments are validated and mounted in an isolated, no-network frame with
-scripts but no access to app APIs. The generated visual is displayed only
-after its frame signals readiness. See `src/shared/interactive-visual.ts` for
-the fragment validator and content security policy.
+Standalone `mermaid` fences are wrapped as OpenUI components. Mermaid runs in
+strict security mode. A standalone `visual-html` fence uses a dedicated HTML
+view: while it streams, completed markup and styles appear in a passive,
+sanitized preview frame. Generated scripts never run there. Once the fence
+closes, the complete fragment is validated and loaded in the existing isolated,
+no-network interactive frame with no access to app APIs. The preview remains
+visible until that frame signals readiness. An interrupted, unclosed fence
+remains passive. HTML inside an OpenUI `VisualHtml` component still waits for
+the enclosing fence to close. See `src/shared/interactive-visual.ts` for the
+separate frame policies and `src/renderer/src/visual-html-preview.tsx` for
+preview processing.
 
 Whiteboard accepts up to 60 bounded shapes on an 800x450 board. Drawable
 shapes have unique IDs, and connector edges refer to two distinct drawable

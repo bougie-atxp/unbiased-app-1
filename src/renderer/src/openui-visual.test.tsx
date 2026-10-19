@@ -9,6 +9,7 @@ import { openuiLibrary } from "@openuidev/react-ui/genui-lib";
 import { appOpenUILibrary, inspectOpenUI, visualFenceContent } from "./openui-visual";
 import { openUIThemeStyle } from "./openui-theme";
 import { isClosedVisualFence } from "./visual-fence";
+import { sanitizeVisualPreview } from "./visual-html-preview";
 
 test("registers the upstream OpenUI catalogue in the app's single renderer", () => {
   assert.ok(Object.keys(openuiLibrary.components).length > 50);
@@ -90,6 +91,24 @@ test("standalone HTML and Mermaid wait for a closed fence, not the end of the tu
   const diagram = "flowchart LR\nA-->B";
   assert.match(renderToStaticMarkup(visualFenceContent("mermaid", diagram, true, false)!), /Preparing visual/);
   assert.match(renderToStaticMarkup(visualFenceContent("mermaid", diagram, true, true)!), /aria-label="Interactive visual"/);
+});
+
+test("partial HTML previews keep visible markup, completed CSS, and no generated scripts", () => {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>");
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document });
+  try {
+    const partial = sanitizeVisualPreview('<div class="scene">First</div><style>.scene { color: red');
+    assert.match(partial.html, /First/);
+    assert.equal(partial.css, "");
+    const complete = sanitizeVisualPreview('<style>.scene { color: red }</style><div class="scene" onclick="alert(1)">First<svg><circle r="10" onload="alert(1)"/></svg></div><script>alert(1)</script>');
+    assert.match(complete.html, /First|<circle/);
+    assert.match(complete.css, /color: red/);
+    assert.doesNotMatch(complete.html, /<script|onclick|onload|alert\(1\)|<style/i);
+    assert.equal(sanitizeVisualPreview('<style>@import url(https://example.com/a.css)</style><p>Safe</p>').css, "");
+    assert.equal(sanitizeVisualPreview('<div><img src="https://example.com/track"/><a href="https://example.com">Link</a></div>').html.includes("https://example.com"), false);
+  } finally {
+    dom.window.close();
+  }
 });
 
 test("raw HTML handles quoted SVG and script content that breaks an OpenUI string", () => {
@@ -190,7 +209,7 @@ test("renders a library component through OpenUI", async () => {
   }
 });
 
-test("routes standalone HTML through OpenUI into a sandboxed frame", async () => {
+test("routes completed HTML into a sandboxed frame", async () => {
   const dom = new JSDOM("<!doctype html><div id='root'></div>", { url: "http://localhost" });
   Object.assign(globalThis, {
     window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement,
@@ -210,7 +229,7 @@ test("routes standalone HTML through OpenUI into a sandboxed frame", async () =>
   })) host.style.setProperty(name, value);
   try {
     await act(async () => root.render(visualFenceContent("visual-html", source, false)));
-    const frame = dom.window.document.querySelector("iframe");
+    const frame = dom.window.document.querySelector<HTMLIFrameElement>('iframe[src^="unbiased-visual://view/"]');
     assert.ok(frame);
     assert.equal(frame.getAttribute("sandbox"), "allow-scripts");
     assert.equal(frame.getAttribute("src"), "unbiased-visual://view/test-id");
@@ -218,11 +237,66 @@ test("routes standalone HTML through OpenUI into a sandboxed frame", async () =>
     const sent: unknown[] = [];
     frame.contentWindow!.postMessage = (data: unknown) => { sent.push(data); };
     await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
-    assert.deepEqual(sent.at(-1), {
+    assert.deepEqual(sent.at(-2), {
       type: "unbiased-visual-theme",
       colors: { bg: "#f5f5f5", fg: "#222222", muted: "#666666", accent: "#e0584a" },
       scheme: "light",
     });
+    assert.deepEqual(sent.at(-1), { type: "unbiased-visual-expanded", expanded: false });
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+  }
+});
+
+test("keeps a passive preview through final-frame readiness and never runs an unclosed visual", async () => {
+  const dom = new JSDOM("<!doctype html><div id='root'></div>", { url: "http://localhost" });
+  Object.assign(globalThis, {
+    window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement,
+    MutationObserver: dom.window.MutationObserver, getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  let registrations = 0;
+  Object.assign(dom.window, { unbiased: { registerVisual: async () => { registrations++; return "unbiased-visual://view/final"; } } });
+  const root = createRoot(dom.window.document.getElementById("root")!);
+  let partial = '<style>.scene{color:red}</style><div class="scene">Ready</div><script>document.';
+  try {
+    await act(async () => root.render(visualFenceContent("visual-html", partial, true, false)));
+    const preview = dom.window.document.querySelector<HTMLIFrameElement>('iframe[src="unbiased-visual://preview/"]');
+    assert.ok(preview);
+    assert.equal(registrations, 0);
+    const sent: Array<{ html?: string; css?: string }> = [];
+    preview.contentWindow!.postMessage = (data: { html?: string; css?: string }) => { sent.push(data); };
+    await act(async () => {
+      dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+        source: preview.contentWindow, origin: "null", data: { type: "unbiased-visual-preview-ready" },
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    });
+    assert.match(sent.at(-1)?.html ?? "", /Ready/);
+    assert.doesNotMatch(sent.at(-1)?.html ?? "", /<script|document\./);
+    assert.match(sent.at(-1)?.css ?? "", /color:red/);
+    for (let step = 1; step <= 10; step++) {
+      partial = `<style>.scene{color:red}</style><div class="scene">Ready ${step}</div><script>document.`;
+      await act(async () => root.render(visualFenceContent("visual-html", partial, true, false)));
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    }
+    assert.ok(sent.some((message) => /Ready [1-9]/.test(message.html ?? "")), "a rapid stream should update before it pauses");
+    await act(async () => root.render(visualFenceContent("visual-html", partial, false, false)));
+    assert.equal(registrations, 0);
+    assert.match(dom.window.document.body.textContent ?? "", /Visual incomplete/);
+    const complete = `${partial}body.dataset.ready = "yes"</script>`;
+    await act(async () => root.render(visualFenceContent("visual-html", complete, false, true)));
+    assert.equal(registrations, 1);
+    assert.equal(dom.window.document.querySelector('iframe[src="unbiased-visual://preview/"]'), preview);
+    const finalFrame = dom.window.document.querySelector<HTMLIFrameElement>('iframe[src="unbiased-visual://view/final"]');
+    assert.ok(finalFrame);
+    assert.equal(finalFrame.style.visibility, "hidden");
+    await act(async () => dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+      source: finalFrame.contentWindow, origin: "null", data: { type: "unbiased-visual-ready" },
+    })));
+    assert.equal(dom.window.document.querySelector('iframe[src="unbiased-visual://preview/"]'), null);
+    assert.equal(finalFrame.style.visibility, "visible");
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

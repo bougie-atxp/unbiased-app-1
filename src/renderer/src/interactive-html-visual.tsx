@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { VisualHtmlPreview } from "./visual-html-preview";
 
 const INITIAL_HEIGHT = 440;
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 1600;
+const MAX_EXPANDED_HEIGHT = 100_000;
 
 function visualThemeSource(frame: HTMLElement): HTMLElement {
   for (let element = frame.parentElement; element; element = element.parentElement) {
@@ -22,13 +24,35 @@ function colorScheme(background: string): "light" | "dark" {
   return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722 > 0.179 ? "light" : "dark";
 }
 
-export function InteractiveHtmlVisual({ source }: { source: string }) {
+export function InteractiveHtmlVisual({ source, previewSource, incomplete = false }: { source: string | null; previewSource?: string; incomplete?: boolean }) {
+  const previewRef = useRef(previewSource ?? "");
+  if (previewSource) previewRef.current = previewSource;
   const [url, setUrl] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [height, setHeight] = useState(INITIAL_HEIGHT);
+  const [expanded, setExpanded] = useState(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
+
+  const sendExpanded = (value: boolean) => {
+    frameRef.current?.contentWindow?.postMessage({ type: "unbiased-visual-expanded", expanded: value }, "*");
+  };
+
+  useEffect(() => {
+    if (!url) return;
+    const viewport = frameRef.current?.closest<HTMLElement>(".app-generated-visual-viewport");
+    if (!viewport) return;
+    const sync = (event: Event) => {
+      const value = (event as ToggleEvent).newState === "open";
+      setExpanded(value);
+      sendExpanded(value);
+    };
+    viewport.addEventListener("toggle", sync);
+    const initial = viewport.matches(":popover-open");
+    setExpanded(initial);
+    return () => viewport.removeEventListener("toggle", sync);
+  }, [url]);
 
   useEffect(() => {
     let active = true;
@@ -36,6 +60,7 @@ export function InteractiveHtmlVisual({ source }: { source: string }) {
     setFailure(null);
     setReady(false);
     setHeight(INITIAL_HEIGHT);
+    if (!source) return () => { active = false; };
     void window.unbiased.registerVisual(source).then((nextUrl) => {
       if (!active) return;
       if (nextUrl) setUrl(nextUrl);
@@ -67,7 +92,15 @@ export function InteractiveHtmlVisual({ source }: { source: string }) {
       } else if (event.data?.type === "unbiased-visual-height") {
         const next = event.data.height;
         if (typeof next === "number" && Number.isFinite(next)) {
-          setHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.ceil(next))));
+          setHeight(Math.max(MIN_HEIGHT, Math.min(MAX_EXPANDED_HEIGHT, Math.ceil(next))));
+        }
+      } else if (event.data?.type === "unbiased-visual-wheel") {
+        const viewport = frameRef.current?.closest<HTMLElement>(".app-generated-visual-viewport:popover-open");
+        const delta = event.data.deltaY;
+        if (viewport && typeof delta === "number" && Number.isFinite(delta)) {
+          const mode = event.data.deltaMode;
+          const pixels = delta * (mode === 1 ? 16 : mode === 2 ? viewport.clientHeight : 1);
+          viewport.scrollBy({ top: pixels, behavior: "instant" });
         }
       }
     };
@@ -101,15 +134,18 @@ export function InteractiveHtmlVisual({ source }: { source: string }) {
     return () => observer.disconnect();
   }, [url]);
 
+  const showPreview = Boolean(previewRef.current && !ready);
   return (
     <div
       aria-label="Interactive visual"
+      className="app-interactive-html-visual"
       style={{
         width: "100%", minWidth: 0, margin: "16px 0 20px", overflow: "hidden", position: "relative",
         border: "1px solid var(--border)", borderRadius: 28,
         background: "var(--panel)", boxShadow: "0 14px 36px rgba(0, 0, 0, 0.28)",
       }}
     >
+      {showPreview && <VisualHtmlPreview source={previewRef.current} incomplete={incomplete} />}
       {url && !failure ? (
         <iframe
           ref={frameRef}
@@ -117,12 +153,15 @@ export function InteractiveHtmlVisual({ source }: { source: string }) {
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
           src={url}
-          onLoad={sendTheme}
+          onLoad={() => {
+            sendTheme();
+            sendExpanded(Boolean(frameRef.current?.closest(".app-generated-visual-viewport:popover-open")));
+          }}
           onError={() => setFailure("frame-load")}
-          style={{ display: "block", width: "100%", height: ready ? height : 96, border: 0, background: "var(--panel)", visibility: ready ? "visible" : "hidden" }}
+          style={{ display: "block", width: "100%", height: ready ? (expanded ? height : Math.min(MAX_HEIGHT, height)) : 96, border: 0, background: "var(--panel)", visibility: ready ? "visible" : "hidden", position: ready ? "static" : "absolute", inset: ready ? undefined : 0 }}
         />
       ) : null}
-      {!ready && !failure && <div role="status" style={{ minHeight: 96, padding: 24, color: "var(--dim)", fontFamily: "var(--font-ui)", fontSize: 14, position: url ? "absolute" : "static", inset: url ? 0 : undefined }}>
+      {!ready && !failure && !showPreview && <div role="status" style={{ minHeight: 96, padding: 24, color: "var(--dim)", fontFamily: "var(--font-ui)", fontSize: 14, position: url ? "absolute" : "static", inset: url ? 0 : undefined }}>
         Preparing visual...
       </div>}
       {failure && <div role="alert" style={{ minHeight: 96, padding: 24, color: "var(--dim)", fontFamily: "var(--font-ui)", fontSize: 14 }}>

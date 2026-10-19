@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { INTERACTIVE_VISUAL_CSP, MAX_INTERACTIVE_VISUAL_LENGTH, interactiveVisualDocument, interactiveVisualId, isInteractiveVisualSource } from "../shared/interactive-visual";
+import { INTERACTIVE_VISUAL_CSP, INTERACTIVE_VISUAL_PREVIEW_URL, MAX_INTERACTIVE_VISUAL_LENGTH, interactiveVisualDocument, interactiveVisualId, interactiveVisualPreviewCsp, interactiveVisualPreviewDocument, isInteractiveVisualPreviewUrl, isInteractiveVisualSource } from "../shared/interactive-visual";
 
 test("only a visual URL with an exact ID can resolve a frame", () => {
   const url = "unbiased-visual://view/fe84ba18-a111-4c40-a556-f882ae77cb7d";
@@ -54,6 +54,40 @@ test("frame height follows content instead of the current viewport height", asyn
   }
 });
 
+test("expanded visual forwards wheel scrolling while preserving nested scrolling", async () => {
+  const messages: { type: string; deltaY?: number }[] = [];
+  const dom = new JSDOM(interactiveVisualDocument('<div id="nested" style="overflow-y:auto"><div>Content</div></div>'), {
+    url: "https://visual.test", runScripts: "dangerously",
+    beforeParse(window) {
+      window.postMessage = ((data: { type: string; deltaY?: number }) => {
+        messages.push(data);
+      }) as typeof window.postMessage;
+    },
+  });
+  try {
+    await new Promise<void>((resolve) => dom.window.addEventListener("load", () => resolve(), { once: true }));
+    const { window } = dom;
+    const nested = window.document.getElementById("nested")!;
+    const wheel = (target: Element) => target.dispatchEvent(new window.WheelEvent("wheel", {
+      bubbles: true, cancelable: true, deltaY: 100,
+    }));
+    assert.equal(wheel(nested), true);
+    window.dispatchEvent(new window.MessageEvent("message", { source: window.parent, data: { type: "unbiased-visual-expanded", expanded: true } }));
+    assert.equal(wheel(nested), false);
+    assert.equal(messages.at(-1)?.type, "unbiased-visual-wheel");
+    assert.equal(messages.at(-1)?.deltaY, 100);
+
+    Object.defineProperties(nested, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 100 }, scrollTop: { configurable: true, value: 0, writable: true } });
+    assert.equal(wheel(nested), true);
+    assert.equal(messages.at(-1)?.type, "unbiased-visual-wheel");
+    window.dispatchEvent(new window.MessageEvent("message", { source: window.parent, data: { type: "unbiased-visual-expanded", expanded: false } }));
+    nested.scrollTop = 400;
+    assert.equal(wheel(nested), true);
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("a completed visual reports its initialization failure rather than silently leaving a blank panel", async () => {
   const events: { type: string; kind?: string; detail?: string }[] = [];
   const source = `<div id="quiz"></div><script>
@@ -88,4 +122,20 @@ test("the frame policy permits inline interaction without network or nested fram
   assert.match(INTERACTIVE_VISUAL_CSP, /frame-src 'none'/);
   assert.match(INTERACTIVE_VISUAL_CSP, /form-action 'none'/);
   assert.doesNotMatch(INTERACTIVE_VISUAL_CSP, /https?:/);
+});
+
+test("the preview route uses only app-owned script and no generated script permission", () => {
+  const nonce = "safe-preview-nonce";
+  const doc = interactiveVisualPreviewDocument(nonce);
+  const csp = interactiveVisualPreviewCsp(nonce);
+  assert.equal(isInteractiveVisualPreviewUrl(INTERACTIVE_VISUAL_PREVIEW_URL), true);
+  assert.equal(isInteractiveVisualPreviewUrl(`${INTERACTIVE_VISUAL_PREVIEW_URL}?next=1`), false);
+  assert.match(doc, /visual-preview-style/);
+  assert.match(doc, /unbiased-visual-preview-ready/);
+  assert.match(doc, /script nonce="safe-preview-nonce"/);
+  assert.match(csp, /script-src 'nonce-safe-preview-nonce'/);
+  assert.doesNotMatch(csp.match(/script-src[^;]*/)?.[0] ?? "", /unsafe-inline/);
+  assert.match(csp, /connect-src 'none'/);
+  assert.match(csp, /frame-src 'none'/);
+  assert.doesNotMatch(doc, /window\.unbiased/);
 });

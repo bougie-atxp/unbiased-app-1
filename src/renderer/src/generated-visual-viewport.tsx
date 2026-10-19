@@ -12,7 +12,7 @@ export function GeneratedVisualViewport({ children }: { children: ReactNode }) {
   const [zoom, setZoom] = useState<number | null>(null);
 
   const changeZoom = (direction: -1 | 1) => {
-    const current = zoom ?? (window.innerWidth > 900 ? 1.35 : 1);
+    const current = zoom ?? 1;
     const index = ZOOM_LEVELS.indexOf(current);
     const next = ZOOM_LEVELS[Math.max(0, Math.min(ZOOM_LEVELS.length - 1, index + direction))];
     if (next === current) return;
@@ -57,9 +57,8 @@ export function GeneratedVisualViewport({ children }: { children: ReactNode }) {
         const scrollElement = viewport.closest<HTMLElement>("[data-transcript-scroll]");
         scrollPositionRef.current = scrollElement ? { element: scrollElement, top: scrollElement.scrollTop } : null;
         if (zoom === null) {
-          const initialZoom = window.innerWidth > 900 ? 1.35 : 1;
-          viewport.style.setProperty("--visual-zoom", String(initialZoom));
-          setZoom(initialZoom);
+          viewport.style.setProperty("--visual-zoom", "1");
+          setZoom(1);
         }
         viewport.setAttribute("popover", "auto");
         viewport.showPopover();
