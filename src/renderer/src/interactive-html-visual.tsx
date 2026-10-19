@@ -5,6 +5,7 @@ import { VisualHtmlPreview } from "./visual-html-preview";
 const INITIAL_HEIGHT = 440;
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 1600;
+const MAX_EXPANDED_HEIGHT = 100_000;
 
 function visualThemeSource(frame: HTMLElement): HTMLElement {
   for (let element = frame.parentElement; element; element = element.parentElement) {
@@ -31,7 +32,27 @@ export function InteractiveHtmlVisual({ source, previewSource, incomplete = fals
   const [ready, setReady] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [height, setHeight] = useState(INITIAL_HEIGHT);
+  const [expanded, setExpanded] = useState(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
+
+  const sendExpanded = (value: boolean) => {
+    frameRef.current?.contentWindow?.postMessage({ type: "unbiased-visual-expanded", expanded: value }, "*");
+  };
+
+  useEffect(() => {
+    if (!url) return;
+    const viewport = frameRef.current?.closest<HTMLElement>(".app-generated-visual-viewport");
+    if (!viewport) return;
+    const sync = (event: Event) => {
+      const value = (event as ToggleEvent).newState === "open";
+      setExpanded(value);
+      sendExpanded(value);
+    };
+    viewport.addEventListener("toggle", sync);
+    const initial = viewport.matches(":popover-open");
+    setExpanded(initial);
+    return () => viewport.removeEventListener("toggle", sync);
+  }, [url]);
 
   useEffect(() => {
     let active = true;
@@ -71,7 +92,15 @@ export function InteractiveHtmlVisual({ source, previewSource, incomplete = fals
       } else if (event.data?.type === "unbiased-visual-height") {
         const next = event.data.height;
         if (typeof next === "number" && Number.isFinite(next)) {
-          setHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.ceil(next))));
+          setHeight(Math.max(MIN_HEIGHT, Math.min(MAX_EXPANDED_HEIGHT, Math.ceil(next))));
+        }
+      } else if (event.data?.type === "unbiased-visual-wheel") {
+        const viewport = frameRef.current?.closest<HTMLElement>(".app-generated-visual-viewport:popover-open");
+        const delta = event.data.deltaY;
+        if (viewport && typeof delta === "number" && Number.isFinite(delta)) {
+          const mode = event.data.deltaMode;
+          const pixels = delta * (mode === 1 ? 16 : mode === 2 ? viewport.clientHeight : 1);
+          viewport.scrollBy({ top: pixels, behavior: "instant" });
         }
       }
     };
@@ -109,6 +138,7 @@ export function InteractiveHtmlVisual({ source, previewSource, incomplete = fals
   return (
     <div
       aria-label="Interactive visual"
+      className="app-interactive-html-visual"
       style={{
         width: "100%", minWidth: 0, margin: "16px 0 20px", overflow: "hidden", position: "relative",
         border: "1px solid var(--border)", borderRadius: 28,
@@ -123,9 +153,12 @@ export function InteractiveHtmlVisual({ source, previewSource, incomplete = fals
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
           src={url}
-          onLoad={sendTheme}
+          onLoad={() => {
+            sendTheme();
+            sendExpanded(Boolean(frameRef.current?.closest(".app-generated-visual-viewport:popover-open")));
+          }}
           onError={() => setFailure("frame-load")}
-          style={{ display: "block", width: "100%", height: ready ? height : 96, border: 0, background: "var(--panel)", visibility: ready ? "visible" : "hidden", position: ready ? "static" : "absolute", inset: ready ? undefined : 0 }}
+          style={{ display: "block", width: "100%", height: ready ? (expanded ? height : Math.min(MAX_HEIGHT, height)) : 96, border: 0, background: "var(--panel)", visibility: ready ? "visible" : "hidden", position: ready ? "static" : "absolute", inset: ready ? undefined : 0 }}
         />
       ) : null}
       {!ready && !failure && !showPreview && <div role="status" style={{ minHeight: 96, padding: 24, color: "var(--dim)", fontFamily: "var(--font-ui)", fontSize: 14, position: url ? "absolute" : "static", inset: url ? 0 : undefined }}>

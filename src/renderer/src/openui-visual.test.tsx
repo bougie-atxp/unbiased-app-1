@@ -237,11 +237,12 @@ test("routes completed HTML into a sandboxed frame", async () => {
     const sent: unknown[] = [];
     frame.contentWindow!.postMessage = (data: unknown) => { sent.push(data); };
     await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
-    assert.deepEqual(sent.at(-1), {
+    assert.deepEqual(sent.at(-2), {
       type: "unbiased-visual-theme",
       colors: { bg: "#f5f5f5", fg: "#222222", muted: "#666666", accent: "#e0584a" },
       scheme: "light",
     });
+    assert.deepEqual(sent.at(-1), { type: "unbiased-visual-expanded", expanded: false });
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

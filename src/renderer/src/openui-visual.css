@@ -101,6 +101,10 @@
   zoom: var(--visual-zoom, 1.35);
 }
 
+.app-generated-visual-viewport:popover-open .app-interactive-html-visual {
+  flex: none;
+}
+
 @media (max-width: 900px) {
   .app-generated-visual-viewport__toolbar {
     top: 40px;

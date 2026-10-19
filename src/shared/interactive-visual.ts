@@ -94,13 +94,19 @@ export function interactiveVisualDocument(source: string): string {
 </style>
 <script>
   (() => {
+  let expanded = false;
   const reportFailure = (kind, detail) => {
     parent.postMessage({ type: 'unbiased-visual-error', kind, detail: String(detail || '').slice(0, 300) }, '*');
   };
   addEventListener('error', event => reportFailure('runtime-error', event.message));
   addEventListener('unhandledrejection', event => reportFailure('unhandled-rejection', event.reason));
   addEventListener('message', event => {
-    if (event.source !== parent || event.data?.type !== 'unbiased-visual-theme') return;
+    if (event.source !== parent) return;
+    if (event.data?.type === 'unbiased-visual-expanded') {
+      expanded = event.data.expanded === true;
+      return;
+    }
+    if (event.data?.type !== 'unbiased-visual-theme') return;
     for (const [key, value] of Object.entries(event.data.colors ?? {})) {
       if (['bg', 'fg', 'muted', 'accent'].includes(key) && /^#[0-9a-f]{6}$/i.test(value))
         document.documentElement.style.setProperty('--visual-' + key, value);
@@ -108,6 +114,16 @@ export function interactiveVisualDocument(source: string): string {
     if (event.data.scheme === 'light' || event.data.scheme === 'dark')
       document.documentElement.style.colorScheme = event.data.scheme;
   });
+  addEventListener('wheel', event => {
+    if (!expanded || event.ctrlKey || event.defaultPrevented || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    for (let element = event.target; element instanceof Element; element = element.parentElement) {
+      const scrollable = element === document.scrollingElement || /auto|scroll/.test(getComputedStyle(element).overflowY);
+      if (scrollable && element.scrollHeight > element.clientHeight + 1 &&
+          (event.deltaY < 0 ? element.scrollTop > 0 : element.scrollTop + element.clientHeight < element.scrollHeight - 1)) return;
+    }
+    event.preventDefault();
+    parent.postMessage({ type: 'unbiased-visual-wheel', deltaY: event.deltaY, deltaMode: event.deltaMode }, '*');
+  }, { passive: false });
   addEventListener('DOMContentLoaded', () => {
     const report = () => parent.postMessage({ type: 'unbiased-visual-height', height: Math.ceil(document.body.scrollHeight) }, '*');
     if (typeof ResizeObserver !== 'undefined') {

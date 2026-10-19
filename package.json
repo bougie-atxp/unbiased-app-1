@@ -9,6 +9,7 @@
     "prepare:browser": "node build/prepare-browser.cjs",
     "smoke:browser": "node build/smoke-browser.cjs",
     "smoke:visual-preview": "electron build/smoke-visual-preview.cjs",
+    "smoke:visual-scroll": "electron build/smoke-visual-scroll.cjs",
     "typecheck": "tsc --noEmit",
     "dist": "npm run prepare:browser && electron-vite build && electron-builder --publish never",
     "test": "node --import tsx --test src/main/*.test.ts src/renderer/src/*.test.ts"
