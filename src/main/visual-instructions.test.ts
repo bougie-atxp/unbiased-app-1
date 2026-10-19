@@ -24,10 +24,16 @@ test("visualize can be chosen for one turn while visual answers remain available
   assert.match(skill, /^name: visualize$/m);
   assert.match(skill, /Use when the user asks/);
   assert.match(skill, /directly in a `visual-html` fence/);
+  assert.match(skill, /Default to a self-contained `visual-html` scene/);
+  assert.match(skill, /Reserve Mermaid for small flows or relationships/);
   assert.match(OPENUI_VISUAL_INSTRUCTIONS.join("\n"), /even when the user has not selected Visualize/);
+  assert.match(OPENUI_VISUAL_INSTRUCTIONS.join("\n"), /prefer a self-contained visual-html scene/);
+  assert.match(OPENUI_VISUAL_INSTRUCTIONS.join("\n"), /Use Mermaid only for a compact relationship or flow/);
   assert.match(OPENUI_VISUAL_INSTRUCTIONS.join("\n"), /raw visual-html fence is the preferred format for bespoke interactive scenes/);
   assert.match(VISUALIZE_DIRECTIVE, /explicitly wants a visual answer/);
-  assert.match(VISUALIZE_DIRECTIVE, /complete, valid fenced openui or visual-html block/);
+  assert.match(VISUALIZE_DIRECTIVE, /complete, valid fenced visual-html or openui block/);
+  assert.match(VISUALIZE_DIRECTIVE, /Default to visual-html for an explanatory scene or interactive lesson/);
+  assert.match(VISUALIZE_DIRECTIVE, /OpenUI for a simple chart, table, or text-led layout/);
   assert.match(renderer, /visualize: visualizeSelected/);
   assert.match(renderer, /visualize: q\.visualize/);
   assert.match(preload, /visualize: options\?\.visualize/);
