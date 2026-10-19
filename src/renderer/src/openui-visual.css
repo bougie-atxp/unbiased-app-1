@@ -101,8 +101,10 @@
   zoom: var(--visual-zoom, 1.35);
 }
 
-.app-generated-visual-viewport:popover-open .app-interactive-html-visual {
+.app-generated-visual-viewport:popover-open > .app-interactive-html-visual {
   flex: none;
+  margin: 0;
+  zoom: var(--visual-zoom, 1.35);
 }
 
 @media (max-width: 900px) {
@@ -117,7 +119,8 @@
     padding: 12px;
   }
 
-  .app-generated-visual-viewport:popover-open .app-openui-visual {
+  .app-generated-visual-viewport:popover-open .app-openui-visual,
+  .app-generated-visual-viewport:popover-open > .app-interactive-html-visual {
     zoom: var(--visual-zoom, 1);
   }
 }

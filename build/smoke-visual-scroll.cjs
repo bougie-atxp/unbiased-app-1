@@ -58,6 +58,17 @@ async function main() {
     assert.ok(before.contentHeight > before.viewportHeight, JSON.stringify(before));
     assert.ok(before.frameHeight > 2500, JSON.stringify(before));
 
+    const zoom = await win.webContents.executeJavaScript(`(() => {
+      const viewport = document.getElementById('viewport');
+      const visual = document.querySelector('.app-interactive-html-visual');
+      viewport.style.setProperty('--visual-zoom', '1');
+      const normal = visual.getBoundingClientRect().height;
+      viewport.style.setProperty('--visual-zoom', '1.6');
+      return { normal, enlarged: visual.getBoundingClientRect().height, applied: getComputedStyle(visual).zoom };
+    })()`);
+    assert.equal(zoom.applied, "1.6");
+    assert.ok(zoom.enlarged > zoom.normal * 1.5, JSON.stringify(zoom));
+
     const child = win.webContents.mainFrame.frames.find((frame) => frame !== win.webContents.mainFrame);
     assert.ok(child, "visual iframe exists");
     await child.executeJavaScript("document.body.dispatchEvent(new WheelEvent('wheel', { bubbles:true, cancelable:true, deltaY:500 }))");
@@ -71,7 +82,7 @@ async function main() {
       return { top: viewport.scrollTop, max: viewport.scrollHeight - viewport.clientHeight };
     })()`);
     assert.ok(bottom.max > 1000 && bottom.top >= bottom.max - 1, JSON.stringify(bottom));
-    console.log("Expanded visual remains full height and wheel scrolling reaches the viewport in Electron.");
+    console.log("Expanded visual zooms and wheel scrolling reaches the bottom in Electron.");
   } finally {
     win.destroy();
     app.quit();
