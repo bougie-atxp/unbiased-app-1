@@ -44,11 +44,12 @@ test("expands the existing visual, adjusts zoom, and restores transcript positio
     await act(async () => expand.click());
     assert.equal(visual.getAttribute("popover"), "auto");
     assert.equal(expand.getAttribute("aria-label"), "Close expanded visual");
-    assert.equal(document.querySelector('output[aria-label="Zoom level"]')?.textContent, "135%");
+    assert.equal(document.querySelector('output[aria-label="Zoom level"]')?.textContent, "100%");
+    assert.equal(visual.style.getPropertyValue("--visual-zoom"), "1");
     await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]')!.click());
-    assert.equal(visual.style.getPropertyValue("--visual-zoom"), "1.6");
+    assert.equal(visual.style.getPropertyValue("--visual-zoom"), "1.15");
     await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Zoom out"]')!.click());
-    assert.equal(visual.style.getPropertyValue("--visual-zoom"), "1.35");
+    assert.equal(visual.style.getPropertyValue("--visual-zoom"), "1");
     await act(async () => (counter as HTMLButtonElement).click());
     assert.equal(visual.querySelector(":scope > button:last-child"), counter);
     assert.match(counter.textContent ?? "", /Count 1/);

@@ -61,11 +61,13 @@ async function main() {
     const zoom = await win.webContents.executeJavaScript(`(() => {
       const viewport = document.getElementById('viewport');
       const visual = document.querySelector('.app-interactive-html-visual');
+      const initial = getComputedStyle(visual).zoom;
       viewport.style.setProperty('--visual-zoom', '1');
       const normal = visual.getBoundingClientRect().height;
       viewport.style.setProperty('--visual-zoom', '1.6');
-      return { normal, enlarged: visual.getBoundingClientRect().height, applied: getComputedStyle(visual).zoom };
+      return { initial, normal, enlarged: visual.getBoundingClientRect().height, applied: getComputedStyle(visual).zoom };
     })()`);
+    assert.equal(zoom.initial, "1");
     assert.equal(zoom.applied, "1.6");
     assert.ok(zoom.enlarged > zoom.normal * 1.5, JSON.stringify(zoom));
 
