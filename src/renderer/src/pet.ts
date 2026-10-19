@@ -38,6 +38,7 @@ let current: PetUpdate = {
   inFlightActions: 0, selection: "robot", scale: 1,
 };
 let motion: RobotHeadDirection | null = null;
+let readySent = false;
 
 function compactCount(count: number): string {
   return count > 99 ? "99+" : String(count);
@@ -51,6 +52,7 @@ function renderRobot(): void {
     direction: motion,
     size: 76,
     interactive: false,
+    paused: !readySent,
     color: "#ed6b5f",
     trimColor: "#a9b8c2",
     screenColor: "#e8f7fb",
@@ -83,7 +85,22 @@ window.pet.onMotion((direction) => {
   if (direction) root.classList.add(`moving-${direction}`);
   renderRobot();
 });
-window.pet.ready();
+renderRobot();
+function reportReadyAfterPaint(): void {
+  const canvas = document.querySelector<HTMLCanvasElement>("#robot canvas");
+  const styled = getComputedStyle(document.getElementById("menu")!).position === "absolute";
+  if (styled && canvas && (canvas.width !== 300 || canvas.height !== 150)) {
+    const pixels = canvas.getContext("2d")?.getImageData(0, 0, canvas.width, canvas.height).data;
+    if (pixels?.some((value, index) => index % 4 === 3 && value > 0)) {
+      readySent = true;
+      window.pet.ready();
+      renderRobot();
+      return;
+    }
+  }
+  setTimeout(reportReadyAfterPaint, 50);
+}
+setTimeout(reportReadyAfterPaint, 50);
 document.getElementById("menu")!.addEventListener("click", () => window.pet.menu());
 document.addEventListener("contextmenu", (event) => {
   event.preventDefault();

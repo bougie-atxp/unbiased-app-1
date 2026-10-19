@@ -29,6 +29,7 @@ import { multiViewRecipients } from "./multi-view-routing";
 import { PET_NOTICE_DURATION_MS, PET_NOTICE_SIZE, latestPetResponse, petNoticeStackBounds, petResponseFirstLine } from "./pet-notice";
 import { savedPalSelection, type PalSelection } from "./pal-selection";
 import { shouldShowCompletedPetNotice } from "./pet-notice-visibility";
+import { PetWindowReadiness } from "./pet-window-readiness";
 import { isPalSelection, ROBOT_PALS, type PalsSettings } from "../shared/pals";
 import { resolveEngineDir } from "./engine-path";
 import { matchingMessageSnippet, messagesFromTranscriptEntries } from "./thread-search";
@@ -209,6 +210,7 @@ if (!productionBuild() && process.env.UNBIASED_DEV_USER_DATA_DIR) {
 const engine = new EngineClient();
 let win: BrowserWindow | null = null;
 let petWin: BrowserWindow | null = null;
+let petReadiness: PetWindowReadiness | null = null;
 let petNoticeWin: BrowserWindow | null = null;
 const petActivity = new PetActivity();
 const petReplies = new Map<string, { stream: string; last: string; final: string }>();
@@ -5790,7 +5792,7 @@ function clearVisiblePetNotices(): void {
 }
 
 function showPetNotice(notice: { threadId: string; title: string; response: string }): void {
-  if (!petWin || petWin.isDestroyed()) return;
+  if (!petWin || petWin.isDestroyed() || !petWin.isVisible() || !petReadiness?.isReady) return;
   petNotices = [{ ...notice, id: ++nextPetNoticeId, expiresAt: Date.now() + PET_NOTICE_DURATION_MS }, ...petNotices];
   if (!petNoticeWin || petNoticeWin.isDestroyed()) {
     petNoticeWin = new BrowserWindow({
@@ -5930,24 +5932,17 @@ function hidePet(): void {
   stopPetHoverTracking();
   if (petSaveTimer) clearTimeout(petSaveTimer);
   petSaveTimer = null;
-  if (petWin && !petWin.isDestroyed()) {
-    petWin.hide();
-  }
   petPreferences.visible = false;
+  petReadiness?.hide();
   savePetPreferences();
 }
 
 function createPetWindow(): void {
   if (petWin && !petWin.isDestroyed()) {
     if (petPreferences.visible) return;
-    const position = petPosition();
-    petWin.setPosition(position.x, position.y);
-    petWin.showInactive();
-    petWin.setPosition(position.x, position.y);
     petPreferences.visible = true;
     savePetPreferences();
-    petHoverTimer = setInterval(updatePetHover, 120);
-    updatePetHover(true);
+    petReadiness?.show();
     return;
   }
   petPreferences.visible = true;
@@ -5969,6 +5964,7 @@ function createPetWindow(): void {
       preload: join(__dirname, "../preload/pet.js"),
       sandbox: true,
       partition: "unbiased-pet-overlay",
+      backgroundThrottling: false,
       zoomMode: "isolated",
       zoomFactor: 1,
     },
@@ -5976,18 +5972,39 @@ function createPetWindow(): void {
   petWin.setAlwaysOnTop(true, "floating");
   if (process.platform === "darwin") petWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   restoreDevDockAfterOverlay();
+  const createdPetWindow = petWin;
+  const readiness = new PetWindowReadiness({
+    load: () => process.env.ELECTRON_RENDERER_URL
+      ? createdPetWindow.loadURL(new URL("pet.html", process.env.ELECTRON_RENDERER_URL).toString())
+      : createdPetWindow.loadFile(join(__dirname, "../renderer/pet.html")),
+    show: () => {
+      if (!petPreferences.visible || createdPetWindow.isDestroyed()) return;
+      const position = petPosition();
+      createdPetWindow.setPosition(position.x, position.y);
+      createdPetWindow.showInactive();
+      createdPetWindow.setPosition(position.x, position.y);
+      if (!petHoverTimer) petHoverTimer = setInterval(updatePetHover, 120);
+      updatePetHover(true);
+    },
+    hide: () => {
+      if (!createdPetWindow.isDestroyed()) createdPetWindow.hide();
+      stopPetHoverTracking();
+      hidePetNotice();
+    },
+  });
+  petReadiness = readiness;
   petWin.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   petWin.webContents.on("did-finish-load", () => {
-    if (petWin && !petWin.isDestroyed()) {
-      petWin.webContents.setZoomFactor(1);
-      updatePet();
-      updatePetHover(true);
-    }
+    if (!createdPetWindow.isDestroyed()) createdPetWindow.webContents.setZoomFactor(1);
+  });
+  petWin.webContents.on("did-start-navigation", (details) => {
+    if (details.isMainFrame && !details.isSameDocument && readiness.isReady) readiness.failed();
   });
   petWin.webContents.on("will-navigate", (event) => event.preventDefault());
-  petWin.webContents.on("render-process-gone", () => {
-    if (petWin && !petWin.isDestroyed()) petWin.webContents.reload();
+  petWin.webContents.on("did-fail-load", (_event, errorCode, _description, _url, isMainFrame) => {
+    if (isMainFrame && errorCode !== -3) readiness.failed();
   });
+  petWin.webContents.on("render-process-gone", () => readiness.failed());
   let previousPosition = petWin.getBounds();
   petWin.on("will-move", (_event, bounds) => {
     petPreferences.x = bounds.x;
@@ -6023,21 +6040,14 @@ function createPetWindow(): void {
       petSaveTimer = setTimeout(() => { petSaveTimer = null; savePetPreferences(); }, 300);
     }
   });
-  const createdPetWindow = petWin;
   petWin.on("closed", () => {
+    readiness.dispose();
     if (petWin !== createdPetWindow) return;
+    petReadiness = null;
     stopPetHoverTracking();
     petWin = null;
   });
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void petWin.loadURL(new URL("pet.html", process.env.ELECTRON_RENDERER_URL).toString());
-  } else {
-    void petWin.loadFile(join(__dirname, "../renderer/pet.html"));
-  }
-  petWin.showInactive();
-  const position = petPosition();
-  petWin.setPosition(position.x, position.y);
-  petHoverTimer = setInterval(updatePetHover, 120);
+  readiness.show();
 }
 
 function showPetMenu(): void {
@@ -8486,7 +8496,9 @@ app.whenReady().then(async () => {
     petPreferences = { visible: true };
   }
   ipcMain.on("pet:ready", (event) => {
-    if (event.sender === petWin?.webContents) updatePet();
+    if (event.sender !== petWin?.webContents) return;
+    updatePet();
+    petReadiness?.rendered();
   });
   ipcMain.on("pet:visible-chats", (event, payload: unknown) => {
     if (event.sender !== win?.webContents || !payload || typeof payload !== "object") return;
