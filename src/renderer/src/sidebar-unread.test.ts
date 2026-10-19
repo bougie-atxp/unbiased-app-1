@@ -24,14 +24,16 @@ test("only the latest 100 unread completions are kept", () => {
 
 test("only completed turns outside the visible focused chat become unread", () => {
   const empty = new Set<string>();
-  const running = unreadAfterThreadActivity(empty, { threadId: "a", running: true }, null, false);
-  const failed = unreadAfterThreadActivity(empty, { threadId: "a", running: false, completed: false }, null, false);
+  const running = unreadAfterThreadActivity(empty, { threadId: "a", running: true }, new Set(), false);
+  const failed = unreadAfterThreadActivity(empty, { threadId: "a", running: false, completed: false }, new Set(), false);
   assert.equal(running, empty);
   assert.equal(failed, empty);
-  const background = unreadAfterThreadActivity(empty, { threadId: "a", running: false, completed: true }, "b", true);
+  const background = unreadAfterThreadActivity(empty, { threadId: "a", running: false, completed: true }, new Set(["b"]), true);
   assert.equal(background.has("a"), true);
-  const unfocused = unreadAfterThreadActivity(empty, { threadId: "a", running: false, completed: true }, "a", false);
+  const unfocused = unreadAfterThreadActivity(empty, { threadId: "a", running: false, completed: true }, new Set(["a"]), false);
   assert.equal(unfocused.has("a"), true);
-  const viewed = unreadAfterThreadActivity(background, { threadId: "a", running: false, completed: true }, "a", true);
+  const viewed = unreadAfterThreadActivity(background, { threadId: "a", running: false, completed: true }, new Set(["a", "b"]), true);
   assert.equal(viewed.has("a"), false);
+  const visibleTile = unreadAfterThreadActivity(empty, { threadId: "b", running: false, completed: true }, new Set(["a", "b"]), true);
+  assert.equal(visibleTile.has("b"), false);
 });

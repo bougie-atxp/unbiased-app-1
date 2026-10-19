@@ -25,9 +25,9 @@ export function setThreadUnread(current: ReadonlySet<string>, id: string, unread
 export function unreadAfterThreadActivity(
   current: ReadonlySet<string>,
   activity: { threadId: string; running: boolean; completed?: boolean },
-  visibleThreadId: string | null,
+  visibleThreadIds: ReadonlySet<string>,
   focused: boolean,
 ): ReadonlySet<string> {
   if (activity.running || !activity.completed) return current;
-  return setThreadUnread(current, activity.threadId, activity.threadId !== visibleThreadId || !focused);
+  return setThreadUnread(current, activity.threadId, !visibleThreadIds.has(activity.threadId) || !focused);
 }

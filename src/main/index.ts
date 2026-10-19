@@ -28,6 +28,7 @@ import { clampPetPosition, initialPetPosition, PET_SCALES, petScale, petWindowSi
 import { multiViewRecipients } from "./multi-view-routing";
 import { PET_NOTICE_DURATION_MS, PET_NOTICE_SIZE, latestPetResponse, petNoticeStackBounds, petResponseFirstLine } from "./pet-notice";
 import { savedPalSelection, type PalSelection } from "./pal-selection";
+import { shouldShowCompletedPetNotice } from "./pet-notice-visibility";
 import { isPalSelection, ROBOT_PALS, type PalsSettings } from "../shared/pals";
 import { resolveEngineDir } from "./engine-path";
 import { matchingMessageSnippet, messagesFromTranscriptEntries } from "./thread-search";
@@ -217,6 +218,8 @@ let petNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 type PetNotice = { id: number; threadId: string; title: string; response: string; expiresAt: number };
 let petNotices: PetNotice[] = [];
 let nextPetNoticeId = 0;
+let visiblePetThreadIds: ReadonlySet<string> = new Set();
+let visiblePetPaneIds: ReadonlySet<string> = new Set();
 let petSettleTimer: ReturnType<typeof setTimeout> | null = null;
 let petSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let petHoverTimer: ReturnType<typeof setInterval> | null = null;
@@ -5776,6 +5779,16 @@ function schedulePetNoticeExpiry(): void {
   }, Math.max(1, nextExpiry - Date.now()));
 }
 
+function clearVisiblePetNotices(): void {
+  if (!win?.isFocused() || !petNotices.length) return;
+  const remaining = petNotices.filter((notice) =>
+    shouldShowCompletedPetNotice(notice.threadId, true, visiblePetThreadIds, visiblePetPaneIds, panes));
+  if (remaining.length === petNotices.length) return;
+  petNotices = remaining;
+  updatePetNoticeWindow();
+  schedulePetNoticeExpiry();
+}
+
 function showPetNotice(notice: { threadId: string; title: string; response: string }): void {
   if (!petWin || petWin.isDestroyed()) return;
   petNotices = [{ ...notice, id: ++nextPetNoticeId, expiresAt: Date.now() + PET_NOTICE_DURATION_MS }, ...petNotices];
@@ -5837,6 +5850,7 @@ async function showCompletedPetNotice(threadId: string, reply: string, streamedR
   } catch { /* Keep the title and response already captured from events. */ }
   if (!reply.trim()) reply = streamedReply;
   if (version !== petNoticeVersion || !petWin || petWin.isDestroyed()) return;
+  if (!shouldShowCompletedPetNotice(threadId, win?.isFocused() ?? false, visiblePetThreadIds, visiblePetPaneIds, panes)) return;
   const worktrees = loadWorktrees();
   const effectiveCwd = loadThreadProjects()[threadId] ?? (cwd && worktrees[cwd] ? worktrees[cwd].project : cwd);
   const project = loadProjects().find((record) => effectiveCwd && record.folders.includes(effectiveCwd));
@@ -6174,9 +6188,15 @@ function createWindow(): void {
   win.on("resize", persistBounds);
   win.on("move", persistBounds);
   win.webContents.on("did-start-loading", clearBrowserViews);
+  win.webContents.on("did-start-navigation", (details) => {
+    if (!details.isMainFrame || details.isSameDocument) return;
+    visiblePetThreadIds = new Set();
+    visiblePetPaneIds = new Set();
+  });
 
   // Coming back to the app is the moment a new release should surface.
   win.on("focus", () => {
+    clearVisiblePetNotices();
     if (stagedUpdate) return; // already downloaded; nothing to re-check
     if (Date.now() - lastUpdateCheck < UPDATE_FOCUS_THROTTLE_MS) return;
     void checkForUpdate();
@@ -8467,6 +8487,16 @@ app.whenReady().then(async () => {
   }
   ipcMain.on("pet:ready", (event) => {
     if (event.sender === petWin?.webContents) updatePet();
+  });
+  ipcMain.on("pet:visible-chats", (event, payload: unknown) => {
+    if (event.sender !== win?.webContents || !payload || typeof payload !== "object") return;
+    const { threadIds, paneIds } = payload as { threadIds?: unknown; paneIds?: unknown };
+    if (!Array.isArray(threadIds) || !Array.isArray(paneIds) || threadIds.length > 8 || paneIds.length > 2) return;
+    if (!threadIds.every((id) => typeof id === "string" && id.length > 0 && id.length < 128) ||
+        !paneIds.every((id) => typeof id === "string" && /^side:[a-zA-Z0-9_-]{1,32}$/.test(id))) return;
+    visiblePetThreadIds = new Set(threadIds);
+    visiblePetPaneIds = new Set(paneIds);
+    clearVisiblePetNotices();
   });
   ipcMain.on("pet:menu", (event) => {
     if (event.sender === petWin?.webContents) showPetMenu();
@@ -11491,6 +11521,52 @@ app.whenReady().then(async () => {
     return { path, name: path.split("/").filter(Boolean).pop() ?? path };
   });
 
+  ipcMain.handle("threads:create-multi", async (_e, options?: { projectPath?: string | null; replaceId?: string; workMode?: "local" | "worktree" | "existing"; worktreeDir?: string }) => {
+    const projectPath = options?.projectPath ?? null;
+    if (projectPath && (!loadProjects().some((project) => project.folders.includes(projectPath)) || !existsSync(projectPath))) {
+      throw new Error("Project is no longer available");
+    }
+    const selectedMode = options?.workMode ?? "local";
+    if (selectedMode !== "local" && !projectPath) throw new Error("Choose a project first");
+    const oldId = options?.replaceId;
+    if (oldId) {
+      const oldPane = panes[`multi:${oldId}`];
+      if (!oldPane || oldPane.threadId !== oldId || oldPane.turnId || multiMountLeases.has(oldId)) {
+        throw new Error("This chat has already started");
+      }
+    }
+    let cwd = projectPath ?? defaultChatDir();
+    if (selectedMode === "existing") {
+      const dir = options?.worktreeDir;
+      if (!dir || loadWorktrees()[dir]?.project !== projectPath || !existsSync(dir)) {
+        throw new Error("Worktree is no longer available");
+      }
+      cwd = dir;
+    } else if (selectedMode === "worktree") {
+      const dir = await createWorktree(projectPath!);
+      if (!dir) throw new Error("Could not create a worktree");
+      cwd = dir;
+    }
+    const started = (await engine.request("thread/start", {
+      ...threadPolicy(),
+      cwd,
+      dynamicTools: threadDynamicTools(),
+      developerInstructions: developerInstructionsFor(cwd),
+      experimentalRawEvents: true,
+      config: mcpOverrideFor(null),
+    })) as { thread: { id: string } };
+    const id = started.thread.id;
+    threadCwds.set(id, cwd);
+    threadAccessModes.set(id, accessMode);
+    ensurePane(`multi:${id}`).threadId = id;
+    if (oldId) {
+      delete panes[`multi:${oldId}`];
+      threadCwds.delete(oldId);
+      threadAccessModes.delete(oldId);
+    }
+    return { id, cwd, branch: loadWorktrees()[cwd]?.branch ?? null };
+  });
+
   ipcMain.handle("threads:mount", async (_e, id: string) => {
     const paneId = `multi:${id}`;
     const lease = randomUUID();
@@ -11503,7 +11579,7 @@ app.whenReady().then(async () => {
     const cwd = result.cwd ?? result.thread.cwd ?? null;
     if (cwd) threadCwds.set(id, cwd);
     const pane = ensurePane(paneId);
-    if (multiMountLeases.get(id) !== lease) throw new Error("Multi-view tile was replaced while loading");
+    if (multiMountLeases.get(id) !== lease) throw new Error("Mosaic tile was replaced while loading");
     pane.threadId = id;
     pane.turnId = runningTurns.get(id) ?? null;
     applyRolloutNicknames(id);
