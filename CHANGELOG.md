@@ -6,6 +6,19 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
+## 1.13.16 — October 19, 2026
+
+### Improved
+
+- **Choose a project when starting a chat.** Search projects by name, recognize them by their icons, create a new project, or choose None to work outside a project.
+- **Visual answers appear as they are built.** HTML visuals show a preview while Pareto finishes them, then become interactive. Expanded visuals scroll and zoom, starting at 100%.
+- **Project chats know about all their folders.** Chats receive the paths of the primary and additional repositories configured for their project.
+- **Pals and sidebar previews stay in place.** Pals retry when their window is not ready, and sidebar previews remain stable while you move between them.
+
+### Fixed
+
+- **Close icons render completely.** The X in side panels and other controls is no longer clipped.
+
 ## 1.13.15 — October 12, 2026
 
 ### Fixed
