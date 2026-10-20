@@ -5801,6 +5801,7 @@ function showPetNotice(notice: { threadId: string; title: string; response: stri
       frame: false,
       transparent: true,
       resizable: false,
+      fullscreenable: false,
       show: false,
       skipTaskbar: true,
       alwaysOnTop: true,
