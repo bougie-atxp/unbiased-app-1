@@ -6,6 +6,12 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
+## 1.13.18 — October 20, 2026
+
+### Fixed
+
+- **Pal notifications stay out of fullscreen.** A completion notice no longer becomes a separate fullscreen page instead of a small overlay.
+
 ## 1.13.17 — October 19, 2026
 
 ### Fixed
