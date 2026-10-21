@@ -6,6 +6,12 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
+## 1.13.19 — October 21, 2026
+
+### Improved
+
+- **Stripe Projects sign-in works in the app.** The app uses its registered connection when you sign in to Stripe Projects, while other connections keep their existing sign-in flow.
+
 ## 1.13.18 — October 20, 2026
 
 ### Fixed
