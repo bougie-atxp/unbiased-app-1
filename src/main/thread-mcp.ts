@@ -1,4 +1,4 @@
-/** Per-conversation MCP servers.
+/** Per-conversation switches for manually added MCP servers.
  *
  *  Measured 2026-09-09 on a Figma task: the first request was 56,495 tokens
  *  before the model said a word, and ~35k of that was the tool schemas of
@@ -6,8 +6,9 @@
  *  Honeycomb 23, PostHog 1, Figma desktop 10). The engine fixes a thread's
  *  MCP set when the thread is created or loaded, and takes a per-thread
  *  `config` override in which `mcp_servers.<name>.enabled = false` removes a
- *  server for that thread only. So: nothing is on until the user turns it on
- *  for THIS conversation, and the override rides every start, resume and fork. */
+ *  server for that thread only. Catalogue connectors are an app-wide choice
+ *  made when the user connects them; manual servers stay off until selected
+ *  for THIS conversation. The override rides every start, resume and fork. */
 
 export const THREAD_MCP_FILE = "thread-mcp.json";
 
@@ -38,6 +39,17 @@ export function mcpConfigOverride(
  *  a server down the plugin path. */
 export function overridableServerNames(servers: readonly { name: string; enabled?: boolean; oauthClientSecret?: string }[]): string[] {
   return servers.filter((s) => s.enabled !== false && !s.oauthClientSecret).map((s) => s.name);
+}
+
+/** Match both published name and URL; a name alone could enable an unrelated manual server. */
+export function connectedConnectorNames(
+  servers: readonly { name: string; url?: string; enabled?: boolean }[],
+  catalogue: readonly { name: string; url: string }[],
+): string[] {
+  const published = new Map(catalogue.map((entry) => [entry.name, entry.url]));
+  return servers
+    .filter((server) => server.enabled !== false && server.url && published.get(server.name) === server.url)
+    .map((server) => server.name);
 }
 
 export function serializeThreadMcp(m: ReadonlyMap<string, ReadonlySet<string>>): string {

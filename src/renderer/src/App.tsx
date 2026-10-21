@@ -655,7 +655,7 @@ declare global {
       onMcpStatus: (cb: (p: McpStatusEvent) => void) => () => void;
       mcpThreadGet: (
         threadId: string | null,
-      ) => Promise<{ configured: string[]; enabled: string[]; pending: boolean; running: boolean }>;
+      ) => Promise<{ configured: string[]; enabled: string[]; automatic: string[]; pending: boolean; running: boolean }>;
       mcpThreadSet: (
         threadId: string | null,
         enabled: string[],
@@ -15031,6 +15031,7 @@ function McpPanel({ onClose, threadId }: { onClose: () => void; threadId: string
   // are not — see src/main/thread-mcp.ts for why nothing is on by default.
   const [convEnabled, setConvEnabled] = useState<string[]>([]);
   const [convConfigured, setConvConfigured] = useState<string[]>([]);
+  const [convAutomatic, setConvAutomatic] = useState<string[]>([]);
   const [convPending, setConvPending] = useState(false);
   const [convRunning, setConvRunning] = useState(false);
   const [convNote, setConvNote] = useState<string | null>(null);
@@ -15070,6 +15071,7 @@ function McpPanel({ onClose, threadId }: { onClose: () => void; threadId: string
     void window.unbiased.mcpThreadGet(threadId).then((r) => {
       setConvEnabled(r.enabled);
       setConvConfigured(r.configured);
+      setConvAutomatic(r.automatic);
       setConvPending(r.pending);
       setConvRunning(r.running);
     });
@@ -15374,6 +15376,7 @@ function McpPanel({ onClose, threadId }: { onClose: () => void; threadId: string
                         the row you could not read. */}
                     <span style={{ color: row.dot, fontWeight: 500 }}>{row.status}</span>
                     {row.detail ? ` · ${row.detail}` : ""}
+                    {convAutomatic.includes(row.name) ? " · Available in every conversation" : ""}
                   </div>
                 </span>
                 {/* A server that connected but has not been signed into is
@@ -19513,7 +19516,7 @@ function mcpChipLabel(enabled: readonly string[]): string {
   return enabled.length ? "MCP on" : "MCP off";
 }
 
-/** MCP servers for THIS conversation. Off by default: measured 2026-09-09,
+/** Manually added MCP servers for THIS conversation. Off by default: measured 2026-09-09,
  *  four connected servers cost ~35k tokens of a 124k window before the first
  *  message. A switch applies in place when the thread is idle, and at the end
  *  of the current turn otherwise — see mcp:thread-set. */
@@ -19553,7 +19556,7 @@ function ConversationMcp({ threadId, panelOpen, onOpenMcp }: { threadId: string 
     <button
       type="button"
       onClick={onOpenMcp}
-      title={on ? `MCP servers on for this conversation: ${enabled.join(", ")}. Click to change.` : "No MCP servers in this conversation. Click to turn one on."}
+      title={on ? `Manual MCP servers on for this conversation: ${enabled.join(", ")}. Click to change.` : "No manual MCP servers in this conversation. Connected catalogue connectors are available automatically."}
       style={{
         display: "flex",
         alignItems: "center",
