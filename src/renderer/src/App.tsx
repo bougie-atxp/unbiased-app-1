@@ -43,6 +43,7 @@ import { ConversationDrafts } from "./conversation-drafts";
 import { SettingsRoute } from "./settings-route";
 import { PalsGallery } from "./pals-gallery";
 import { parseAgentStylePrefs, type AgentStylePrefs } from "../../shared/agent-style";
+import { isStripeOnboardingPage } from "../../shared/stripe-onboarding-url";
 import type { PalScale, PalsSettings as PalsSettingsState } from "../../shared/pals";
 import { SideChatIdleTracker } from "./side-chat-idle";
 import { settleTurnOutput } from "./turn-completion";
@@ -2917,6 +2918,10 @@ export function App() {
   // browser handle it rather than discarding or overwriting a live tab.
   function openInBrowser(url: string) {
     if (!/^https?:\/\//i.test(url)) return;
+    if (isStripeOnboardingPage(url, window.location.protocol === "http:")) {
+      void window.unbiased.openExternal(url);
+      return;
+    }
     if (!createBrowserTab(url)) void window.unbiased.openExternal(url);
   }
 
