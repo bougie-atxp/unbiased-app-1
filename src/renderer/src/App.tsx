@@ -13322,7 +13322,7 @@ function ConnectorsPanel({ onClose, onOpenFull }: { onClose: () => void; onOpenF
                     borderTop: i > 0 ? `1px solid ${colors.border}` : "none",
                   }}
                 >
-                  <span style={{ width: 26, height: 26, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: c.enabled ? 1 : 0.4 }}>
+                  <span style={{ width: 26, height: 26, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: c.enabled ? 1 : 0.7 }}>
                     {c.icon ? (
                       <img src={c.icon} alt="" style={{ maxWidth: 26, maxHeight: 26 }} />
                     ) : (
@@ -13330,35 +13330,44 @@ function ConnectorsPanel({ onClose, onOpenFull }: { onClose: () => void; onOpenF
                     )}
                   </span>
                   <span style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontSize: 14.5, fontWeight: 500, color: c.enabled ? colors.fg : colors.dim, letterSpacing: "var(--track-body)" }}>
+                    <div style={{ fontSize: 14.5, fontWeight: 500, color: colors.fg, letterSpacing: "var(--track-body)" }}>
                       {c.displayName}
                     </div>
                     <div style={{ fontSize: 13, color: colors.dim, marginTop: 3, lineHeight: 1.45, letterSpacing: "var(--track-meta)" }}>
-                      {c.authStatus === "oAuth" ? "Signed in" : "Needs sign-in"}
+                      {!c.enabled ? "Off" : c.authStatus === "oAuth" ? "Signed in" : "Needs sign-in"}
                     </div>
                   </span>
-                  {/* The same ring-with-a-tick the scheduled list uses for the
-                      same job, so "on" reads identically in both places. */}
                   <button
                     onClick={() => void toggle(c)}
                     disabled={busy !== null}
-                    aria-pressed={c.enabled}
+                    role="switch"
+                    aria-checked={c.enabled}
+                    aria-label={`${c.displayName} connector`}
                     title={c.enabled ? `Turn ${c.displayName} off` : `Turn ${c.displayName} on`}
                     style={{
-                      width: 18,
-                      height: 18,
+                      width: 38,
+                      height: 22,
                       flexShrink: 0,
-                      display: "grid",
-                      placeItems: "center",
-                      borderRadius: "50%",
-                      border: `1.5px solid ${c.enabled ? colors.accent : colors.border}`,
-                      background: c.enabled ? colors.accent : "transparent",
-                      color: "var(--accent-fg)",
+                      position: "relative",
+                      borderRadius: 11,
+                      border: "none",
+                      background: c.enabled ? colors.accent : "var(--gutter)",
                       cursor: "pointer",
                       padding: 0,
                     }}
                   >
-                    {c.enabled && <CheckIcon size={11} />}
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: 3,
+                        left: c.enabled ? 19 : 3,
+                        width: 16,
+                        height: 16,
+                        borderRadius: "50%",
+                        background: "#fff",
+                        transition: "left 120ms",
+                      }}
+                    />
                   </button>
                 </div>
               ))}
