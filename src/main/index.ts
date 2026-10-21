@@ -41,7 +41,7 @@ import { epochMillis } from "../shared/conversation-time";
 import { INTERACTIVE_VISUAL_CSP, INTERACTIVE_VISUAL_SCHEME, interactiveVisualDocument, interactiveVisualId, interactiveVisualPreviewCsp, interactiveVisualPreviewDocument, isInteractiveVisualPreviewUrl, isInteractiveVisualSource } from "../shared/interactive-visual";
 import { agentInputFields, codexInputResponse, mcpInputFields, mcpInputResponse, validateUserInput, type UserInputRequest, type UserInputValue } from "../shared/user-input";
 import { startSecretProxy, type SecretConnector } from "./oauth-proxy";
-import { isStripeOnboardingPage, isStripeOnboardingPopup, isStripePopupNavigation } from "./stripe-onboarding-popup";
+import { isStripeOnboardingPage } from "../shared/stripe-onboarding-url";
 import {
   CATALOGUE_CACHE_VERSION,
   fetchCatalogueFromAnyHost,
@@ -6598,32 +6598,17 @@ function ensureBrowserView(id: number): WebContentsView {
   wc.on("page-title-updated", pushState);
   wc.on("did-start-loading", pushState);
   wc.on("did-stop-loading", pushState);
-  // Stripe Connect's email-verification popup must retain its window.opener so
-  // the embedded onboarding page can resume when verification finishes.
   wc.setWindowOpenHandler(({ url }) => {
-    if (isStripeOnboardingPage(wc.getURL(), !app.isPackaged) && isStripeOnboardingPopup(url)) {
-      return {
-        action: "allow",
-        overrideBrowserWindowOptions: {
-          width: 720,
-          height: 760,
-          title: "Stripe verification",
-          autoHideMenuBar: true,
-          webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true, webSecurity: true },
-        },
-      };
-    }
     if (/^https?:\/\//i.test(url)) send("browser:open-link", { url });
     return { action: "deny" };
   });
-  wc.on("did-create-window", (popup) => {
-    const guardNavigation = (event: Electron.Event, url: string) => {
-      if (!isStripePopupNavigation(url)) event.preventDefault();
-    };
-    popup.webContents.on("will-navigate", guardNavigation);
-    popup.webContents.on("will-redirect", guardNavigation);
-    popup.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  });
+  const handOffStripeOnboarding = (event: Electron.Event, url: string) => {
+    if (!isStripeOnboardingPage(url, !app.isPackaged)) return;
+    event.preventDefault();
+    void shell.openExternal(url);
+  };
+  wc.on("will-navigate", handOffStripeOnboarding);
+  wc.on("will-redirect", handOffStripeOnboarding);
 
   // Right-click menu, Codex-style. "Add … to chat" stages the selection
   // or link as an annotation in the main composer.
@@ -12015,6 +12000,10 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("browser:open", (_e, p: { id: number; url?: string }) => {
+    if (p.url && isStripeOnboardingPage(p.url, !app.isPackaged)) {
+      void shell.openExternal(p.url);
+      return { ok: true };
+    }
     const view = ensureBrowserView(p.id);
     if (p.url) void view.webContents.loadURL(p.url);
     return { ok: true };
@@ -12062,6 +12051,10 @@ app.whenReady().then(async () => {
     if (!wc) return;
     if (p.url) {
       const url = /^[a-z][a-z0-9+.-]*:/i.test(p.url) ? p.url : `https://${p.url}`;
+      if (isStripeOnboardingPage(url, !app.isPackaged)) {
+        void shell.openExternal(url);
+        return;
+      }
       void wc.loadURL(url);
     } else if (p.action === "back") {
       wc.navigationHistory.goBack();
