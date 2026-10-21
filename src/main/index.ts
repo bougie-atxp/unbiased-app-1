@@ -19,7 +19,7 @@ import type { NativeImage } from "electron";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { homedir, hostname } from "node:os";
 import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { readFile as readFileAsync, readdir as readdirAsync, stat as statAsync } from "node:fs/promises";
+import { readFile as readFileAsync, readdir as readdirAsync, rename as renameFileAsync, stat as statAsync, writeFile as writeFileAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fileActionError, localFileForAction, saveLocalFileCopy } from "./file-actions";
@@ -38,6 +38,7 @@ import { agentStyleInstructions, DEFAULT_AGENT_STYLE, parseAgentStylePrefs, type
 import { projectContextForDirectory } from "./project-context";
 import { OPENUI_VISUAL_INSTRUCTIONS, VISUALIZE_DIRECTIVE } from "./visual-instructions";
 import { epochMillis } from "../shared/conversation-time";
+import { alignRunningTurnStart, chooseTranscript, initialTranscriptPage, replaceTranscriptTail, retitleTranscript, transcriptPage, type TranscriptRow } from "../shared/transcript-pages";
 import { INTERACTIVE_VISUAL_CSP, INTERACTIVE_VISUAL_SCHEME, interactiveVisualDocument, interactiveVisualId, interactiveVisualPreviewCsp, interactiveVisualPreviewDocument, isInteractiveVisualPreviewUrl, isInteractiveVisualSource } from "../shared/interactive-visual";
 import { agentInputFields, codexInputResponse, mcpInputFields, mcpInputResponse, validateUserInput, type UserInputRequest, type UserInputValue } from "../shared/user-input";
 import { startSecretProxy, type SecretConnector } from "./oauth-proxy";
@@ -8910,43 +8911,75 @@ app.whenReady().then(async () => {
   const transcriptFile = (threadId: string) =>
     join(transcriptsDir(), `${threadId.replace(/[^\w.-]/g, "_")}.json`);
 
-  ipcMain.handle("transcript:save", (_e, p: { threadId: string; entries: unknown }) => {
+  interface ReplayRow extends TranscriptRow<ReplayRow> { [key: string]: unknown }
+  const transcriptSessions = new Map<string, { threadId: string; entries: ReplayRow[] }>();
+  const multiTranscriptSessions = new Map<string, string>();
+  let mainTranscriptSession: string | null = null;
+  let mainOpenSequence = 0;
+  const pendingTranscriptWrites = new Map<string, Promise<void>>();
+  const readCachedTranscript = async (threadId: string): Promise<ReplayRow[] | null> => {
     try {
+      const raw = JSON.parse(await readFileAsync(transcriptFile(threadId), "utf8")) as { cacheVersion?: number; entries?: unknown };
+      return raw?.cacheVersion === TRANSCRIPT_CACHE_VERSION && Array.isArray(raw.entries)
+        ? raw.entries as ReplayRow[]
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const openTranscriptSession = async (threadId: string, history: unknown[], names: Record<string, string>, runningTurnStart: number | null) => {
+    await pendingTranscriptWrites.get(threadId)?.catch(() => {});
+    const replay = history as ReplayRow[];
+    const preferred = chooseTranscript(replay, await readCachedTranscript(threadId));
+    const alignedTurnStart = alignRunningTurnStart(replay, preferred, runningTurnStart);
+    const chosen = retitleTranscript(preferred, names);
+    // The cache may predate redaction. Never retain its raw prefix in a
+    // session: a later partial save would otherwise persist it again.
+    const safeEntries = redactSecrets(chosen);
+    const sessionId = randomUUID();
+    transcriptSessions.set(sessionId, { threadId, entries: safeEntries });
+    return {
+      sessionId,
+      ...initialTranscriptPage(safeEntries, alignedTurnStart),
+    };
+  };
+
+  ipcMain.handle("transcript:save", async (_e, p: { threadId: string; entries: unknown; sessionId?: string; offset?: number }) => {
+    try {
+      let entries = p.entries;
+      if (p.sessionId) {
+        const session = transcriptSessions.get(p.sessionId);
+        if (!session || session.threadId !== p.threadId || !Array.isArray(p.entries)) {
+          return { ok: false };
+        }
+        if (!replaceTranscriptTail(session.entries, p.offset!, p.entries as ReplayRow[])) return { ok: false };
+        entries = session.entries;
+      }
       // Stamped, so a cache written by a build that BUILT entries differently
       // can be told apart from one this build would produce.
-      writeFileSync(
-        transcriptFile(p.threadId),
-        JSON.stringify({ cacheVersion: TRANSCRIPT_CACHE_VERSION, entries: p.entries }),
-      );
+      const previous = pendingTranscriptWrites.get(p.threadId);
+      const write = (async () => {
+        await previous?.catch(() => {});
+        const file = transcriptFile(p.threadId);
+        const temp = `${file}.tmp`;
+        await writeFileAsync(temp, JSON.stringify({ cacheVersion: TRANSCRIPT_CACHE_VERSION, entries }));
+        await renameFileAsync(temp, file);
+      })();
+      pendingTranscriptWrites.set(p.threadId, write);
+      try {
+        await write;
+      } finally {
+        if (pendingTranscriptWrites.get(p.threadId) === write) pendingTranscriptWrites.delete(p.threadId);
+      }
       return { ok: true };
     } catch {
       return { ok: false };
     }
   });
 
-  ipcMain.handle("transcript:load", (_e, threadId: string) => {
-    try {
-      const raw = JSON.parse(readFileSync(transcriptFile(threadId), "utf8")) as unknown;
-      // A cache from an older build is discarded rather than preferred over
-      // history. This is not hypothetical: a build that dropped
-      // chat-completions `message` items wrote caches missing whole replies,
-      // and because the renderer keeps the RICHER of cache and history — and
-      // a flat stale cache counts richer than the same turn folded — those
-      // replies stayed invisible on every reopen even after the bug was fixed.
-      const stamped = raw as { cacheVersion?: number; entries?: unknown };
-      const entries =
-        stamped && typeof stamped === "object" && "cacheVersion" in stamped
-          ? stamped.cacheVersion === TRANSCRIPT_CACHE_VERSION
-            ? stamped.entries
-            : null
-          : // Unstamped = written before this check existed. Older than the
-            // current builder by definition, so history wins.
-            null;
-      // Caches written before redaction existed may hold raw values.
-      return redactSecrets({ entries });
-    } catch {
-      return { entries: null };
-    }
+  ipcMain.handle("transcript:load", async (_e, threadId: string) => {
+    // Caches written before redaction existed may hold raw values.
+    return redactSecrets({ entries: await readCachedTranscript(threadId) });
   });
 
   ipcMain.handle("usage:context", (_e, threadId: string) => {
@@ -11611,14 +11644,25 @@ app.whenReady().then(async () => {
     pane.turnId = runningTurns.get(id) ?? null;
     applyRolloutNicknames(id);
     const replay = threadToEntries(result.thread, { runningLastTurn: running });
+    const previousSession = multiTranscriptSessions.get(id);
+    if (previousSession) transcriptSessions.delete(previousSession);
+    const page = await openTranscriptSession(id, replay.entries, Object.fromEntries(rolloutNicknames(id)), replay.runningTurnStart);
+    if (multiMountLeases.get(id) !== lease) {
+      transcriptSessions.delete(page.sessionId);
+      throw new Error("Mosaic tile was replaced while loading");
+    }
+    multiTranscriptSessions.set(id, page.sessionId);
     const userInputs = [...pendingUserInputs.values()]
       .filter((pending) => pending.threadId && rootThreadOf(pending.threadId) === id)
       .map((pending) => pending.request);
     return redactSecrets({
       id,
       lease,
-      entries: replay.entries,
-      runningTurnStart: replay.runningTurnStart,
+      entries: page.entries,
+      offset: page.offset,
+      total: page.total,
+      sessionId: page.sessionId,
+      runningTurnStart: page.runningTurnStart,
       runningTurnStartedAt: replay.runningTurnStartedAt,
       running,
       streamText: bgStream.get(id) ?? "",
@@ -11633,11 +11677,15 @@ app.whenReady().then(async () => {
     if (multiMountLeases.get(id) === lease) {
       multiMountLeases.delete(id);
       delete panes[`multi:${id}`];
+      const sessionId = multiTranscriptSessions.get(id);
+      if (sessionId) transcriptSessions.delete(sessionId);
+      multiTranscriptSessions.delete(id);
     }
     return { ok: true };
   });
 
   ipcMain.handle("threads:open", async (_e, id: string) => {
+    const openSequence = ++mainOpenSequence;
     const running = runningTurns.has(id);
     // A thread with a live turn is already loaded in the engine —
     // thread/read returns its history without disturbing the turn;
@@ -11651,6 +11699,7 @@ app.whenReady().then(async () => {
           thread: WireThread;
           cwd?: string;
         });
+    if (openSequence !== mainOpenSequence) return null;
     mainCwd = result.cwd ?? result.thread.cwd ?? null;
     if (mainCwd) threadCwds.set(id, mainCwd); // memory_save now targets the right project
     // An unanswered browser card on the conversation we are leaving would
@@ -11680,17 +11729,23 @@ app.whenReady().then(async () => {
       });
     const failure = heldErrors.get(id) ?? null;
     heldErrors.delete(id);
+    const replay = threadToEntries(result.thread, { runningLastTurn: running });
+    const page = await openTranscriptSession(id, replay.entries, Object.fromEntries(rolloutNicknames(id)), replay.runningTurnStart);
+    if (openSequence !== mainOpenSequence) {
+      transcriptSessions.delete(page.sessionId);
+      return null;
+    }
+    if (mainTranscriptSession) transcriptSessions.delete(mainTranscriptSession);
+    mainTranscriptSession = page.sessionId;
     // History replays raw engine content — same redaction as live events.
     return redactSecrets({
       id,
-      ...(() => {
-        const replay = threadToEntries(result.thread, { runningLastTurn: running });
-        return {
-          entries: replay.entries,
-          runningTurnStart: replay.runningTurnStart,
-          runningTurnStartedAt: replay.runningTurnStartedAt,
-        };
-      })(),
+      entries: page.entries,
+      offset: page.offset,
+      total: page.total,
+      sessionId: page.sessionId,
+      runningTurnStart: page.runningTurnStart,
+      runningTurnStartedAt: replay.runningTurnStartedAt,
       // Carried WITH the transcript rather than pushed alongside it.
       // applyRolloutNicknames above sends a chat:subagent-renames event, but
       // that event loses a race it can never win: the renderer retitles the
@@ -11709,14 +11764,23 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("threads:detach", (_e, cwd?: string) => {
+    ++mainOpenSequence;
     // Fresh main-chat view: the next send creates a new thread, in `cwd` if given.
     if (!panes.main.threadId || !panes[`multi:${panes.main.threadId}`]) settleLocalApprovals(panes.main.threadId);
+    if (mainTranscriptSession) transcriptSessions.delete(mainTranscriptSession);
+    mainTranscriptSession = null;
     panes.main.threadId = null;
     panes.main.turnId = null;
     resetSidePanes();
     pendingCwd = cwd ?? null;
     mainCwd = cwd ?? null;
     return { ok: true };
+  });
+
+  ipcMain.handle("threads:page", (_e, sessionId: string, before: number, limit = 80) => {
+    const session = transcriptSessions.get(sessionId);
+    if (!session || !Number.isSafeInteger(before) || !Number.isSafeInteger(limit)) return { entries: [], offset: 0, total: 0, expired: true };
+    return redactSecrets({ ...transcriptPage(session.entries, before, limit), expired: false });
   });
 
   // Sub-agent roster for a (re)opened conversation — the live pushes only

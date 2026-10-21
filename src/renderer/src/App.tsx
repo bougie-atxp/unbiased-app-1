@@ -1,6 +1,7 @@
-import { Children, createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 // The changelog SHIPS with the build so the Updates tab works offline and on
 // first run, and is superseded at runtime by whatever the releases repo has —
 // which is generated from this same file, so the two cannot disagree.
@@ -45,7 +46,6 @@ import { parseAgentStylePrefs, type AgentStylePrefs } from "../../shared/agent-s
 import type { PalScale, PalsSettings as PalsSettingsState } from "../../shared/pals";
 import { SideChatIdleTracker } from "./side-chat-idle";
 import { settleTurnOutput } from "./turn-completion";
-import { isTranscriptAtBottom } from "./transcript-scroll";
 import { finalAssistantIndices } from "./transcript-actions";
 import { completedWorkDuration } from "./work-duration";
 import { isComposerTypingKey } from "./type-to-focus";
@@ -54,7 +54,8 @@ import { parseUnreadCompletedThreads, setThreadUnread, unreadAfterThreadActivity
 import { groupRecentThreads } from "./sidebar-recency";
 import { browserHistoryUrl, parseBrowserVisits, recordBrowserVisit, suggestedBrowserSites, updateBrowserVisitTitle, type BrowserVisit } from "./browser-start";
 import { appendCommandOutputDelta, closeFinishedAutoOpenedPanels, commandStatusAfterEvent, settleTurnSteps, settleUnconfirmedSteps, showsCommandOutputPanel } from "./transcript-command-status";
-import { dayMarkerIndices, formatConversationDayMarker, formatConversationTime, hydrateTranscriptTimes } from "../../shared/conversation-time";
+import { dayMarkerIndices, formatConversationDayMarker, formatConversationTime } from "../../shared/conversation-time";
+import { shiftRunningTurnStart } from "../../shared/transcript-pages";
 import { visualFenceContent } from "./openui-visual";
 import { isClosedVisualFence } from "./visual-fence";
 import { validateUserInput, withoutUserInputDefaults, type UserInputRequest, type UserInputValue } from "../../shared/user-input";
@@ -629,7 +630,7 @@ declare global {
       onPlan: (cb: (p: { paneId: PaneId; text: string }) => void) => () => void;
       listWorktrees: (project: string) => Promise<{ worktrees: { dir: string; branch: string }[] }>;
       removeWorktree: (dir: string) => Promise<{ ok: boolean; error?: string }>;
-      saveTranscript: (threadId: string, entries: Entry[]) => Promise<{ ok: boolean }>;
+      saveTranscript: (threadId: string, entries: Entry[], sessionId?: string, offset?: number) => Promise<{ ok: boolean }>;
       loadTranscript: (threadId: string) => Promise<{ entries: Entry[] | null }>;
       registerVisual: (source: string) => Promise<string | null>;
       conversationInfo: () => Promise<{
@@ -787,6 +788,9 @@ declare global {
       openThread: (id: string) => Promise<{
         id: string;
         entries: Entry[];
+        offset: number;
+        total: number;
+        sessionId: string;
         running: boolean;
         streamText: string;
         approvals: HeldApproval[];
@@ -797,8 +801,9 @@ declare global {
         /** Engine-assigned sub-agent nicknames, recovered from the rollout and
          *  carried with the transcript so they cannot lose a race against it. */
         subAgentNames?: Record<string, string>;
-      }>;
-      mountThread: (id: string) => Promise<Awaited<ReturnType<Window["unbiased"]["openThread"]>> & { lease: string }>;
+      } | null>;
+      mountThread: (id: string) => Promise<NonNullable<Awaited<ReturnType<Window["unbiased"]["openThread"]>>> & { lease: string }>;
+      threadPage: (sessionId: string, before: number, limit?: number) => Promise<{ entries: Entry[]; offset: number; total: number; expired: boolean }>;
       createMultiThread: (projectPath?: string | null, replaceId?: string, workMode?: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<{ id: string; cwd: string; branch: string | null }>;
       unmountThread: (id: string, lease: string) => Promise<{ ok: boolean }>;
       detachThread: (cwd?: string) => Promise<{ ok: boolean }>;
@@ -1182,6 +1187,7 @@ const CHAT_PLACEHOLDERS = [
   "Go on",
   "Try something",
 ];
+const TRANSCRIPT_WINDOW_BLOCKS = 80;
 
 type CommandEntry = Extract<Entry, { kind: "command" }>;
 type DisplayBlock =
@@ -2449,63 +2455,8 @@ export function App() {
     const seq = ++openSeqRef.current;
     const stale = () => openSeqRef.current !== seq;
     const res = await window.unbiased.openThread(id);
-    if (stale()) return;
-    const history = res.entries;
-    // The engine's history omits renderer-only content (failed-turn
-    // errors, annotation cards). Prefer the cached transcript when it
-    // holds at least as much — counting a "Worked for" fold as its
-    // CONTENTS, since folding makes the cache shorter than raw history
-    // without losing anything.
-    const cached = await window.unbiased.loadTranscript(id);
-    if (stale()) return;
-    // Repair stale fold structure in the cache without discarding it. A pane
-    // opened mid-turn used to fold only what streamed after the open, so its
-    // saved transcript strands that turn's earlier narration between the user
-    // message and the work group. Those assistants can only be narration —
-    // a final answer always lands AFTER its turn's work group, and a
-    // narrate-only turn creates no group at all — so any unbroken run of
-    // assistant entries wedged between a user message and a work group moves
-    // inside the group. Content is untouched; only the grouping changes, and
-    // the next save persists the repaired shape.
-    if (cached.entries) {
-      const fixed: Entry[] = [];
-      let pendingSinceUser: Entry[] | null = null;
-      for (const e of cached.entries) {
-        if (e.kind === "user") {
-          if (pendingSinceUser) fixed.push(...pendingSinceUser);
-          pendingSinceUser = [];
-          fixed.push(e);
-        } else if (e.kind === "assistant" && pendingSinceUser) {
-          pendingSinceUser.push(e);
-        } else if (e.kind === "work" && pendingSinceUser && pendingSinceUser.length > 0) {
-          fixed.push({ ...e, entries: [...pendingSinceUser, ...e.entries] });
-          pendingSinceUser = null;
-        } else {
-          if (pendingSinceUser) fixed.push(...pendingSinceUser);
-          pendingSinceUser = null;
-          fixed.push(e);
-        }
-      }
-      if (pendingSinceUser) fixed.push(...pendingSinceUser);
-      cached.entries = fixed;
-    }
-    // Both sides counted the same way — a fold as its CONTENTS — or the
-    // comparison is rigged. History now arrives pre-folded (replay groups a
-    // turn's narration under "Worked" the way live completion does), so its
-    // raw length shrank; measured against that, every stale flat cache
-    // suddenly looked "richer" and won, pinning the exact stranded layout the
-    // fold was built to fix.
-    const richness = (list: Entry[] | null | undefined) =>
-      (list ?? []).reduce((n, e) => n + (e.kind === "work" ? Math.max(e.entries.length, 1) : 1), 0);
-    const cachedRichness = richness(cached.entries);
-    const historyRichness = richness(history as Entry[]);
-    // Strictly greater: at equal information, prefer the replay — it carries
-    // the corrected fold structure, and the cache may predate it. The cache
-    // still wins whenever it genuinely holds more (failure rows, annotation
-    // cards — renderer-only content history cannot reconstruct).
-    let entries = cached.entries && cachedRichness > historyRichness
-      ? hydrateTranscriptTimes(cached.entries, history)
-      : history;
+    if (stale() || !res) return;
+    let entries = res.entries;
     if (res.running && res.streamText) {
       // The reply is still streaming. Main accumulated the full partial
       // text; a shorter prefix of it may already sit in the cached
@@ -2520,30 +2471,19 @@ export function App() {
       // The turn died while nobody was watching.
       entries = [...entries, { kind: "assistant", text: `⚠ Turn failed: ${res.failure}` }];
     }
-    // Apply the engine's own sub-agent nicknames before these entries are set,
-    // not after. Main also emits chat:subagent-renames, but that event races
-    // this assignment and loses: it retitles whatever the pane holds at the
-    // moment it arrives, and then these entries replace them. Rows therefore
-    // read "explore_main_process" where the engine had said "Zeno".
-    const subNames = res.subAgentNames ?? {};
-    if (Object.keys(subNames).length > 0) {
-      const retitle = (list: Entry[]): Entry[] =>
-        list.map((e) => {
-          if (e.kind === "agent" && e.name && subNames[e.name]) return { ...e, name: subNames[e.name] };
-          if (e.kind === "work") return { ...e, entries: retitle(e.entries) };
-          return e;
-        });
-      entries = retitle(entries);
-    }
     if (record) visit({ kind: "thread", id });
     setUnreadCompletedThreads((current) => setThreadUnread(current, id, false));
     setActiveProject(null);
     setActiveThreadId(id);
-    setMainStarted(entries.length > 0);
+    setMainStarted(res.total > 0);
     setMainReset((r) => ({
       entries,
       nonce: r.nonce + 1,
       resume: res.running ? { running: true, approvals: res.approvals, userInputs: res.userInputs ?? [] } : null,
+      sessionId: res.sessionId,
+      offset: res.offset,
+      runningTurnStart: res.runningTurnStart,
+      runningTurnStartedAt: res.runningTurnStartedAt,
     }));
     resetSideView();
     restoreSideView(id);
@@ -7673,10 +7613,9 @@ function TranscriptChevron({ open }: { open: boolean }) {
 /** A completed turn's work — narration, agent lifecycle rows, command
  *  groups — collapsed under a dim "Worked for Ns" header, Codex-style.
  *  The final message stays outside, always visible. */
-function WorkedGroup({ duration, children }: { duration: number | null; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
+function WorkedGroup({ duration, hasDetails, renderDetails, initiallyOpen, onOpenChange }: { duration: number | null; hasDetails: boolean; renderDetails: () => React.ReactNode; initiallyOpen: boolean; onOpenChange: (open: boolean) => void }) {
+  const [open, setOpen] = useState(initiallyOpen);
   const [hovering, setHovering] = useState(false);
-  const hasDetails = Children.count(children) > 0;
   // A small bottom margin, not zero: the answer below tightens its own top
   // margin after a fold, and with nothing here the two collapsed to 2px —
   // the metadata line then read as the answer's first line, and the gap
@@ -7687,7 +7626,7 @@ function WorkedGroup({ duration, children }: { duration: number | null; children
     <div style={{ margin: "14px 0 8px" }}>
       <button
         className="u-worked-group"
-        onClick={hasDetails ? () => setOpen((o) => !o) : undefined}
+        onClick={hasDetails ? () => setOpen((o) => { onOpenChange(!o); return !o; }) : undefined}
         onMouseEnter={() => setHovering(true)}
         onMouseLeave={() => setHovering(false)}
         aria-expanded={hasDetails ? open : undefined}
@@ -7727,7 +7666,7 @@ function WorkedGroup({ duration, children }: { duration: number | null; children
               it is the lid of a container and the line says where the turn's
               working-out begins. */}
           <div style={{ height: 1, background: colors.border, maxWidth: "var(--measure)", margin: "2px 0 12px" }} />
-          <div>{children}</div>
+          <div>{renderDetails()}</div>
         </>
       )}
     </div>
@@ -9598,16 +9537,10 @@ function MultiViewTile({ id, columnSpan, fresh, project, work, projects, drafts,
     if (fresh) return;
     let active = true;
     let lease: string | null = null;
-    void window.unbiased.mountThread(id).then(async (result) => {
+    void window.unbiased.mountThread(id).then((result) => {
       lease = result.lease;
       if (!active) { void window.unbiased.unmountThread(id, lease); return; }
-      const cached = await window.unbiased.loadTranscript(id);
-      if (!active) return;
-      const richness = (entries: Entry[]) => entries.reduce((total, entry) => total + (entry.kind === "work" ? Math.max(1, entry.entries.length) : 1), 0);
-      const entries = cached.entries && richness(cached.entries) > richness(result.entries)
-        ? hydrateTranscriptTimes(cached.entries, result.entries)
-        : result.entries;
-      setLoaded({ ...result, entries });
+      setLoaded(result);
     }).catch((cause) => { if (active) setError(String(cause)); });
     return () => { active = false; if (lease) void window.unbiased.unmountThread(id, lease); };
   }, [id, fresh]);
@@ -9640,7 +9573,7 @@ function MultiViewTile({ id, columnSpan, fresh, project, work, projects, drafts,
           connected={connected}
           threadId={id}
           composerDrafts={drafts}
-          reset={{ entries: resetEntries, nonce: 0, resume: loaded?.running ? { running: true, approvals: loaded.approvals, userInputs: loaded.userInputs } : null, runningTurnStart: loaded?.runningTurnStart, runningTurnStartedAt: loaded?.runningTurnStartedAt }}
+          reset={{ entries: resetEntries, nonce: 0, resume: loaded?.running ? { running: true, approvals: loaded.approvals, userInputs: loaded.userInputs } : null, runningTurnStart: loaded?.runningTurnStart, runningTurnStartedAt: loaded?.runningTurnStartedAt, sessionId: loaded?.sessionId, offset: loaded?.offset }}
           emptyState={null}
           composerHeader={fresh ? <MosaicNewChatEnvironment project={project} work={work} projects={projects} onSelect={onSelectEnvironment} onCreateProject={onCreateProject} disabled={busy} /> : undefined}
           onBusyChange={setBusy}
@@ -9700,6 +9633,8 @@ function ChatPane({
   reset: {
     entries: Entry[];
     nonce: number;
+    sessionId?: string;
+    offset?: number;
     // Present when the conversation was reopened mid-turn.
     resume?: { running: boolean; approvals: HeldApproval[]; userInputs: UserInputRequest[] } | null;
     runningTurnStart?: number | null;
@@ -9748,6 +9683,16 @@ function ChatPane({
   onOpenSkills?: () => void;
 }) {
   const [entries, setEntries] = useState<Entry[]>(reset.entries);
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+  const unchangedTranscriptRef = useRef<Entry[] | null>(null);
+  const openWorkEntriesRef = useRef(new WeakSet<object>());
+  const [historyOffset, setHistoryOffset] = useState(reset.offset ?? 0);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const historyOffsetRef = useRef(reset.offset ?? 0);
+  const transcriptSessionRef = useRef(reset.sessionId ?? null);
+  const pageLoadingRef = useRef(false);
+  const [firstBlockIndex, setFirstBlockIndex] = useState(1_000_000_000);
   const localDraftsRef = useRef<ConversationDrafts<Attachment> | null>(null);
   if (!localDraftsRef.current) localDraftsRef.current = new ConversationDrafts(threadId ?? null, reset.nonce);
   const drafts = composerDrafts ?? localDraftsRef.current;
@@ -10018,6 +9963,7 @@ function ChatPane({
   const [selection, setSelection] = useState<{ text: string; x: number; y: number; right: number } | null>(null);
   const savedRangeRef = useRef<Range | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const followTranscriptRef = useRef(true);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const paneRef = useRef<HTMLDivElement>(null);
@@ -10196,9 +10142,18 @@ function ChatPane({
     previousResetNonceRef.current = reset.nonce;
     threadIdRef.current = threadId ?? null;
     followTranscriptRef.current = true;
+    transcriptSessionRef.current = reset.sessionId ?? null;
+    historyOffsetRef.current = reset.offset ?? 0;
+    setHistoryOffset(historyOffsetRef.current);
+    setHistoryError(null);
+    pageLoadingRef.current = false;
+    openWorkEntriesRef.current = new WeakSet<object>();
+    setFirstBlockIndex(1_000_000_000);
     setShowScrollToLatest(false);
     messageBoundaryRef.current = false;
-    setEntries(reset.resume?.running ? reset.entries : settleUnconfirmedSteps(reset.entries));
+    const restoredEntries = reset.resume?.running ? reset.entries : settleUnconfirmedSteps(reset.entries);
+    unchangedTranscriptRef.current = restoredEntries;
+    setEntries(restoredEntries);
     // A reopened conversation may still be mid-turn: restore its busy
     // state and any approval requests the agent is blocked on.
     setBusy(!!reset.resume?.running);
@@ -10286,6 +10241,10 @@ function ChatPane({
   // own history can't hold renderer-only content.
   useEffect(() => {
     if (!persistTranscript) return;
+    if (unchangedTranscriptRef.current === entries) {
+      unchangedTranscriptRef.current = null;
+      return;
+    }
     const id = threadIdRef.current;
     if (!id || entries.length === 0) return;
     const timer = setTimeout(() => {
@@ -10293,7 +10252,7 @@ function ChatPane({
         entry.kind === "userInput"
           ? { ...entry, request: withoutUserInputDefaults(entry.request) }
           : entry.kind === "work" ? { ...entry, entries: withoutDefaults(entry.entries) } : entry);
-      void window.unbiased.saveTranscript(id, withoutDefaults(entries));
+      void window.unbiased.saveTranscript(id, withoutDefaults(entries), transcriptSessionRef.current ?? undefined, historyOffsetRef.current);
     }, 400);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -10738,8 +10697,7 @@ function ChatPane({
   }, [paneId]);
 
   useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el && followTranscriptRef.current) el.scrollTo({ top: el.scrollHeight });
+    if (followTranscriptRef.current) virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
   }, [entries]);
 
   // Drawn anew every time this pane shows a (different) conversation.
@@ -11006,6 +10964,7 @@ function ChatPane({
   // contributes no badge; the annotation chip still stands.
   const contentRef = useRef<HTMLDivElement>(null);
   const [badges, setBadges] = useState<{ n: number; left: number; top: number; label: string }[]>([]);
+  const badgeComputeRef = useRef<() => void>(() => {});
   useLayoutEffect(() => {
     function compute() {
       const contentRect = contentRef.current?.getBoundingClientRect();
@@ -11016,7 +10975,7 @@ function ChatPane({
       const list: { n: number; left: number; top: number; label: string }[] = [];
       const push = (range: Range | null | undefined, n: number, label: string) => {
         const rect = range?.getBoundingClientRect();
-        if (!rect || (rect.width === 0 && rect.height === 0)) return;
+        if (!rect || (rect.width === 0 && rect.height === 0) || rect.bottom < contentRect.top || rect.top > contentRect.bottom) return;
         list.push({
           n,
           label,
@@ -11026,8 +10985,11 @@ function ChatPane({
       };
       annotations.forEach((a, i) => push(a.range, i + 1, a.comment ?? a.text));
       if (pendingComment !== null) push(savedRangeRef.current, annotations.length + 1, "");
-      setBadges(list);
+      setBadges((current) => current.length === list.length && current.every((badge, index) =>
+        badge.n === list[index].n && badge.left === list[index].left && badge.top === list[index].top && badge.label === list[index].label,
+      ) ? current : list);
     }
+    badgeComputeRef.current = compute;
     compute();
     window.addEventListener("resize", compute);
     return () => window.removeEventListener("resize", compute);
@@ -11074,6 +11036,47 @@ function ChatPane({
   );
   const copyableAssistantIndices = useMemo(() => finalAssistantIndices(entries), [entries]);
   const datedUserIndices = useMemo(() => dayMarkerIndices(entries), [entries]);
+  const displayBlocks = useMemo(() => toDisplayBlocks(entries), [entries]);
+  const loadEarlierBlocks = () => {
+    const sessionId = transcriptSessionRef.current;
+    const before = historyOffsetRef.current;
+    if (!sessionId || before === 0 || pageLoadingRef.current) return;
+    const entriesAtRequest = entriesRef.current;
+    pageLoadingRef.current = true;
+    setHistoryError(null);
+    void window.unbiased.threadPage(sessionId, before, TRANSCRIPT_WINDOW_BLOCKS).then((page) => {
+      if (transcriptSessionRef.current !== sessionId) return;
+      if (page.expired || page.offset >= before) {
+        setHistoryError("Could not load earlier messages. Reopen this chat and try again.");
+        return;
+      }
+      const current = entriesRef.current;
+      const addedBlocks = toDisplayBlocks([...page.entries, ...current]).length - toDisplayBlocks(current).length;
+      followTranscriptRef.current = false;
+      historyOffsetRef.current = page.offset;
+      setHistoryOffset(page.offset);
+      setFirstBlockIndex((index) => index - addedBlocks);
+      turnStartIndexRef.current = shiftRunningTurnStart(turnStartIndexRef.current, page.entries.length);
+      setEntries((rows) => {
+        const restored = [...page.entries, ...rows];
+        if (rows === entriesAtRequest) unchangedTranscriptRef.current = restored;
+        return restored;
+      });
+    }).catch(() => {
+      if (transcriptSessionRef.current === sessionId) setHistoryError("Could not load earlier messages. Try again.");
+    }).finally(() => {
+      if (transcriptSessionRef.current === sessionId) pageLoadingRef.current = false;
+    });
+  };
+  const transcriptComponents = useMemo(() => ({
+    Header: () => historyOffset > 0 ? (
+      <button type="button" onClick={loadEarlierBlocks} style={{ display: "block", margin: "16px auto", background: "transparent", border: "none", color: colors.dim, cursor: "pointer", fontSize: 13 }}>
+        {historyError ?? "Load earlier messages"}
+      </button>
+    ) : null,
+    // The loader reads the current session and offset from refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [historyOffset, historyError]);
 
   // `nested` excludes narration inside a "Worked for Ns" group.
   const renderBlock = (
@@ -11327,9 +11330,14 @@ function ChatPane({
     }
     if (e.kind === "work") {
       return (
-        <WorkedGroup key={`w${block.key}`} duration={e.duration}>
-          {toDisplayBlocks(e.entries).map((b) => renderBlock(b, false, true))}
-        </WorkedGroup>
+        <WorkedGroup
+          key={`w${block.key}`}
+          duration={e.duration}
+          hasDetails={e.entries.length > 0}
+          renderDetails={() => toDisplayBlocks(e.entries).map((b) => renderBlock(b, false, true))}
+          initiallyOpen={openWorkEntriesRef.current.has(e)}
+          onOpenChange={(open) => { if (open) openWorkEntriesRef.current.add(e); else openWorkEntriesRef.current.delete(e); }}
+        />
       );
     }
     return null;
@@ -11484,24 +11492,76 @@ function ChatPane({
 
       <div style={{ flex: 1, minHeight: 0, position: "relative", display: "flex", flexDirection: "column" }}>
         <div
-          ref={scrollRef}
           onMouseUp={handleMouseUp}
+          onScrollCapture={() => badgeComputeRef.current()}
           onWheelCapture={(e) => {
-            if (e.deltaY >= 0 || e.currentTarget.scrollHeight <= e.currentTarget.clientHeight + 2) return;
+            const scroller = scrollRef.current;
+            if (e.deltaY >= 0 || !scroller || scroller.scrollHeight <= scroller.clientHeight + 2) return;
             followTranscriptRef.current = false;
             setShowScrollToLatest(true);
           }}
-          onScroll={(e) => {
-            const atBottom = isTranscriptAtBottom(e.currentTarget);
-            followTranscriptRef.current = atBottom;
-            setShowScrollToLatest(!atBottom);
-          }}
-          style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "24px 0" }}
+          style={{ flex: 1, minHeight: 0, position: "relative" }}
         >
-        {entries.length === 0 && (
-          <div style={{ height: "100%", display: "grid", placeItems: "center" }}>{emptyState}</div>
-        )}
-        <div ref={contentRef} style={{ maxWidth: 768, margin: "0 auto", padding: "0 24px", position: "relative" }}>
+          {entries.length === 0 && !busy && !compacting ? (
+            <div style={{ height: "100%", display: "grid", placeItems: "center" }}>{emptyState}</div>
+          ) : (
+            <Virtuoso
+              key={reset.nonce}
+              ref={virtuosoRef}
+              scrollerRef={(node) => { scrollRef.current = node instanceof HTMLDivElement ? node : null; }}
+              style={{ height: "100%", width: "100%" }}
+              totalCount={displayBlocks.length + (busy || compacting ? 1 : 0)}
+              firstItemIndex={firstBlockIndex}
+              initialTopMostItemIndex={{ index: "LAST", align: "end" }}
+              defaultItemHeight={120}
+              increaseViewportBy={300}
+              followOutput={(atBottom) => followTranscriptRef.current && atBottom ? "auto" : false}
+              atBottomStateChange={(atBottom) => {
+                followTranscriptRef.current = atBottom;
+                setShowScrollToLatest(!atBottom);
+              }}
+              startReached={loadEarlierBlocks}
+              components={transcriptComponents}
+              itemContent={(index) => {
+                const i = index - firstBlockIndex;
+                if (i === displayBlocks.length) return (
+                  <div style={{ maxWidth: 768, margin: "0 auto", padding: "0 24px" }}>
+                    {compacting ? (
+                      <div style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "10px 14px", borderRadius: 12, background: colors.panel, border: `1px solid ${colors.border}`, fontSize: 14, color: colors.dim }}>
+                          <span style={{ width: 12, height: 12, borderRadius: 6, border: `2px solid ${colors.border}`, borderTopColor: colors.accent, animation: "unbiased-spin 0.8s linear infinite" }} />
+                          <ShimmerText text="Compacting conversation…" fontSize={14} />
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", margin: "10px 0" }}>
+                        {showThinking && !awaitingApproval && !awaitingInput ? (
+                          <ShimmerText text={`thinking… ${formatDuration(elapsed)}`} fontSize={14} />
+                        ) : (
+                          <ShimmerText text={`waiting… ${formatDuration(elapsed)}`} fontSize={14} />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+                const b = displayBlocks[i];
+                if (!b) return null;
+                const prev = displayBlocks[i - 1];
+                const afterWork = prev?.kind === "entry" && prev.entry.kind === "work";
+                return (
+                  <div style={{ maxWidth: 768, margin: "0 auto", padding: "0 24px" }}>
+                    {b.kind === "entry" && b.entry.kind === "user" && b.entry.at !== undefined && datedUserIndices.has(b.key) && (
+                      <div style={{ textAlign: "center", margin: "28px 0 18px", color: colors.dim, fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>
+                        {formatConversationDayMarker(b.entry.at)}
+                      </div>
+                    )}
+                    {renderBlock(b, copyableAssistantIndices.has(b.key), false, afterWork)}
+                  </div>
+                );
+              }}
+            />
+          )}
+          <div ref={contentRef} style={{ position: "absolute", inset: 0, maxWidth: 768, width: "100%", margin: "0 auto", pointerEvents: "none" }}>
           {badges.map((b) => (
             <span
               key={b.n}
@@ -11530,63 +11590,7 @@ function ChatPane({
               {b.n}
             </span>
           ))}
-          {toDisplayBlocks(entries).map((b, i, arr) => {
-            const prev = arr[i - 1];
-            const afterWork = prev?.kind === "entry" && prev.entry.kind === "work";
-            return (
-              <Fragment key={b.key}>
-                {b.kind === "entry" && b.entry.kind === "user" && b.entry.at !== undefined && datedUserIndices.has(b.key) && (
-                  <div style={{ textAlign: "center", margin: "28px 0 18px", color: colors.dim, fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>
-                    {formatConversationDayMarker(b.entry.at)}
-                  </div>
-                )}
-                {renderBlock(b, copyableAssistantIndices.has(b.key), false, afterWork)}
-              </Fragment>
-            );
-          })}
-          {compacting && (
-            <div style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 9,
-                  padding: "10px 14px",
-                  borderRadius: 12,
-                  background: colors.panel,
-                  border: `1px solid ${colors.border}`,
-                  fontSize: 14,
-                  color: colors.dim,
-                }}
-              >
-                <span
-                  style={{
-                    width: 12,
-                    height: 12,
-                    borderRadius: 6,
-                    border: `2px solid ${colors.border}`,
-                    borderTopColor: colors.accent,
-                    animation: "unbiased-spin 0.8s linear infinite",
-                  }}
-                />
-                <ShimmerText text="Compacting conversation…" fontSize={14} />
-              </div>
-            </div>
-          )}
-          {busy && !compacting && (
-            // Bare status line, no bubble: "thinking… Ns" until the first
-            // output, then "waiting… Ns" while the turn is still running
-            // (streaming pauses, sub-agents working). The clock freezes
-            // while the turn is blocked on a human approval.
-            <div style={{ display: "flex", margin: "10px 0" }}>
-              {showThinking && !awaitingApproval && !awaitingInput ? (
-                <ShimmerText text={`thinking… ${formatDuration(elapsed)}`} fontSize={14} />
-              ) : (
-                <ShimmerText text={`waiting… ${formatDuration(elapsed)}`} fontSize={14} />
-              )}
-            </div>
-          )}
-        </div>
+          </div>
         </div>
         {showScrollToLatest && (
           <button
@@ -11597,8 +11601,7 @@ function ChatPane({
             onClick={() => {
               followTranscriptRef.current = true;
               setShowScrollToLatest(false);
-              const el = scrollRef.current;
-              if (el) el.scrollTo({ top: el.scrollHeight });
+              virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
             }}
             style={{
               position: "absolute",

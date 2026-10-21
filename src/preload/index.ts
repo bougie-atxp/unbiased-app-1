@@ -70,8 +70,8 @@ contextBridge.exposeInMainWorld("unbiased", {
   listWorktrees: (project: string) => ipcRenderer.invoke("worktrees:list", project),
   removeWorktree: (dir: string) => ipcRenderer.invoke("worktrees:remove", dir),
   conversationInfo: () => ipcRenderer.invoke("conversation:info"),
-  saveTranscript: (threadId: string, entries: unknown) =>
-    ipcRenderer.invoke("transcript:save", { threadId, entries }),
+  saveTranscript: (threadId: string, entries: unknown, sessionId?: string, offset?: number) =>
+    ipcRenderer.invoke("transcript:save", { threadId, entries, sessionId, offset }),
   loadTranscript: (threadId: string) => ipcRenderer.invoke("transcript:load", threadId),
   registerVisual: (source: string): Promise<string | null> => ipcRenderer.invoke("visual:register", source),
   decideApproval: (requestId: string, decision: "accept" | "acceptForSession" | "decline") =>
@@ -163,6 +163,7 @@ contextBridge.exposeInMainWorld("unbiased", {
   searchThreads: (query: string, threads: { id: string; updatedAt?: string | number }[], includeSavedTranscripts = false) =>
     ipcRenderer.invoke("threads:search", { query, threads, includeSavedTranscripts }),
   openThread: (id: string) => ipcRenderer.invoke("threads:open", id),
+  threadPage: (sessionId: string, before: number, limit?: number) => ipcRenderer.invoke("threads:page", sessionId, before, limit),
   mountThread: (id: string) => ipcRenderer.invoke("threads:mount", id),
   createMultiThread: (projectPath?: string | null, replaceId?: string, workMode?: "local" | "worktree" | "existing", worktreeDir?: string) => ipcRenderer.invoke("threads:create-multi", { projectPath, replaceId, workMode, worktreeDir }),
   unmountThread: (id: string, lease: string) => ipcRenderer.invoke("threads:unmount", id, lease),
