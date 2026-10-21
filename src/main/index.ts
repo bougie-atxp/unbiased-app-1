@@ -57,6 +57,7 @@ import { pollDeviceToken, requestDeviceAuthorization } from "./device-auth";
 import { RendererCrashRecovery } from "./crash-recovery";
 import { mcpApplyDecision, mcpConfigOverride, overridableServerNames, parseThreadMcp, serializeThreadMcp, THREAD_MCP_FILE } from "./thread-mcp";
 import { inferredOAuthScopes, protectedResourceScopes } from "./mcp-oauth-scopes";
+import { firstPartyMcpRegistration } from "./mcp-first-party-oauth";
 import {
   type BatchStep,
   type AxResult,
@@ -9794,6 +9795,8 @@ app.whenReady().then(async () => {
    * this is the provider's documented endpoint, and we are the client.
    */
   async function registerOAuthClient(serverUrl: string): Promise<{ clientId: string; scopes: string[] } | { error: string }> {
+    const firstParty = firstPartyMcpRegistration(serverUrl);
+    if (firstParty) return firstParty;
     const discovered = await discoverRegistrationEndpoint(serverUrl);
     if (!discovered) return { error: "This server does not offer dynamic client registration." };
     const { endpoint } = discovered;
