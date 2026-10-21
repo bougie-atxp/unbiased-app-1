@@ -13470,6 +13470,15 @@ function ConnectorsView() {
     setNotice(`Approve ${c.displayName} in your browser.`);
   }
 
+  async function turnOn(c: ConnectorInfo) {
+    setNotice(null);
+    setBusy(c.name);
+    const res = await window.unbiased.connectorsSetEnabled(c.name, true);
+    setBusy(null);
+    setNotice(res.ok ? `${c.displayName} is on.` : (res.error ?? `Could not turn on ${c.displayName}.`));
+    void refresh();
+  }
+
   async function saveClientId(c: ConnectorInfo) {
     setNotice(null);
     setBusy(c.name);
@@ -13580,7 +13589,11 @@ function ConnectorsView() {
                     </span>
                   ) : open.added ? (
                     <>
-                      {open.authStatus !== "oAuth" && (
+                      {!open.enabled ? (
+                        <button className="u-chip" onClick={() => void turnOn(open)} disabled={busy !== null} style={btnSmallStyle}>
+                          {busy === open.name ? "Turning on…" : "Turn on"}
+                        </button>
+                      ) : open.authStatus !== "oAuth" && (
                         <button className="u-chip" onClick={() => void signIn(open)} disabled={busy !== null} style={btnSmallStyle}>
                           {busy === open.name ? "Waiting…" : "Sign in"}
                         </button>
@@ -13836,7 +13849,7 @@ function ConnectorsView() {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(232px, 1fr))", gap: 12 }}>
                 {list.map((c) => {
-                  const signedIn = c.added && c.authStatus === "oAuth";
+                  const signedIn = c.added && c.enabled && c.authStatus === "oAuth";
                   return (
                     <div
                       key={c.name}
@@ -13925,7 +13938,16 @@ function ConnectorsView() {
                                 declined, a token expired. Saying "Needs
                                 sign-in" while offering only Remove left the one
                                 state the user can act on with no way to act. */}
-                            {!signedIn && (
+                            {!c.enabled ? (
+                              <button
+                                className="u-chip"
+                                onClick={() => void turnOn(c)}
+                                disabled={busy !== null}
+                                style={{ ...btnSmallStyle, fontSize: 12.5, padding: "5px 12px" }}
+                              >
+                                {busy === c.name ? "Turning on…" : "Turn on"}
+                              </button>
+                            ) : !signedIn && (
                               <button
                                 className="u-chip"
                                 onClick={() => void signIn(c)}

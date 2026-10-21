@@ -10544,6 +10544,9 @@ app.whenReady().then(async () => {
     const server = cfg.servers.find((sv) => sv.name === name);
     let registered: string | null = null;
     if (cfg.error) return { ok: false, error: cfg.error };
+    if (server?.enabled === false) {
+      return { ok: false, error: `${name} is turned off. Turn it on before signing in.` };
+    }
     if (server?.url && !server.oauthClientId) {
       const reg = await registerOAuthClient(server.url);
       if ("clientId" in reg) {
