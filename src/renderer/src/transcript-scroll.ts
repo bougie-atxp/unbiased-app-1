@@ -3,6 +3,16 @@ export function isTranscriptAtBottom(scroll: { scrollHeight: number; scrollTop: 
 }
 
 export type TranscriptScrollState = { following: boolean; atBottom: boolean };
+
+export function settleTranscriptBottom(
+  state: TranscriptScrollState,
+  scroller: { scrollHeight: number; clientHeight: number; scrollTop: number } | null,
+): void {
+  if (state.following && scroller) {
+    const bottom = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    if (bottom - scroller.scrollTop > 2) scroller.scrollTop = bottom;
+  }
+}
 export type TranscriptScrollAction =
   | { type: "follow" }
   | { type: "user-scroll-up" }
