@@ -139,3 +139,36 @@ test("the preview route uses only app-owned script and no generated script permi
   assert.match(csp, /frame-src 'none'/);
   assert.doesNotMatch(doc, /window\.unbiased/);
 });
+
+test("streaming preview updates preserve existing visual nodes", async () => {
+  const dom = new JSDOM(interactiveVisualPreviewDocument("test-nonce"), {
+    url: "https://visual.test", runScripts: "dangerously",
+  });
+  try {
+    await new Promise<void>((resolve) => dom.window.addEventListener("load", () => resolve(), { once: true }));
+    const update = (html: string, css: string) => dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+      source: dom.window.parent,
+      data: { type: "unbiased-visual-preview", html, css },
+    }));
+    update('<section id="scene"><div id="first" class="old">Step 1</div></section>', ".old { color: red; }");
+    const scene = dom.window.document.getElementById("scene");
+    const first = dom.window.document.getElementById("first");
+    const style = dom.window.document.getElementById("visual-preview-style");
+    assert.ok(scene && first && style);
+
+    update('<section id="scene"><div id="first">Step 1 complete</div><svg id="second"><circle r="2"></circle></svg></section>', ".old { color: red; }");
+    assert.equal(dom.window.document.getElementById("scene"), scene);
+    assert.equal(dom.window.document.getElementById("first"), first);
+    assert.equal(dom.window.document.getElementById("visual-preview-style"), style);
+    assert.equal(first.textContent, "Step 1 complete");
+    assert.equal(first.hasAttribute("class"), false);
+    assert.equal(dom.window.document.querySelector("#second circle")?.getAttribute("r"), "2");
+
+    update('<section id="scene"><div id="first">Step 1 complete</div></section>', ".old { color: blue; }");
+    assert.equal(dom.window.document.getElementById("scene"), scene);
+    assert.equal(dom.window.document.getElementById("second"), null);
+    assert.equal(style.textContent, ".old { color: blue; }");
+  } finally {
+    dom.window.close();
+  }
+});

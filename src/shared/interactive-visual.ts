@@ -55,6 +55,30 @@ export function interactiveVisualPreviewDocument(nonce: string): string {
 <script nonce="${nonce}">
 (() => {
   const report = () => parent.postMessage({ type: 'unbiased-visual-preview-height', height: Math.ceil(document.body.scrollHeight) }, '*');
+  const reconcile = (current, next) => {
+    if (current.nodeType !== next.nodeType || current.nodeName !== next.nodeName || current.namespaceURI !== next.namespaceURI) {
+      current.replaceWith(next);
+      return;
+    }
+    if (current.nodeType === Node.TEXT_NODE) {
+      if (current.textContent !== next.textContent) current.textContent = next.textContent;
+      return;
+    }
+    if (current.nodeType !== Node.ELEMENT_NODE) return;
+    for (const attribute of Array.from(current.attributes)) {
+      if (!next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+    }
+    for (const attribute of Array.from(next.attributes)) {
+      if (current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
+    }
+    const existing = Array.from(current.childNodes);
+    const incoming = Array.from(next.childNodes);
+    for (let index = 0; index < incoming.length; index++) {
+      if (existing[index]) reconcile(existing[index], incoming[index]);
+      else current.appendChild(incoming[index]);
+    }
+    for (let index = incoming.length; index < existing.length; index++) existing[index].remove();
+  };
   addEventListener('message', event => {
     if (event.source !== parent || event.data?.type !== 'unbiased-visual-preview') return;
     const { html, css, colors, scheme } = event.data;
@@ -64,8 +88,17 @@ export function interactiveVisualPreviewDocument(nonce: string): string {
         document.documentElement.style.setProperty('--visual-' + key, value);
     }
     if (scheme === 'light' || scheme === 'dark') document.documentElement.style.colorScheme = scheme;
-    document.getElementById('visual-preview-style').textContent = css;
-    document.body.innerHTML = html;
+    const style = document.getElementById('visual-preview-style');
+    if (style.textContent !== css) style.textContent = css;
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const existing = Array.from(document.body.childNodes);
+    const incoming = Array.from(template.content.childNodes);
+    for (let index = 0; index < incoming.length; index++) {
+      if (existing[index]) reconcile(existing[index], incoming[index]);
+      else document.body.appendChild(incoming[index]);
+    }
+    for (let index = incoming.length; index < existing.length; index++) existing[index].remove();
     report();
   });
   addEventListener('DOMContentLoaded', () => {
