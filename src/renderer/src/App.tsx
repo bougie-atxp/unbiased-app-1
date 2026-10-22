@@ -11663,6 +11663,8 @@ function ChatPane({
               initialTopMostItemIndex={{ index: "LAST", align: "end" }}
               defaultItemHeight={120}
               increaseViewportBy={300}
+              // Tall messages need measured neighbors before reverse scrolling reaches them.
+              minOverscanItemCount={{ top: 6, bottom: 2 }}
               followOutput={false}
               totalListHeightChanged={requestTranscriptFollow}
               atBottomStateChange={(atBottom) => {
