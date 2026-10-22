@@ -10,6 +10,15 @@ export function followTranscriptToLatest(
 ): void {
   if (state.following) list?.scrollToIndex({ index: "LAST", align: "end" });
 }
+
+export function settleTranscriptBottom(
+  state: TranscriptScrollState,
+  scroller: { scrollHeight: number; clientHeight: number; scrollTop: number } | null,
+): void {
+  if (state.following && scroller) {
+    scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  }
+}
 export type TranscriptScrollAction =
   | { type: "follow" }
   | { type: "user-scroll-up" }

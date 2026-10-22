@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { followTranscriptToLatest, isTranscriptAtBottom, showScrollToLatest, transcriptScrollAfter } from "./transcript-scroll";
+import { followTranscriptToLatest, isTranscriptAtBottom, settleTranscriptBottom, showScrollToLatest, transcriptScrollAfter } from "./transcript-scroll";
 
 test("transcript follows at the bottom, including fractional scroll positions", () => {
   assert.equal(isTranscriptAtBottom({ scrollHeight: 1000, clientHeight: 500, scrollTop: 500 }), true);
@@ -34,6 +34,15 @@ test("measured growth targets the last virtual row, but never moves a paused rea
   const paused = transcriptScrollAfter({ following: true, atBottom: true }, { type: "user-scroll-up" });
   followTranscriptToLatest(paused, list);
   assert.equal(locations.length, 1);
+});
+
+test("final layout alignment closes a measured gap without moving a paused reader", () => {
+  const scroller = { scrollHeight: 2875, clientHeight: 948, scrollTop: 1867 };
+  settleTranscriptBottom({ following: true, atBottom: false }, scroller);
+  assert.equal(scroller.scrollTop, 1927);
+  scroller.scrollTop = 1700;
+  settleTranscriptBottom({ following: false, atBottom: false }, scroller);
+  assert.equal(scroller.scrollTop, 1700);
 });
 
 test("user scroll pauses following until send or jump explicitly resumes it", () => {

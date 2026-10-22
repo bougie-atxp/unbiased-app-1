@@ -48,7 +48,7 @@ import { isStripeOnboardingPage } from "../../shared/stripe-onboarding-url";
 import type { PalScale, PalsSettings as PalsSettingsState } from "../../shared/pals";
 import { SideChatIdleTracker } from "./side-chat-idle";
 import { settleTurnOutput } from "./turn-completion";
-import { followTranscriptToLatest, showScrollToLatest as shouldShowScrollToLatest, transcriptScrollAfter, type TranscriptScrollAction, type TranscriptScrollState } from "./transcript-scroll";
+import { followTranscriptToLatest, settleTranscriptBottom, showScrollToLatest as shouldShowScrollToLatest, transcriptScrollAfter, type TranscriptScrollAction, type TranscriptScrollState } from "./transcript-scroll";
 import { finalAssistantIndices } from "./transcript-actions";
 import { completedWorkDuration } from "./work-duration";
 import { isComposerTypingKey } from "./type-to-focus";
@@ -9973,6 +9973,9 @@ function ChatPane({
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const followFrameRef = useRef<number | null>(null);
+  const settleFrameRef = useRef<number | null>(null);
+  const observedListRef = useRef<Element | null>(null);
+  const listResizeObserverRef = useRef<ResizeObserver | null>(null);
   const transcriptScrollRef = useRef<TranscriptScrollState>({ following: true, atBottom: true });
   const touchStartYRef = useRef<number | null>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
@@ -10711,22 +10714,45 @@ function ChatPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paneId]);
 
-  // The DOM scroll range can lag behind virtual row measurement; aim at Virtuoso's last item.
+  // Aim at the last virtual row, then align to the final DOM height after it renders.
   const requestTranscriptFollow = useCallback(() => {
     if (!transcriptScrollRef.current.following || followFrameRef.current !== null) return;
     followFrameRef.current = requestAnimationFrame(() => {
       followFrameRef.current = null;
       followTranscriptToLatest(transcriptScrollRef.current, virtuosoRef.current);
+      if (settleFrameRef.current !== null) cancelAnimationFrame(settleFrameRef.current);
+      settleFrameRef.current = requestAnimationFrame(() => {
+        settleFrameRef.current = null;
+        settleTranscriptBottom(transcriptScrollRef.current, scrollRef.current);
+      });
     });
   }, []);
 
   useEffect(() => () => {
     if (followFrameRef.current !== null) cancelAnimationFrame(followFrameRef.current);
+    if (settleFrameRef.current !== null) cancelAnimationFrame(settleFrameRef.current);
+    followFrameRef.current = null;
+    settleFrameRef.current = null;
+    listResizeObserverRef.current?.disconnect();
+    listResizeObserverRef.current = null;
+    observedListRef.current = null;
   }, []);
 
   useLayoutEffect(() => {
     requestTranscriptFollow();
   }, [entries, requestTranscriptFollow]);
+
+  useLayoutEffect(() => {
+    const list = scrollRef.current?.querySelector('[data-testid="virtuoso-item-list"]') ?? null;
+    if (list === observedListRef.current) return;
+    listResizeObserverRef.current?.disconnect();
+    observedListRef.current = list;
+    if (!list || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(requestTranscriptFollow);
+    observer.observe(list);
+    if (scrollRef.current) observer.observe(scrollRef.current);
+    listResizeObserverRef.current = observer;
+  });
 
   const pauseTranscriptFollow = () => {
     updateTranscriptScroll({ type: "user-scroll-up" });
