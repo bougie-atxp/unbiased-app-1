@@ -14,7 +14,7 @@ const defaultAppRoot = join(launcherRoot, "default-app");
 const defaultAppAsar = join(launcherApp, "Contents", "Resources", "default_app.asar");
 const version = require(join(root, "node_modules", "electron", "package.json")).version;
 const markerPath = join(launcherRoot, "version");
-const launcherRevision = "12";
+const launcherRevision = "13";
 
 function run(command, args) {
   const result = require("node:child_process").spawnSync(command, args, { stdio: "inherit" });
@@ -116,6 +116,7 @@ function prepareMacLauncher() {
       // testing. UNBIASED_AX_DEBUG=1 turns on the diagnostic log both here and
       // in the bridge, which inherits this environment when we spawn it.
       `  --env "UNBIASED_AX_DIR=$UNBIASED_AX_DIR" \\`,
+      `  --env "UNBIASED_DEV_USER_DATA_DIR=$UNBIASED_DEV_USER_DATA_DIR" \\`,
       `  --env "UNBIASED_AX_DEBUG=$UNBIASED_AX_DEBUG" \\`,
       // And the metrics switch. `open` does not pass the caller's environment
       // through — only what is named here — so a run started with
@@ -148,6 +149,8 @@ if (process.platform === "darwin") {
   prepareMacLauncher();
   env.ELECTRON_EXEC_PATH = launcherScript;
   env.UNBIASED_DEV_APP_NAME = "Unbiased Dev";
+  env.UNBIASED_DEV_USER_DATA_DIR = process.env.UNBIASED_DEV_USER_DATA_DIR ||
+    join(homedir(), "Library", "Application Support", "unbiased-app-dev");
 }
 
 const electronVite = join(root, "node_modules", ".bin", process.platform === "win32" ? "electron-vite.cmd" : "electron-vite");

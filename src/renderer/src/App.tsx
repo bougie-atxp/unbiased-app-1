@@ -47,6 +47,7 @@ import { parseAgentStylePrefs, type AgentStylePrefs } from "../../shared/agent-s
 import { isStripeOnboardingPage } from "../../shared/stripe-onboarding-url";
 import type { PalScale, PalsSettings as PalsSettingsState } from "../../shared/pals";
 import { SideChatIdleTracker } from "./side-chat-idle";
+import { SIDE_CHAT_RETAIN_MS, sideChatRecoveryDuration } from "../../shared/side-chat-retention";
 import { settleTurnOutput } from "./turn-completion";
 import { settleTranscriptBottom, showScrollToLatest as shouldShowScrollToLatest, transcriptScrollAfter, type TranscriptScrollAction, type TranscriptScrollState } from "./transcript-scroll";
 import { finalAssistantIndices } from "./transcript-actions";
@@ -150,6 +151,8 @@ type ApprovalDecision = "accept" | "acceptForSession" | "decline";
 // "main" or a dynamic side-chat pane ("side:<n>").
 type PaneId = string;
 type ThreadSummary = { id: string; title: string; createdAt?: string; updatedAt?: string | number };
+type RecentSideChat = { paneId: string; threadId: string; parentThreadId: string; title: string; closedAt: number };
+type SideChatRecovery = { threadId: string; entries: Entry[]; sessionId: string; offset: number; error?: never };
 // A transcript excerpt staged for the next send, with an optional comment.
 // The live Range (when still valid) keeps the excerpt tinted in the DOM.
 // tag = what kind of thing was annotated (element tag, "selection",
@@ -714,7 +717,10 @@ declare global {
         cb: (p: { paneId: PaneId; key: string; name: string; cadence: string }) => void,
       ) => () => void;
       onScheduledOpenRun: (cb: (p: { threadId: string }) => void) => () => void;
-      onPetNoticeOpenThread: (cb: (p: { threadId: string }) => void) => () => void;
+      onPetNoticeOpenThread: (cb: (p: { threadId: string; sidePaneId?: string }) => void) => () => void;
+      recentSideChats: () => Promise<RecentSideChat[]>;
+      reopenSideChat: (paneId: string) => Promise<SideChatRecovery | { error: string }>;
+      onSideChatRecents: (cb: (p: { chats: RecentSideChat[] }) => void) => () => void;
       memoryList: (threadId: string | null) => Promise<{
         dir: string;
         memories: { name: string; description: string; type: string; path: string; thisThread: boolean }[];
@@ -1905,19 +1911,29 @@ export function App() {
     if (authed === "out") mainDraftsRef.current = new ConversationDrafts(null, 0);
     // A signed-out profile must not retain unsent text for the next account.
   }, [authed]);
-  // sideOpen = the whole right panel is visible; sideChatEnabled = the chat
-  // tab exists in it. Kept separate so opening a file/image preview doesn't
-  // drag the side chat along with it. Neither restores across launches —
-  // the app always starts with the panel closed.
+  // The panel starts closed; closed side chats can be reopened from Recents.
   const [sideOpen, setSideOpen] = useState(false);
   const sidePanelRef = useRef<HTMLDivElement>(null);
-  // Side-chat tabs: each entry is an engine pane id ("side:<n>"), each tab
-  // its own ephemeral fork of the main conversation. Context chips are per
-  // tab. sideNonce remounts them all when the main conversation changes.
+  // Side-chat tabs use distinct pane IDs; their engine threads are retained
+  // for recovery after a close or restart.
   const [sideChats, setSideChats] = useState<string[]>([]);
+  const [recentSideChats, setRecentSideChats] = useState<RecentSideChat[]>([]);
+  const [sideChatRestores, setSideChatRestores] = useState<Record<string, SideChatRecovery>>({});
+  const [sideChatRecoveryError, setSideChatRecoveryError] = useState<string | null>(null);
+  const sideRestorePendingRef = useRef(new Set<string>());
   const [sideContexts, setSideContexts] = useState<Record<string, string | null>>({});
   const [sideNonce, setSideNonce] = useState(0);
   const sideChatIdleRef = useRef(new SideChatIdleTracker());
+  useEffect(() => {
+    let mounted = true;
+    const refresh = () => void window.unbiased.recentSideChats().then((chats) => {
+      if (mounted) setRecentSideChats(chats);
+    });
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    const unsubscribe = window.unbiased.onSideChatRecents(({ chats }) => setRecentSideChats(chats));
+    return () => { mounted = false; window.clearInterval(timer); unsubscribe(); };
+  }, []);
   // Text handed to the MAIN composer from outside it — the embedded
   // browser's "Add … to chat" context-menu items land here and are
   // consumed into annotation chips by the same contextChip mechanism
@@ -2346,6 +2362,7 @@ export function App() {
    *  side panel never appears to belong to the next conversation. */
   function resetSideView() {
     setSideContexts({});
+    setSideChatRestores({});
     setSideNonce((n) => n + 1);
     setOpenFiles([]);
     setOpenAgents([]); // the agents belonged to the previous conversation
@@ -2361,8 +2378,7 @@ export function App() {
     setAgentMirrorOpen(false);
     setBrowserStates({});
     lastRecordedBrowserUrl.current.clear();
-    // Matching closeSideChat: the engine drops each ephemeral pane, so the
-    // fork of the previous conversation doesn't linger under the cap.
+    // The main process closes these panes and retains their threads briefly.
     for (const id of sideChatsRef.current) {
       sideChatIdleRef.current.close(id);
       void window.unbiased.resetSideChat(id);
@@ -2426,17 +2442,31 @@ export function App() {
       window.unbiased.onScheduledOpenRun(({ threadId }) => {
         setScheduledOpen(false);
         setConnectorsOpen(false);
-        void openThread(threadId);
+        void openThreadRef.current(threadId);
       }),
     [],
   );
   useEffect(
     () =>
-      window.unbiased.onPetNoticeOpenThread(({ threadId }) => {
+      window.unbiased.onPetNoticeOpenThread(({ threadId, sidePaneId }) => {
         setShowSettings(false);
         setShowChangelog(false);
         setNavPeekOpen(false);
-        void openThread(threadId);
+        if (sidePaneId) {
+          if (sideChatsRef.current.includes(sidePaneId) && activeThreadIdRef.current === threadId) {
+            sideChatIdleRef.current.use(sidePaneId);
+            setPanelMode(sidePaneId);
+            setSideOpenPersisted(true);
+            return;
+          }
+          void window.unbiased.recentSideChats().then((chats) => {
+            const recent = chats.find((chat) => chat.paneId === sidePaneId);
+            if (recent) void reopenRecentSideChatRef.current(recent);
+            else void openThreadRef.current(threadId);
+          }).catch(() => void openThreadRef.current(threadId));
+          return;
+        }
+        void openThreadRef.current(threadId);
       }),
     [],
   );
@@ -2497,6 +2527,8 @@ export function App() {
       if (!stale()) setSubAgentsList(r.agents);
     });
   }
+  const openThreadRef = useRef(openThread);
+  openThreadRef.current = openThread;
 
   async function moveInHistory(delta: -1 | 1) {
     const target = navigationTarget(navHistory, delta);
@@ -2626,6 +2658,8 @@ export function App() {
   const sideChatsRef = useRef(sideChats);
   sideChatsRef.current = sideChats;
   const [browserStates, setBrowserStates] = useState<Record<number, BrowserState>>({});
+  const browserStatesRef = useRef(browserStates);
+  browserStatesRef.current = browserStates;
   const [browserVisits, setBrowserVisits] = useState<BrowserVisit[]>(() => parseBrowserVisits(localStorage.getItem("browserVisitsV1")));
   const lastRecordedBrowserUrl = useRef(new Map<number, string>());
   useEffect(() => {
@@ -2883,19 +2917,57 @@ export function App() {
     return () => { cancelled = true; };
   }, [browserTabs, selectedBrowserId, selectedBrowserHasPage, sideOpen, showSettings, showChangelog, confirmDialog, fullAccessPrompt, branchSwitch, branchCreate, renameDialog, moveDialog, editProj, pageOpen]);
 
-  function openSideChatTab() {
+  function openSideChatTab(): string {
     if (sideChats.length >= MAX_TABS_PER_KIND) {
-      sideChatIdleRef.current.use(sideChats[sideChats.length - 1]);
-      setPanelMode(sideChats[sideChats.length - 1]);
+      const id = sideChats[sideChats.length - 1];
+      sideChatIdleRef.current.use(id);
+      setPanelMode(id);
       setSideOpenPersisted(true);
-      return;
+      return id;
     }
-    const id = `side:${tabIdRef.current++}`;
+    const id = `side:${crypto.randomUUID().replaceAll("-", "")}`;
     sideChatIdleRef.current.use(id);
     setSideChats((cs) => [...cs, id]);
     setPanelMode(id);
     setSideOpenPersisted(true);
+    return id;
   }
+
+  async function reopenRecentSideChat(recent: RecentSideChat): Promise<boolean> {
+    if (sideRestorePendingRef.current.has(recent.paneId)) return false;
+    if (sideChatsRef.current.includes(recent.paneId)) {
+      setPanelMode(recent.paneId);
+      setSideOpenPersisted(true);
+      return true;
+    }
+    setSideChatRecoveryError(null);
+    if (sideChatsRef.current.length >= MAX_TABS_PER_KIND) {
+      setSideChatRecoveryError("Close a side chat tab before restoring another.");
+      return false;
+    }
+    sideRestorePendingRef.current.add(recent.paneId);
+    try {
+      if (activeThreadId !== recent.parentThreadId) await openThread(recent.parentThreadId);
+      const result = await window.unbiased.reopenSideChat(recent.paneId);
+      if ("error" in result) {
+        setSideChatRecoveryError(result.error ?? "Could not restore this side chat.");
+        return false;
+      }
+      sideChatIdleRef.current.use(recent.paneId);
+      setSideChatRestores((restores) => ({ ...restores, [recent.paneId]: result }));
+      setSideChats((chats) => [...chats, recent.paneId]);
+      setPanelMode(recent.paneId);
+      setSideOpenPersisted(true);
+      return true;
+    } catch {
+      setSideChatRecoveryError("Could not restore this side chat.");
+      return false;
+    } finally {
+      sideRestorePendingRef.current.delete(recent.paneId);
+    }
+  }
+  const reopenRecentSideChatRef = useRef(reopenRecentSideChat);
+  reopenRecentSideChatRef.current = reopenRecentSideChat;
 
   function createBrowserTab(url?: string): boolean {
     if (browserTabsRef.current.length >= MAX_TABS_PER_KIND) return false;
@@ -2997,30 +3069,43 @@ export function App() {
   // through every layer between here and there.
   openAgentMirrorRef.current = openAgentMirrorTab;
   closeAgentMirrorRef.current = () => setAgentMirrorOpen(false);
-  function openTerminalTab() {
+  function openTerminalTab(): string {
     if (terminalTabs.length >= MAX_TABS_PER_KIND) {
-      setPanelMode(`terminal:${terminalTabs[terminalTabs.length - 1]}`);
+      const key = `terminal:${terminalTabs[terminalTabs.length - 1]}`;
+      setPanelMode(key);
       setSideOpenPersisted(true);
-      return;
+      return key;
     }
     const id = tabIdRef.current++;
     setTerminalTabs((ts) => [...ts, id]);
-    setPanelMode(`terminal:${id}`);
+    const key = `terminal:${id}`;
+    setPanelMode(key);
     setSideOpenPersisted(true);
+    return key;
   }
 
-  function openToolFromBrowserStart(browserId: number, kind: "terminal" | "side") {
-    const atCap = kind === "terminal" ? terminalTabs.length >= MAX_TABS_PER_KIND : sideChats.length >= MAX_TABS_PER_KIND;
+  function isEmptyBrowserStartTab(browserId: number): boolean {
+    const url = browserStatesRef.current[browserId]?.url;
+    return browserTabsRef.current.includes(browserId) && (!url || url === "about:blank");
+  }
+
+  function replaceEmptyBrowserStartTab(browserId: number, nextKey: string): void {
+    if (!isEmptyBrowserStartTab(browserId)) return;
     const browserKey = `browser:${browserId}`;
-    const url = browserStates[browserId]?.url;
-    if (!atCap && panelMode === browserKey && browserTabsRef.current.includes(browserId) && (!url || url === "about:blank")) {
-      const nextKey = kind === "terminal" ? `terminal:${tabIdRef.current}` : `side:${tabIdRef.current}`;
-      const position = tabSeqRef.current.get(browserKey);
-      if (position !== undefined) tabSeqRef.current.set(nextKey, position);
-      closeBrowserTab(browserId);
-    }
-    if (kind === "terminal") openTerminalTab();
-    else openSideChatTab();
+    const position = tabSeqRef.current.get(browserKey);
+    if (position !== undefined) tabSeqRef.current.set(nextKey, position);
+    closeBrowserTab(browserId);
+  }
+
+  function openToolFromBrowserStart(browserId: number, open: () => string): void {
+    const replace = panelMode === `browser:${browserId}` && isEmptyBrowserStartTab(browserId);
+    const nextKey = open();
+    if (replace) replaceEmptyBrowserStartTab(browserId, nextKey);
+  }
+
+  async function reopenRecentSideChatFromBrowserStart(browserId: number, recent: RecentSideChat): Promise<void> {
+    const replace = panelMode === `browser:${browserId}` && isEmptyBrowserStartTab(browserId);
+    if (await reopenRecentSideChat(recent) && replace) replaceEmptyBrowserStartTab(browserId, recent.paneId);
   }
 
   // Selection → side chat: lands on the focused side-chat tab, else the
@@ -3111,12 +3196,15 @@ export function App() {
     setTreeFiles((m) => ({ ...m, [tabId]: info }));
   }
 
-  // Closing a side-chat tab discards its conversation — the engine drops
-  // the ephemeral pane (matching every other tab kind, and freeing the
-  // slot under the cap).
+  // Closing a side chat frees its tab but retains its thread for two hours.
   function closeSideChat(id: string) {
     sideChatIdleRef.current.close(id);
     setSideChats((cs) => cs.filter((x) => x !== id));
+    setSideChatRestores((restores) => {
+      const next = { ...restores };
+      delete next[id];
+      return next;
+    });
     setSideContexts((m) => {
       const rest = { ...m };
       delete rest[id];
@@ -5129,6 +5217,8 @@ export function App() {
                   style={{
                     display: "flex",
                     alignItems: "center",
+                    height: 36,
+                    boxSizing: "border-box",
                     background: panelMode === t ? "var(--panel-2)" : "transparent",
                     color: panelMode === t ? colors.fg : colors.dim,
                     borderRadius: 8,
@@ -5147,7 +5237,7 @@ export function App() {
                     data-nopress
                     style={{
                       display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0,
-                      padding: "6px 4px 6px 12px", background: "transparent", border: "none",
+                      height: "100%", padding: "0 4px 0 12px", background: "transparent", border: "none",
                       color: "inherit", fontSize: 13, fontFamily: "inherit", cursor: "pointer",
                     }}
                   >
@@ -5159,7 +5249,7 @@ export function App() {
                     title={cfg.aria}
                     onClick={cfg.close}
                     data-nopress
-                    style={{ display: "flex", alignItems: "center", padding: "6px 8px 6px 4px", background: "transparent", border: "none", color: colors.dim, cursor: "pointer" }}
+                    style={{ display: "flex", alignItems: "center", height: "100%", padding: "0 8px 0 4px", background: "transparent", border: "none", color: colors.dim, cursor: "pointer" }}
                   >
                     <CloseIcon />
                   </button>
@@ -5342,16 +5432,18 @@ export function App() {
                 startPage={
                   <BrowserStartPage
                     visits={browserVisits}
+                    recentSideChats={recentSideChats}
+                    recoveryError={sideChatRecoveryError}
                     inProject={inProject}
                     canSideChat={mainStarted}
-                    onReview={openReviewTab}
-                    onFiles={openFilesTab}
-                    onTerminal={() => openToolFromBrowserStart(id, "terminal")}
-                    onSideChat={() => openToolFromBrowserStart(id, "side")}
+                    onReview={() => openToolFromBrowserStart(id, () => { openReviewTab(); return "review"; })}
+                    onFiles={() => openToolFromBrowserStart(id, () => { const key = `files:${tabIdRef.current}`; openFilesTab(); return key; })}
+                    onTerminal={() => openToolFromBrowserStart(id, openTerminalTab)}
+                    onSideChat={() => openToolFromBrowserStart(id, openSideChatTab)}
                     onNewBrowser={openBrowserTab}
-                    onAgentBrowser={openAgentMirrorTab}
                     onNavigate={(url) => void window.unbiased.navigateBrowser({ id, url })}
                     onClearHistory={() => setBrowserVisits([])}
+                    onReopenSideChat={(recent) => void reopenRecentSideChatFromBrowserStart(id, recent)}
                   />
                 }
               />
@@ -5375,7 +5467,11 @@ export function App() {
             paneId={id}
             canTypeToFocus={() => composerTypingAvailable && sideVisible && panelMode === id && typingPaneRef.current === id}
             connected={connected}
-            reset={{ entries: [], nonce: 0 }}
+            threadId={sideChatRestores[id]?.threadId}
+            reset={sideChatRestores[id]
+              ? { entries: sideChatRestores[id].entries, nonce: 1, sessionId: sideChatRestores[id].sessionId, offset: sideChatRestores[id].offset }
+              : { entries: [], nonce: 0 }}
+            persistTranscript
             mcpThreadId={activeThreadId}
             mcpPanelOpen={mcpOpen}
             contextChip={sideContexts[id] ?? null}
@@ -7499,6 +7595,8 @@ function BrowserPane({ browserId, browserState, autoFocusAddress, startPage }: {
 
 function BrowserStartPage({
   visits,
+  recentSideChats,
+  recoveryError,
   inProject,
   canSideChat,
   onReview,
@@ -7506,11 +7604,13 @@ function BrowserStartPage({
   onTerminal,
   onSideChat,
   onNewBrowser,
-  onAgentBrowser,
   onNavigate,
   onClearHistory,
+  onReopenSideChat,
 }: {
   visits: BrowserVisit[];
+  recentSideChats: RecentSideChat[];
+  recoveryError: string | null;
   inProject: boolean;
   canSideChat: boolean;
   onReview: () => void;
@@ -7518,14 +7618,24 @@ function BrowserStartPage({
   onTerminal: () => void;
   onSideChat: () => void;
   onNewBrowser: () => void;
-  onAgentBrowser: () => void;
   onNavigate: (url: string) => void;
   onClearHistory: () => void;
+  onReopenSideChat: (recent: RecentSideChat) => void;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [recentsOpen, setRecentsOpen] = useState(true);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const suggestions = suggestedBrowserSites(visits);
-  const recent = visits.slice(0, 5);
+  const recent = [
+    ...visits.slice(0, 5).map((visit) => ({ kind: "page" as const, at: visit.lastVisited, visit })),
+    ...recentSideChats
+      .filter((chat) => chat.closedAt + SIDE_CHAT_RETAIN_MS > now)
+      .map((chat) => ({ kind: "side" as const, at: chat.closedAt, chat })),
+  ].sort((a, b) => b.at - a.at);
   const toolStyle: React.CSSProperties = {
     display: "flex", alignItems: "center", gap: 11, width: "100%", minWidth: 0,
     border: `1px solid ${colors.border}`, borderRadius: 8, padding: "11px 13px",
@@ -7555,7 +7665,6 @@ function BrowserStartPage({
             {moreOpen && (
               <>
                 {tool("New browser tab", <GlobeIcon />, onNewBrowser)}
-                {tool("Agent browser", <GlobeIcon />, onAgentBrowser)}
               </>
             )}
           </div>
@@ -7581,16 +7690,17 @@ function BrowserStartPage({
               <button type="button" className="u-sidebar-icon-button" title={recentsOpen ? "Collapse recents" : "Expand recents"} aria-label={recentsOpen ? "Collapse recents" : "Expand recents"} aria-expanded={recentsOpen} onClick={() => setRecentsOpen((open) => !open)} style={{ display: "grid", placeItems: "center", width: 28, height: 28, background: "transparent", border: 0, borderRadius: 7, color: colors.dim, cursor: "pointer" }}><ChevronDown size={16} style={{ transform: recentsOpen ? "rotate(180deg)" : undefined }} /></button>
             </div>
           </div>
-          {recentsOpen && (recent.length > 0 ? recent.map((visit) => (
-            <button key={visit.url} type="button" className="u-browser-start-link" onClick={() => onNavigate(visit.url)} title={visit.url} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, minWidth: 0, border: 0, borderBottom: `1px solid ${colors.border}`, borderRadius: 8, padding: "10px 12px", background: "transparent", color: colors.fg, textAlign: "left", font: "inherit", cursor: "pointer" }}>
-              <span style={{ display: "grid", placeItems: "center", width: 30, height: 30, flexShrink: 0, borderRadius: 7, background: "var(--panel-2)", color: colors.dim }}><GlobeIcon size={16} /></span>
+          {recentsOpen && (recent.length > 0 ? recent.map((item) => (
+            <button key={item.kind === "page" ? item.visit.url : item.chat.paneId} type="button" className="u-browser-start-link" onClick={() => item.kind === "page" ? onNavigate(item.visit.url) : onReopenSideChat(item.chat)} title={item.kind === "page" ? item.visit.url : "Reopen side chat"} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, minWidth: 0, border: 0, borderBottom: `1px solid ${colors.border}`, borderRadius: 8, padding: "10px 12px", background: "transparent", color: colors.fg, textAlign: "left", font: "inherit", cursor: "pointer" }}>
+              <span style={{ display: "grid", placeItems: "center", width: 30, height: 30, flexShrink: 0, borderRadius: 7, background: "var(--panel-2)", color: colors.dim }}>{item.kind === "page" ? <GlobeIcon size={16} /> : <ChatPlusIcon />}</span>
               <span style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 3 }}>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13.5 }}>{visit.title}</span>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5, color: colors.dim }}>{visit.url}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13.5 }}>{item.kind === "page" ? item.visit.title : item.chat.title}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5, color: colors.dim }}>{item.kind === "page" ? item.visit.url : `Side chat · Recover within ${sideChatRecoveryDuration(item.chat.closedAt, now)}`}</span>
               </span>
-              <span style={{ color: colors.dim, fontSize: 11.5, flexShrink: 0 }}>{new Date(visit.lastVisited).toLocaleDateString()}</span>
+              <span style={{ color: colors.dim, fontSize: 11.5, flexShrink: 0 }}>{item.kind === "page" ? new Date(item.at).toLocaleDateString() : new Date(item.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
             </button>
-          )) : <div style={{ color: colors.dim, fontSize: 13, padding: "10px 0" }}>No recent pages</div>)}
+          )) : <div style={{ color: colors.dim, fontSize: 13, padding: "10px 0" }}>No recent pages or side chats</div>)}
+          {recentsOpen && recoveryError && <div role="alert" style={{ color: colors.dim, fontSize: 13, padding: "10px 0" }}>{recoveryError}</div>}
         </section>
       </div>
     </div>
@@ -10255,24 +10365,34 @@ function ChatPane({
 
   // Persist the rendered transcript per thread (debounced) — the engine's
   // own history can't hold renderer-only content.
+  const latestEntriesRef = useRef(entries);
+  latestEntriesRef.current = entries;
+  const saveRenderedTranscript = (current: Entry[]) => {
+    const id = threadIdRef.current;
+    if (!id || current.length === 0) return;
+    const withoutDefaults = (list: Entry[]): Entry[] => list.map((entry) =>
+      entry.kind === "userInput"
+        ? { ...entry, request: withoutUserInputDefaults(entry.request) }
+        : entry.kind === "work" ? { ...entry, entries: withoutDefaults(entry.entries) } : entry);
+    void window.unbiased.saveTranscript(id, withoutDefaults(current), transcriptSessionRef.current ?? undefined, historyOffsetRef.current);
+  };
   useEffect(() => {
     if (!persistTranscript) return;
     if (unchangedTranscriptRef.current === entries) {
       unchangedTranscriptRef.current = null;
       return;
     }
-    const id = threadIdRef.current;
-    if (!id || entries.length === 0) return;
-    const timer = setTimeout(() => {
-      const withoutDefaults = (list: Entry[]): Entry[] => list.map((entry) =>
-        entry.kind === "userInput"
-          ? { ...entry, request: withoutUserInputDefaults(entry.request) }
-          : entry.kind === "work" ? { ...entry, entries: withoutDefaults(entry.entries) } : entry);
-      void window.unbiased.saveTranscript(id, withoutDefaults(entries), transcriptSessionRef.current ?? undefined, historyOffsetRef.current);
-    }, 400);
+    if (!threadIdRef.current || entries.length === 0) return;
+    const timer = setTimeout(() => saveRenderedTranscript(entries), 400);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries, persistTranscript]);
+  useEffect(() => () => {
+    if (persistTranscript && paneId.startsWith("side:") && unchangedTranscriptRef.current !== latestEntriesRef.current) {
+      saveRenderedTranscript(latestEntriesRef.current);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Where the running turn's output starts in `entries`, and when it began —
   // consumed on completion to fold the work into a "Worked for Ns" group.
@@ -11104,6 +11224,7 @@ function ChatPane({
     setPendingComment(null);
     setSelection(null);
     window.getSelection()?.removeAllRanges();
+    requestAnimationFrame(() => composerRef.current?.focus());
   }
 
   function cancelAnnotation() {
@@ -11547,7 +11668,11 @@ function ChatPane({
                 value={pendingComment}
                 onChange={(e) => setPendingComment(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") confirmAnnotation();
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    confirmAnnotation();
+                  }
                   if (e.key === "Escape") cancelAnnotation();
                 }}
                 placeholder="Add an optional comment…"
@@ -12283,8 +12408,8 @@ function ChatPane({
                     background: "var(--chip)",
                     border: "none",
                     borderRadius: 999,
-                    padding: "4px 10px",
-                    height: 28,
+                    padding: "7px 12px",
+                    minHeight: 34,
                     boxSizing: "border-box",
                     color: colors.accent,
                     fontSize: 13.5,
@@ -12308,8 +12433,8 @@ function ChatPane({
                     background: "var(--chip)",
                     border: "none",
                     borderRadius: 999,
-                    padding: "4px 10px",
-                    height: 28,
+                    padding: "7px 12px",
+                    minHeight: 34,
                     boxSizing: "border-box",
                     color: colors.accent,
                     fontSize: 13.5,
@@ -19735,8 +19860,8 @@ function ConversationMcp({ threadId, panelOpen, onOpenMcp }: { threadId: string 
         background: "var(--chip)",
         border: "none",
         borderRadius: 999,
-        padding: "4px 10px",
-        height: 28,
+        padding: "7px 12px",
+        minHeight: 34,
         boxSizing: "border-box",
         color: on ? colors.accent : colors.dim,
         fontSize: 13.5,

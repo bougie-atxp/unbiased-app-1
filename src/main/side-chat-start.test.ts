@@ -12,7 +12,7 @@ test("a side chat inherits only turns before the active one", () => {
   assert.equal(boundary, "finished-2");
   assert.deepEqual(sideChatStartTarget("parent", true, "/project/worktree", boundary), {
     method: "thread/fork",
-    params: { threadId: "parent", ephemeral: true, excludeTurns: true, lastTurnId: "finished-2" },
+    params: { threadId: "parent", ephemeral: false, threadSource: "unbiased_side_chat", excludeTurns: true, lastTurnId: "finished-2" },
   });
 });
 
@@ -28,27 +28,27 @@ test("the first running turn leaves no parent history to fork", () => {
   assert.equal(boundary, null);
   assert.deepEqual(sideChatStartTarget("parent", true, "/project", boundary), {
     method: "thread/start",
-    params: { cwd: "/project", ephemeral: true },
+    params: { cwd: "/project", ephemeral: false, threadSource: "unbiased_side_chat" },
   });
 });
 
 test("a side chat starts independently while the parent has a running turn", () => {
   assert.deepEqual(sideChatStartTarget("parent", true, "/project/worktree"), {
     method: "thread/start",
-    params: { cwd: "/project/worktree", ephemeral: true },
+    params: { cwd: "/project/worktree", ephemeral: false, threadSource: "unbiased_side_chat" },
   });
 });
 
 test("a side chat forks a completed parent conversation", () => {
   assert.deepEqual(sideChatStartTarget("parent", false, "/project/worktree"), {
     method: "thread/fork",
-    params: { threadId: "parent", ephemeral: true, excludeTurns: true },
+    params: { threadId: "parent", ephemeral: false, threadSource: "unbiased_side_chat", excludeTurns: true },
   });
 });
 
 test("a side chat starts in the selected directory before the main conversation exists", () => {
   assert.deepEqual(sideChatStartTarget(null, false, "/project"), {
     method: "thread/start",
-    params: { cwd: "/project", ephemeral: true },
+    params: { cwd: "/project", ephemeral: false, threadSource: "unbiased_side_chat" },
   });
 });
