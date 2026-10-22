@@ -10,6 +10,7 @@
     "smoke:browser": "node build/smoke-browser.cjs",
     "smoke:visual-preview": "electron build/smoke-visual-preview.cjs",
     "smoke:visual-scroll": "electron build/smoke-visual-scroll.cjs",
+    "smoke:visual-height": "electron build/smoke-visual-height.cjs",
     "smoke:completed-visuals": "electron build/smoke-completed-visuals.cjs",
     "typecheck": "tsc --noEmit",
     "dist": "npm run prepare:browser && electron-vite build && electron-builder --publish never",

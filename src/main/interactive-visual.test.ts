@@ -161,6 +161,7 @@ test("the preview route uses only app-owned script and no generated script permi
   assert.equal(isInteractiveVisualPreviewUrl(INTERACTIVE_VISUAL_PREVIEW_URL), true);
   assert.equal(isInteractiveVisualPreviewUrl(`${INTERACTIVE_VISUAL_PREVIEW_URL}?next=1`), false);
   assert.match(doc, /visual-preview-style/);
+  assert.match(doc, /scrollbar-gutter: stable/);
   assert.match(doc, /unbiased-visual-preview-ready/);
   assert.match(doc, /script nonce="safe-preview-nonce"/);
   assert.match(csp, /script-src 'nonce-safe-preview-nonce'/);
