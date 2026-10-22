@@ -170,7 +170,8 @@ import {
   validateMemory,
 } from "./memory";
 import { writeAutomaticMemory } from "./automatic-memory";
-import { lastFinishedTurnBeforeActive, sideChatStartTarget } from "./side-chat-start";
+import { lastFinishedTurnBeforeActive, sideChatStartTarget, SIDE_CHAT_THREAD_SOURCE } from "./side-chat-start";
+import { SideChatRecents, listVisibleThreads, parseSideChatRecords } from "./side-chat-recents";
 import {
   LearningClient,
   buildEvent,
@@ -235,23 +236,56 @@ type PetPreferences = { visible: boolean; x?: number; y?: number; selection?: Pa
 let petPreferences: PetPreferences = { visible: true };
 let lastStatus: EngineStatus = { state: "starting" };
 
-// Conversation panes share one engine. "main" is the persistent,
-// sidebar-listed conversation; "side:<n>" panes are scratch tabs on
-// ephemeral threads (in-memory only — codex discards them at exit),
-// created on demand by the renderer's side-chat tabs. Notifications carry
-// threadId, so each pane's traffic routes cleanly.
+// Conversation panes share one engine. Side threads persist for short-term
+// recovery, but are excluded from the ordinary conversation sidebar.
 type PaneId = string;
 const panes: Record<string, { threadId: string | null; turnId: string | null }> = {
   main: { threadId: null, turnId: null },
 };
 const multiMountLeases = new Map<string, string>();
+let sideChatRecents = new SideChatRecents();
+const sideChatReopens = new Set<string>();
+const sideChatInterrupts = new Map<string, Promise<unknown>>();
+
+function sideChatRecentsFile(): string {
+  return join(app.getPath("userData"), "side-chat-recents.json");
+}
+
+function sideChatTranscriptFile(threadId: string): string {
+  return join(app.getPath("userData"), "transcripts", `${threadId.replace(/[^\w.-]/g, "_")}.json`);
+}
+
+function saveSideChatRecents(): void {
+  const file = sideChatRecentsFile();
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, JSON.stringify(sideChatRecents.all()), { mode: 0o600 });
+  renameSync(temp, file);
+  send("side:recents-updated", { chats: sideChatRecents.recent() });
+}
+
+async function pruneSideChatRecents(): Promise<void> {
+  const stale = sideChatRecents.expired();
+  if (!stale.length) return;
+  for (const paneId of new Set(stale)) {
+    const record = sideChatRecents.get(paneId);
+    if (!record) continue;
+    try {
+      await engine.request("thread/delete", { threadId: record.threadId });
+      sideChatRecents.remove(paneId);
+      threadMcp.delete(record.threadId);
+      rmSync(sideChatTranscriptFile(record.threadId), { force: true });
+    } catch (error) {
+      console.warn("[side-chat] could not prune expired thread:", error);
+    }
+  }
+  saveSideChatRecents();
+  saveThreadMcp();
+}
 
 function ensurePane(paneId: string): { threadId: string | null; turnId: string | null } {
   return (panes[paneId] ??= { threadId: null, turnId: null });
 }
 
-/** Drop every scratch pane — their ephemeral threads die with the context
- *  that spawned them (conversation switch, delete, engine restart). */
 /** Answer any local approval waiting on this thread. A dynamic tool call is
  *  blocked on that promise and the engine is blocked on the tool call, so a
  *  torn-down pane would otherwise wedge the turn forever. */
@@ -273,9 +307,7 @@ function settleLocalUserInputs(threadId: string | null | undefined): void {
   }
 }
 
-/** Forget a scratch pane AND stop whatever it was doing. Dropping the record
- *  alone left the ephemeral fork generating in the engine with no stream, no
- *  stop control and no way to reach it — tokens burning invisibly. */
+/** Close a side pane and stop its running turn before hiding it. */
 function dropSidePane(paneId: string): void {
   const pane = panes[paneId];
   if (!pane) return;
@@ -285,8 +317,12 @@ function dropSidePane(paneId: string): void {
   if (threadId) {
     const turnId = pane.turnId ?? runningTurns.get(threadId) ?? null;
     if (turnId) {
-      void engine.request("turn/interrupt", { threadId, turnId }).catch(() => {
+      const interrupt = engine.request("turn/interrupt", { threadId, turnId }).catch(() => {
         // the turn may have just finished on its own
+      });
+      sideChatInterrupts.set(threadId, interrupt);
+      void interrupt.finally(() => {
+        if (sideChatInterrupts.get(threadId) === interrupt) sideChatInterrupts.delete(threadId);
       });
       runningTurns.delete(threadId);
       petFinished(`turn:${threadId}`, "interrupted");
@@ -294,6 +330,10 @@ function dropSidePane(paneId: string): void {
     threadAccessModes.delete(threadId);
   }
   delete panes[paneId];
+  if (sideChatRecents.close(paneId)) {
+    saveSideChatRecents();
+    void pruneSideChatRecents();
+  }
 }
 
 function resetSidePanes(): void {
@@ -5853,12 +5893,13 @@ function latestPetReply(thread: WireThread): string {
 
 async function showCompletedPetNotice(threadId: string, reply: string, streamedReply: string, version: number): Promise<void> {
   if (!petWin || petWin.isDestroyed()) return;
-  let title = petThreadTitles.get(threadId) ?? "New chat";
+  const sideRecord = sideChatRecents.forThread(threadId);
+  let title = sideRecord?.title ?? petThreadTitles.get(threadId) ?? "New chat";
   let cwd = threadCwds.get(threadId) ?? null;
   try {
     const result = await engine.request("thread/read", { threadId, includeTurns: true }) as { thread: WireThread };
     const updatedTitle = threadTitle(result.thread);
-    if (updatedTitle !== "New chat") title = updatedTitle;
+    if (!sideRecord && updatedTitle !== "New chat") title = updatedTitle;
     cwd = result.thread.cwd ?? cwd;
     if (!reply.trim()) reply = latestPetReply(result.thread);
   } catch { /* Keep the title and response already captured from events. */ }
@@ -8511,6 +8552,19 @@ protocol.registerSchemesAsPrivileged([{ scheme: INTERACTIVE_VISUAL_SCHEME, privi
 
 app.whenReady().then(async () => {
   try {
+    sideChatRecents = new SideChatRecents(parseSideChatRecords(JSON.parse(readFileSync(sideChatRecentsFile(), "utf8"))));
+    saveSideChatRecents();
+  } catch (error) {
+    if (existsSync(sideChatRecentsFile())) console.warn("[side-chat] could not load recovery index:", error);
+  }
+  for (const record of sideChatRecents.all()) threadCwds.set(record.threadId, record.cwd);
+  void pruneSideChatRecents();
+  app.on("before-quit", resetSidePanes);
+  const sideChatHeartbeat = setInterval(() => {
+    if (sideChatRecents.touchOpen()) saveSideChatRecents();
+  }, 60_000);
+  app.on("will-quit", () => clearInterval(sideChatHeartbeat));
+  try {
     const saved = JSON.parse(readFileSync(petPreferencesFile(), "utf8")) as Partial<PetPreferences> & { folder?: string };
     petPreferences = {
       visible: saved.visible !== false,
@@ -8556,7 +8610,10 @@ app.whenReady().then(async () => {
     if (win.isMinimized()) win.restore();
     win.show();
     win.focus();
-    send("pet:notice-open-thread", { threadId: selected.threadId });
+    const sideRecord = sideChatRecents.forThread(selected.threadId);
+    send("pet:notice-open-thread", sideRecord
+      ? { threadId: sideRecord.parentThreadId, sidePaneId: sideRecord.paneId }
+      : { threadId: selected.threadId });
   });
   ipcMain.handle("pals:get", (event) => event.sender === win?.webContents ? palsSettings() : null);
   ipcMain.handle("pals:select", (event, id: unknown) =>
@@ -8790,9 +8847,13 @@ app.whenReady().then(async () => {
     let created = false;
     if (!pane.threadId) {
       let started: { thread: { id: string } };
+      const sideParentId = paneId.startsWith("side:") ? panes.main.threadId : null;
+      let startedCwd: string;
       if (paneId.startsWith("side")) {
-        const parentId = panes.main.threadId;
+        const parentId = sideParentId;
+        if (!parentId) throw new Error("Start a main chat before using a side chat");
         const sideCwd = mainCwd ?? pendingCwd ?? defaultChatDir();
+        startedCwd = sideCwd;
         const activeTurnId = parentId ? panes.main.turnId ?? runningTurns.get(parentId) ?? null : null;
         let lastFinishedTurnId: string | null = null;
         if (parentId && activeTurnId) {
@@ -8854,8 +8915,36 @@ app.whenReady().then(async () => {
           config: mcpOverrideFor(null),
         })) as { thread: { id: string }; cwd?: string };
         mainCwd = (started as { cwd?: string }).cwd ?? cwd;
+        startedCwd = mainCwd;
+      }
+      if (panes[paneId] !== pane) {
+        void engine.request("thread/delete", { threadId: started.thread.id }).catch(() => undefined);
+        throw new Error("This side chat was closed while starting");
       }
       pane.threadId = started.thread.id;
+      if (paneId.startsWith("side:") && sideParentId) {
+        threadMcp.set(started.thread.id, new Set(enabledMcpFor(sideParentId)));
+        saveThreadMcp();
+        sideChatRecents.register({
+          paneId,
+          threadId: started.thread.id,
+          parentThreadId: sideParentId,
+          cwd: startedCwd,
+          baselineTurns: 0,
+          title: text.trim().slice(0, 100) || "Side chat",
+        });
+        saveSideChatRecents();
+        let baselineTurns = 0;
+        try {
+          const initial = await engine.request("thread/read", { threadId: started.thread.id, includeTurns: true }) as { thread: WireThread };
+          baselineTurns = initial.thread.turns?.length ?? 0;
+        } catch (error) {
+          console.warn("[side-chat] could not mark inherited turns:", error);
+        }
+        sideChatRecents.setBaselineTurns(paneId, baselineTurns);
+        saveSideChatRecents();
+        if (panes[paneId] !== pane) throw new Error("This side chat was closed while starting");
+      }
       // The choice made in the composer before the first message belongs to
       // the thread that message created.
       if (paneId === "main" && pendingNewThreadMcp) {
@@ -8865,7 +8954,7 @@ app.whenReady().then(async () => {
       }
       // Record the directory used by this thread so memory and turn policy
       // remain scoped to its project, including a scratch side chat.
-      threadCwds.set(started.thread.id, mainCwd ?? pendingCwd ?? defaultChatDir());
+      threadCwds.set(started.thread.id, startedCwd);
       if (paneId === "main") {
         const projectContext = configuredProjectContext(threadCwds.get(started.thread.id) ?? null, started.thread.id);
         if (projectContext) projectContextSeen.set(started.thread.id, projectContext);
@@ -8916,6 +9005,10 @@ app.whenReady().then(async () => {
       approvalPolicy: planMode ? "on-request" : threadPolicy().approvalPolicy,
       sandboxPolicy: planMode ? { type: "readOnly" } : turnSandbox(turnCwd),
     })) as { turn?: { id?: string } };
+    if (paneId.startsWith("side:") && panes[paneId] !== pane) {
+      if (result.turn?.id) void engine.request("turn/interrupt", { threadId: pane.threadId, turnId: result.turn.id }).catch(() => undefined);
+      throw new Error("This side chat was closed while starting");
+    }
     if (result.turn?.id) pane.turnId = result.turn.id;
     if (result.turn?.id && needsProjectContext && pane.threadId && projectContext) {
       projectContextSeen.set(pane.threadId, projectContext);
@@ -11352,7 +11445,17 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("threads:list", async () => {
-    const result = (await engine.request("thread/list", { limit: 100 })) as { data?: WireThread[] };
+    const scheduledThreadIds = new Set(
+      readTasks()
+        .map((task) => task.lastThreadId)
+        .filter((id): id is string => typeof id === "string"),
+    );
+    const sideThreadIds = new Set(sideChatRecents.all().map((record) => record.threadId));
+    const threads = await listVisibleThreads(
+      (cursor) => engine.request("thread/list", { limit: 100, ...(cursor ? { cursor } : {}) }) as Promise<{ data: WireThread[]; nextCursor?: string | null }>,
+      (thread) => thread.threadSource !== SCHEDULED_THREAD_SOURCE && thread.threadSource !== SIDE_CHAT_THREAD_SOURCE &&
+        !scheduledThreadIds.has(thread.id) && !sideThreadIds.has(thread.id),
+    );
     const home = app.getPath("home");
     // Codex-style sections: threads group under a project only when the
     // user has explicitly opened (and not removed) that folder — the
@@ -11371,20 +11474,11 @@ app.whenReady().then(async () => {
     // would still surface. The task records name the most recent one per task,
     // which is exactly the set currently visible in Recents. Older untagged
     // runs may still linger — deleting those rows once is the only cleanup.
-    const scheduledThreadIds = new Set(
-      readTasks()
-        .map((t) => t.lastThreadId)
-        .filter((x): x is string => typeof x === "string"),
-    );
     const worktrees = loadWorktrees();
     const threadProjectOverrides = loadThreadProjects();
     const recents: ThreadSummary[] = [];
-    for (const t of result.data ?? []) {
+    for (const t of threads) {
       petThreadTitles.set(t.id, threadTitle(t));
-      // Scheduled runs are reachable from the Scheduled page (Open run / Open
-      // last run) and nowhere else. Two daily tasks would otherwise add ~60
-      // rows a month to Recents and bury the conversations the user started.
-      if (t.threadSource === SCHEDULED_THREAD_SOURCE || scheduledThreadIds.has(t.id)) continue;
       const summary: ThreadSummary = { id: t.id, title: threadTitle(t), createdAt: t.createdAt, updatedAt: t.updatedAt };
       // Explicit assignment wins, then worktree conversations group under
       // their parent project, then the thread's own cwd.
@@ -11425,7 +11519,8 @@ app.whenReady().then(async () => {
       const names = await readdirAsync(dir).catch(() => [] as string[]);
       const savedIds = names
         .filter((name) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i.test(name))
-        .map((name) => name.slice(0, -5));
+        .map((name) => name.slice(0, -5))
+        .filter((id) => !sideChatRecents.all().some((record) => record.threadId === id));
       let savedNext = 0;
       await Promise.all(Array.from({ length: Math.min(4, savedIds.length) }, async () => {
         while (savedNext < savedIds.length) {
@@ -11459,7 +11554,12 @@ app.whenReady().then(async () => {
   // Archive every chat in a project (engine-side thread/archive — they
   // drop out of thread/list but survive for a future archived view).
   ipcMain.handle("project:archive-chats", async (_e, path: string) => {
-    const result = (await engine.request("thread/list", { limit: 100 })) as { data?: WireThread[] };
+    const sideThreadIds = new Set(sideChatRecents.all().map((record) => record.threadId));
+    const threads = await listVisibleThreads(
+      (cursor) => engine.request("thread/list", { limit: 100, ...(cursor ? { cursor } : {}) }) as Promise<{ data: WireThread[]; nextCursor?: string | null }>,
+      (thread) => thread.threadSource !== SIDE_CHAT_THREAD_SOURCE && !sideThreadIds.has(thread.id),
+      Number.MAX_SAFE_INTEGER,
+    );
     const record = loadProjects().find((r) => r.primary === path);
     const folders = record?.folders ?? [path];
     // Match the sidebar's grouping exactly (threads:list): explicit
@@ -11467,7 +11567,7 @@ app.whenReady().then(async () => {
     // cwd — so this archives precisely the chats listed under the project.
     const worktrees = loadWorktrees();
     const overrides = loadThreadProjects();
-    const targets = (result.data ?? []).filter((t) => {
+    const targets = threads.filter((t) => {
       const effective = overrides[t.id] ?? (t.cwd && worktrees[t.cwd] ? worktrees[t.cwd].project : t.cwd);
       return !!effective && (effective === path || folders.includes(effective));
     });
@@ -11739,8 +11839,7 @@ app.whenReady().then(async () => {
     if (!panes.main.threadId || !panes[`multi:${panes.main.threadId}`]) settleLocalApprovals(panes.main.threadId);
     panes.main.threadId = id;
     panes.main.turnId = runningTurns.get(id) ?? null;
-    // The side chat (if any) was forked from the previous conversation;
-    // it resets alongside every main-context switch.
+    // Closing the previous context retains its side chats for recovery.
     resetSidePanes();
     // Everything that happened while this thread was backgrounded: the
     // partial assistant stream, approval requests the agent is blocked
@@ -11901,9 +12000,42 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle("side:recent", () => {
+    void pruneSideChatRecents();
+    return sideChatRecents.recent();
+  });
+
+  ipcMain.handle("side:reopen", async (_e, paneId: string) => {
+    if (sideChatReopens.has(paneId)) return { error: "Side chat is already reopening" };
+    const record = sideChatRecents.get(paneId);
+    if (!record || record.closedAt === null ||
+        !sideChatRecents.recent().some((recent) => recent.paneId === paneId)) return { error: "Side chat is no longer available" };
+    if (panes.main.threadId !== record.parentThreadId) return { error: "Open the original chat first" };
+    sideChatReopens.add(paneId);
+    threadCwds.set(record.threadId, record.cwd);
+    try {
+      await sideChatInterrupts.get(record.threadId);
+      const result = await engine.request("thread/resume", resumeParamsFor(record.threadId)) as { thread: WireThread };
+      if (panes.main.threadId !== record.parentThreadId) return { error: "Original chat changed while restoring" };
+      const replay = threadToEntries({ ...result.thread, turns: result.thread.turns?.slice(record.baselineTurns) });
+      const page = await openTranscriptSession(record.threadId, replay.entries, {}, null);
+      if (panes.main.threadId !== record.parentThreadId ||
+          !sideChatRecents.reopen(paneId, record.parentThreadId)) {
+        transcriptSessions.delete(page.sessionId);
+        return { error: "Side chat is no longer available" };
+      }
+      panes[paneId] = { threadId: record.threadId, turnId: null };
+      saveSideChatRecents();
+      return { threadId: record.threadId, ...page };
+    } catch (error) {
+      console.warn("[side-chat] could not resume:", error);
+      return { error: "Could not restore this side chat" };
+    } finally {
+      sideChatReopens.delete(paneId);
+    }
+  });
+
   ipcMain.handle("side:reset", (_e, paneId?: string) => {
-    // Side chats are disposable: dropping the reference is the whole
-    // cleanup — the ephemeral thread evaporates with the engine.
     if (paneId) dropSidePane(paneId);
     else resetSidePanes();
     return { ok: true };
@@ -12680,6 +12812,19 @@ app.whenReady().then(async () => {
   }
 
   ipcMain.handle("threads:delete", async (_e, id: string) => {
+    for (const record of sideChatRecents.recordsForParent(id)) {
+      dropSidePane(record.paneId);
+      try {
+        await engine.request("thread/delete", { threadId: record.threadId });
+        sideChatRecents.remove(record.paneId);
+        threadMcp.delete(record.threadId);
+        rmSync(sideChatTranscriptFile(record.threadId), { force: true });
+      } catch (error) {
+        console.warn("[side-chat] could not delete child thread:", error);
+      }
+    }
+    saveSideChatRecents();
+    saveThreadMcp();
     // A running turn dies with its thread — stop it first so the engine
     // isn't left executing against a deleted conversation.
     const turnId = runningTurns.get(id);

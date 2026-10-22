@@ -1,4 +1,5 @@
 type TurnBoundary = { id: string; status: string };
+export const SIDE_CHAT_THREAD_SOURCE = "unbiased_side_chat";
 
 export function lastFinishedTurnBeforeActive(turns: TurnBoundary[], activeTurnId: string | null): string | null {
   const activeIndex = activeTurnId ? turns.findIndex((turn) => turn.id === activeTurnId) : -1;
@@ -15,18 +16,19 @@ export function sideChatStartTarget(
   parentRunning: boolean,
   cwd: string,
   lastFinishedTurnId: string | null = null,
-): { method: "thread/fork"; params: { threadId: string; ephemeral: true; excludeTurns: true; lastTurnId?: string } }
-  | { method: "thread/start"; params: { cwd: string; ephemeral: true } } {
+): { method: "thread/fork"; params: { threadId: string; ephemeral: false; threadSource: string; excludeTurns: true; lastTurnId?: string } }
+  | { method: "thread/start"; params: { cwd: string; ephemeral: false; threadSource: string } } {
   if (parentThreadId && (!parentRunning || lastFinishedTurnId)) {
     return {
       method: "thread/fork",
       params: {
         threadId: parentThreadId,
-        ephemeral: true,
+        ephemeral: false,
+        threadSource: SIDE_CHAT_THREAD_SOURCE,
         excludeTurns: true,
         ...(parentRunning ? { lastTurnId: lastFinishedTurnId! } : {}),
       },
     };
   }
-  return { method: "thread/start", params: { cwd, ephemeral: true } };
+  return { method: "thread/start", params: { cwd, ephemeral: false, threadSource: SIDE_CHAT_THREAD_SOURCE } };
 }
