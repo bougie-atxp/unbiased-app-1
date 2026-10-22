@@ -6,11 +6,13 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
-## 1.13.19 — October 21, 2026
+## 1.13.19 — October 22, 2026
 
 ### Improved
 
 - **Stripe Projects sign-in works in the app.** The app uses its registered connection when you sign in to Stripe Projects, while other connections keep their existing sign-in flow.
+- **Stripe Projects onboarding opens in your browser.** When Stripe needs more information, its onboarding page opens outside the app.
+- **Long conversations are easier to browse.** Chats stay responsive, and you can load earlier messages when needed.
 
 ## 1.13.18 — October 20, 2026
 
