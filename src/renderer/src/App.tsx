@@ -48,7 +48,7 @@ import { isStripeOnboardingPage } from "../../shared/stripe-onboarding-url";
 import type { PalScale, PalsSettings as PalsSettingsState } from "../../shared/pals";
 import { SideChatIdleTracker } from "./side-chat-idle";
 import { settleTurnOutput } from "./turn-completion";
-import { showScrollToLatest as shouldShowScrollToLatest, transcriptScrollAfter, type TranscriptScrollAction, type TranscriptScrollState } from "./transcript-scroll";
+import { followTranscriptHeight, showScrollToLatest as shouldShowScrollToLatest, transcriptScrollAfter, type TranscriptScrollAction, type TranscriptScrollState } from "./transcript-scroll";
 import { finalAssistantIndices } from "./transcript-actions";
 import { completedWorkDuration } from "./work-duration";
 import { isComposerTypingKey } from "./type-to-focus";
@@ -9972,6 +9972,7 @@ function ChatPane({
   const savedRangeRef = useRef<Range | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const followFrameRef = useRef<number | null>(null);
   const transcriptScrollRef = useRef<TranscriptScrollState>({ following: true, atBottom: true });
   const touchStartYRef = useRef<number | null>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
@@ -10710,9 +10711,21 @@ function ChatPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paneId]);
 
+  const requestTranscriptFollow = useCallback(() => {
+    if (!transcriptScrollRef.current.following || followFrameRef.current !== null) return;
+    followFrameRef.current = requestAnimationFrame(() => {
+      followFrameRef.current = null;
+      followTranscriptHeight(transcriptScrollRef.current, scrollRef.current);
+    });
+  }, []);
+
+  useEffect(() => () => {
+    if (followFrameRef.current !== null) cancelAnimationFrame(followFrameRef.current);
+  }, []);
+
   useLayoutEffect(() => {
-    if (transcriptScrollRef.current.following) virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
-  }, [entries]);
+    requestTranscriptFollow();
+  }, [entries, requestTranscriptFollow]);
 
   const pauseTranscriptFollow = () => {
     updateTranscriptScroll({ type: "user-scroll-up" });
@@ -11622,6 +11635,7 @@ function ChatPane({
               defaultItemHeight={120}
               increaseViewportBy={300}
               followOutput={() => transcriptScrollRef.current.following ? "auto" : false}
+              totalListHeightChanged={requestTranscriptFollow}
               atBottomStateChange={(atBottom) => {
                 updateTranscriptScroll({ type: "bottom-change", atBottom });
               }}
@@ -11706,6 +11720,7 @@ function ChatPane({
             onClick={() => {
               updateTranscriptScroll({ type: "follow" });
               virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+              requestTranscriptFollow();
             }}
             style={{
               position: "absolute",
