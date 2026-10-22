@@ -36,8 +36,9 @@ import "./user-message-markdown.css";
 import { UserMessageMarkdown } from "./user-message-markdown";
 import { MarkdownComposer, type MarkdownComposerHandle } from "./markdown-composer";
 import "./markdown-composer.css";
+import "./transcript-action-dock.css";
 import "./user-input-card.css";
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Heart, Home, LayoutGrid, MessageSquare, MoreHorizontal, Pin, PinOff, Plus, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Heart, Home, LayoutGrid, MessageSquare, MessageSquarePlus, MoreHorizontal, PanelRightOpen, Pin, PinOff, Plus, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
 import { CloseIcon } from "./close-icon";
 import { ConversationDrafts } from "./conversation-drafts";
 import { SettingsRoute } from "./settings-route";
@@ -7900,7 +7901,6 @@ function buildMdComponents(
           // out-weighed every other accent in the transcript. Colour carries
           // the affordance instead.
           style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "none" }}
-          title="Open in browser tab"
         >
           {host ? <Favicon host={host} /> : null}
           {props.children}
@@ -9967,6 +9967,8 @@ function ChatPane({
   // right = its bounding-box right edge (anchors the comment box beside
   // the numbered badge); y = its top.
   const [selection, setSelection] = useState<{ text: string; x: number; y: number; right: number } | null>(null);
+  const [hoveredLink, setHoveredLink] = useState<{ href: string; x: number; y: number } | null>(null);
+  const linkHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedRangeRef = useRef<Range | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -10917,12 +10919,52 @@ function ChatPane({
     const paneRect = paneRef.current?.getBoundingClientRect();
     if (!paneRect) return;
     savedRangeRef.current = range.cloneRange();
+    setHoveredLink(null);
     setSelection({
       text,
       x: rect.left - paneRect.left + rect.width / 2,
       y: rect.top - paneRect.top,
       right: rect.right - paneRect.left,
     });
+  }
+
+  function cancelLinkHide() {
+    if (linkHideTimer.current) clearTimeout(linkHideTimer.current);
+    linkHideTimer.current = null;
+  }
+
+  function hideLinkSoon() {
+    cancelLinkHide();
+    linkHideTimer.current = setTimeout(() => setHoveredLink(null), 180);
+  }
+
+  useEffect(() => () => {
+    if (linkHideTimer.current) clearTimeout(linkHideTimer.current);
+  }, []);
+
+  function handleTranscriptMouseOver(e: React.MouseEvent<HTMLDivElement>) {
+    const anchor = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    if (!anchor || selection || pendingComment !== null || !onAskSideChat) return;
+    const rawHref = anchor.getAttribute("href");
+    if (!rawHref) return;
+    let href: string;
+    try {
+      const url = new URL(rawHref);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return;
+      href = url.href;
+    } catch { return; }
+    const paneRect = paneRef.current?.getBoundingClientRect();
+    if (!paneRect) return;
+    const rect = anchor.getBoundingClientRect();
+    cancelLinkHide();
+    setHoveredLink((current) => current?.href === href && current.x === rect.left - paneRect.left + rect.width / 2 && current.y === rect.top - paneRect.top
+      ? current
+      : { href, x: rect.left - paneRect.left + rect.width / 2, y: rect.top - paneRect.top });
+  }
+
+  function handleTranscriptMouseOut(e: React.MouseEvent<HTMLDivElement>) {
+    const anchor = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    if (anchor && !(e.relatedTarget instanceof Node && anchor.contains(e.relatedTarget))) hideLinkSoon();
   }
 
   useLayoutEffect(() => {
@@ -11418,6 +11460,8 @@ function ChatPane({
       )}
       {selection && onAskSideChat && (
         <div
+          className={pendingComment === null ? "transcript-action-dock" : undefined}
+          data-compact={(paneRef.current?.clientWidth ?? 500) < 290 || undefined}
           style={{
             position: "absolute",
             // Button pill: centered over the selection. Comment box: hung
@@ -11426,24 +11470,24 @@ function ChatPane({
             left:
               pendingComment !== null
                 ? Math.max(8, Math.min(selection.right + 16, (paneRef.current?.clientWidth ?? 400) - 310))
-                : Math.max(80, Math.min(selection.x, (paneRef.current?.clientWidth ?? 400) - 80)),
+                : transcriptDockLeft(selection.x, paneRef.current?.clientWidth ?? 400, (paneRef.current?.clientWidth ?? 400) < 290 ? 88 : 260),
             top: Math.max(8, selection.y - (pendingComment !== null ? 64 : 40)),
-            transform: pendingComment !== null ? "none" : "translateX(-50%)",
+            transform: "none",
             zIndex: 10,
             display: "flex",
             alignItems: "center",
-            background: "var(--chip)",
-            border: `1px solid ${colors.border}`,
+            background: pendingComment !== null ? "var(--chip)" : undefined,
+            border: pendingComment !== null ? `1px solid ${colors.border}` : undefined,
             // Comment mode is a full pill, matching the in-page picker.
             borderRadius: pendingComment !== null ? 999 : 8,
-            overflow: "hidden",
-            boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+            overflow: pendingComment !== null ? "hidden" : undefined,
+            boxShadow: pendingComment !== null ? "0 4px 16px rgba(0,0,0,0.4)" : undefined,
           }}
         >
           {pendingComment === null ? (
             <>
-              <button onClick={() => setPendingComment("")} style={pillButtonStyle}>
-                Add to chat
+              <button onClick={() => setPendingComment("")} className="transcript-action" title="Add to Chat" aria-label="Add to Chat">
+                <MessageSquarePlus size={16} aria-hidden="true" /><span>Add to Chat</span>
               </button>
               <button
                 onClick={() => {
@@ -11451,9 +11495,11 @@ function ChatPane({
                   setSelection(null);
                   window.getSelection()?.removeAllRanges();
                 }}
-                style={{ ...pillButtonStyle, borderLeft: `1px solid ${colors.border}` }}
+                className="transcript-action"
+                title="Add to Side Chat"
+                aria-label="Add to Side Chat"
               >
-                Ask in side chat
+                <PanelRightOpen size={16} aria-hidden="true" /><span>Add to Side Chat</span>
               </button>
             </>
           ) : (
@@ -11505,10 +11551,41 @@ function ChatPane({
         </div>
       )}
 
+      {hoveredLink && !selection && pendingComment === null && onAskSideChat && (
+        <div
+          className="transcript-action-dock"
+          data-compact={(paneRef.current?.clientWidth ?? 500) < 460 || undefined}
+          onMouseEnter={cancelLinkHide}
+          onMouseLeave={hideLinkSoon}
+          style={{
+            position: "absolute",
+            left: transcriptDockLeft(hoveredLink.x, paneRef.current?.clientWidth ?? 400, (paneRef.current?.clientWidth ?? 400) < 460 ? 124 : 420),
+            top: Math.max(8, hoveredLink.y - 42),
+            zIndex: 10,
+          }}
+        >
+          <button className="transcript-action" title="Add to Chat" aria-label="Add link to Chat" onClick={() => {
+            setAnnotations((list) => [...list, { text: hoveredLink.href, tag: "link" }]);
+            setHoveredLink(null);
+          }}><MessageSquarePlus size={16} aria-hidden="true" /><span>Add to Chat</span></button>
+          <button className="transcript-action" title="Add to Side Chat" aria-label="Add link to Side Chat" onClick={() => {
+            onAskSideChat(hoveredLink.href);
+            setHoveredLink(null);
+          }}><PanelRightOpen size={16} aria-hidden="true" /><span>Add to Side Chat</span></button>
+          <button className="transcript-action" title="Open in default browser" aria-label="Open link in default browser" onClick={() => {
+            void window.unbiased.openExternal(hoveredLink.href);
+            setHoveredLink(null);
+          }}><ExternalLink size={16} aria-hidden="true" /><span>Default Browser</span></button>
+        </div>
+      )}
+
       <div style={{ flex: 1, minHeight: 0, position: "relative", display: "flex", flexDirection: "column" }}>
         <div
           onMouseUp={handleMouseUp}
-          onScrollCapture={() => badgeComputeRef.current()}
+          onDoubleClick={handleMouseUp}
+          onMouseOverCapture={handleTranscriptMouseOver}
+          onMouseOutCapture={handleTranscriptMouseOut}
+          onScrollCapture={() => { badgeComputeRef.current(); setHoveredLink(null); }}
           onWheelCapture={(e) => {
             const scroller = scrollRef.current;
             if (e.deltaY >= 0 || !scroller || scroller.scrollHeight <= scroller.clientHeight + 2) return;
@@ -12859,6 +12936,10 @@ function fenceClassOf(children?: React.ReactNode): string {
  *
  *  Streaming still updates the block: the text changes, so the compare fails
  *  and it re-renders, as it should. */
+function transcriptDockLeft(center: number, paneWidth: number, dockWidth: number): number {
+  return Math.max(8, Math.min(center - dockWidth / 2, paneWidth - dockWidth - 8));
+}
+
 const CodeBlock = memo(function CodeBlock({ children, position }: { children?: React.ReactNode; position?: { start?: { offset?: number }; end?: { offset?: number } } }) {
   const [copied, setCopied] = useState(false);
   const { streaming: streamingVisual, markdown } = useContext(StreamingVisualContext);
@@ -12966,17 +13047,6 @@ const CodeBlock = memo(function CodeBlock({ children, position }: { children?: R
 (prev, next) =>
   extractText(prev.children) === extractText(next.children) &&
   fenceClassOf(prev.children) === fenceClassOf(next.children));
-
-const pillButtonStyle: React.CSSProperties = {
-  background: "transparent",
-  border: "none",
-  color: "var(--fg)",
-  fontSize: 12.5,
-  padding: "7px 12px",
-  cursor: "pointer",
-  fontFamily: "inherit",
-  whiteSpace: "nowrap",
-};
 
 /** Sidebar card offering the newer release. Click = download, verify, swap
  *  the app bundle, relaunch. Progress replaces the label in place so the
