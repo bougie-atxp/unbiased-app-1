@@ -11168,6 +11168,7 @@ function ChatPane({
         {historyError ?? "Load earlier messages"}
       </button>
     ) : null,
+    Footer: () => <div aria-hidden="true" style={{ height: 48 }} />,
     // The loader reads the current session and offset from refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [historyOffset, historyError]);
