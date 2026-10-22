@@ -1,7 +1,7 @@
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { Virtuoso } from "react-virtuoso";
 // The changelog SHIPS with the build so the Updates tab works offline and on
 // first run, and is superseded at runtime by whatever the releases repo has —
 // which is generated from this same file, so the two cannot disagree.
@@ -48,7 +48,7 @@ import { isStripeOnboardingPage } from "../../shared/stripe-onboarding-url";
 import type { PalScale, PalsSettings as PalsSettingsState } from "../../shared/pals";
 import { SideChatIdleTracker } from "./side-chat-idle";
 import { settleTurnOutput } from "./turn-completion";
-import { followTranscriptToLatest, settleTranscriptBottom, showScrollToLatest as shouldShowScrollToLatest, transcriptScrollAfter, type TranscriptScrollAction, type TranscriptScrollState } from "./transcript-scroll";
+import { settleTranscriptBottom, showScrollToLatest as shouldShowScrollToLatest, transcriptScrollAfter, type TranscriptScrollAction, type TranscriptScrollState } from "./transcript-scroll";
 import { finalAssistantIndices } from "./transcript-actions";
 import { completedWorkDuration } from "./work-duration";
 import { isComposerTypingKey } from "./type-to-focus";
@@ -9971,9 +9971,7 @@ function ChatPane({
   const linkHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedRangeRef = useRef<Range | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const followFrameRef = useRef<number | null>(null);
-  const settleFrameRef = useRef<number | null>(null);
   const observedListRef = useRef<Element | null>(null);
   const listResizeObserverRef = useRef<ResizeObserver | null>(null);
   const transcriptScrollRef = useRef<TranscriptScrollState>({ following: true, atBottom: true });
@@ -10714,25 +10712,28 @@ function ChatPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paneId]);
 
-  // Aim at the last virtual row, then align to the final DOM height after it renders.
+  // Re-align after the virtual list measures a new or expanded row.
   const requestTranscriptFollow = useCallback(() => {
     if (!transcriptScrollRef.current.following || followFrameRef.current !== null) return;
     followFrameRef.current = requestAnimationFrame(() => {
       followFrameRef.current = null;
-      followTranscriptToLatest(transcriptScrollRef.current, virtuosoRef.current);
-      if (settleFrameRef.current !== null) cancelAnimationFrame(settleFrameRef.current);
-      settleFrameRef.current = requestAnimationFrame(() => {
-        settleFrameRef.current = null;
-        settleTranscriptBottom(transcriptScrollRef.current, scrollRef.current);
-      });
+      settleTranscriptBottom(transcriptScrollRef.current, scrollRef.current);
     });
   }, []);
 
+  const handleScrollerScroll = useCallback(() => {
+    settleTranscriptBottom(transcriptScrollRef.current, scrollRef.current);
+  }, []);
+
+  const setTranscriptScroller = useCallback((node: HTMLElement | Window | null) => {
+    scrollRef.current?.removeEventListener("scroll", handleScrollerScroll);
+    scrollRef.current = node instanceof HTMLDivElement ? node : null;
+    scrollRef.current?.addEventListener("scroll", handleScrollerScroll, { passive: true });
+  }, [handleScrollerScroll]);
+
   useEffect(() => () => {
     if (followFrameRef.current !== null) cancelAnimationFrame(followFrameRef.current);
-    if (settleFrameRef.current !== null) cancelAnimationFrame(settleFrameRef.current);
     followFrameRef.current = null;
-    settleFrameRef.current = null;
     listResizeObserverRef.current?.disconnect();
     listResizeObserverRef.current = null;
     observedListRef.current = null;
@@ -10748,7 +10749,9 @@ function ChatPane({
     listResizeObserverRef.current?.disconnect();
     observedListRef.current = list;
     if (!list || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(requestTranscriptFollow);
+    const observer = new ResizeObserver(() => {
+      settleTranscriptBottom(transcriptScrollRef.current, scrollRef.current);
+    });
     observer.observe(list);
     if (scrollRef.current) observer.observe(scrollRef.current);
     listResizeObserverRef.current = observer;
@@ -11653,15 +11656,14 @@ function ChatPane({
           ) : (
             <Virtuoso
               key={reset.nonce}
-              ref={virtuosoRef}
-              scrollerRef={(node) => { scrollRef.current = node instanceof HTMLDivElement ? node : null; }}
+              scrollerRef={setTranscriptScroller}
               style={{ height: "100%", width: "100%" }}
               totalCount={displayBlocks.length + (busy || compacting ? 1 : 0)}
               firstItemIndex={firstBlockIndex}
               initialTopMostItemIndex={{ index: "LAST", align: "end" }}
               defaultItemHeight={120}
               increaseViewportBy={300}
-              followOutput={() => transcriptScrollRef.current.following ? "auto" : false}
+              followOutput={false}
               totalListHeightChanged={requestTranscriptFollow}
               atBottomStateChange={(atBottom) => {
                 updateTranscriptScroll({ type: "bottom-change", atBottom });
