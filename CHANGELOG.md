@@ -6,6 +6,13 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
+## 1.13.21 — October 22, 2026
+
+### Fixed
+
+- **Finished visuals stay steady in chat.** Completed HTML visuals no longer flicker or shift repeatedly when you return to a conversation.
+- **The last reply's copy button stays reachable.** You can scroll far enough to use the actions below the final message.
+
 ## 1.13.20 — October 22, 2026
 
 ### Improved
