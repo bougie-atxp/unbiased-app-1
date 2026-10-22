@@ -49,7 +49,7 @@ export function interactiveVisualPreviewCsp(nonce: string): string {
 
 export function interactiveVisualPreviewDocument(nonce: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>:root { color-scheme: dark; --visual-bg: #1f1f1f; --visual-fg: #f5f5f5; --visual-muted: #999; --visual-accent: #ff5546; }
+<style>:root { color-scheme: dark; scrollbar-gutter: stable; --visual-bg: #1f1f1f; --visual-fg: #f5f5f5; --visual-muted: #999; --visual-accent: #ff5546; }
 * { box-sizing: border-box; } body { margin: 0; padding: 16px; min-width: 0; overflow-x: hidden; background: var(--visual-bg); color: var(--visual-fg); font: 14px/1.5 system-ui, sans-serif; }</style>
 <style id="visual-preview-style"></style>
 <script nonce="${nonce}">
@@ -120,7 +120,7 @@ export function interactiveVisualDocument(source: string): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-  :root { color-scheme: dark; --visual-bg: #1f1f1f; --visual-fg: #f5f5f5; --visual-muted: #999; --visual-accent: #ff5546; }
+  :root { color-scheme: dark; scrollbar-gutter: stable; --visual-bg: #1f1f1f; --visual-fg: #f5f5f5; --visual-muted: #999; --visual-accent: #ff5546; }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 16px; min-width: 0; overflow-x: hidden; background: var(--visual-bg); color: var(--visual-fg); font: 14px/1.5 system-ui, sans-serif; }
   @media (max-width: 600px) { body { padding: 12px; } }
@@ -158,7 +158,13 @@ export function interactiveVisualDocument(source: string): string {
     parent.postMessage({ type: 'unbiased-visual-wheel', deltaY: event.deltaY, deltaMode: event.deltaMode }, '*');
   }, { passive: false });
   addEventListener('DOMContentLoaded', () => {
-    const report = () => parent.postMessage({ type: 'unbiased-visual-height', height: Math.ceil(document.body.scrollHeight) }, '*');
+    let lastHeight = -1;
+    const report = () => {
+      const height = Math.ceil(document.body.scrollHeight);
+      if (height === lastHeight) return;
+      lastHeight = height;
+      parent.postMessage({ type: 'unbiased-visual-height', height }, '*');
+    };
     if (typeof ResizeObserver !== 'undefined') {
       const observer = new ResizeObserver(report);
       observer.observe(document.body);

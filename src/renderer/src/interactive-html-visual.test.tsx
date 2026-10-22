@@ -44,3 +44,46 @@ test("expanded HTML visual uses its full reported height and restores the inline
     dom.window.close();
   }
 });
+
+test("a completed visual reserves its measured height while a remounted frame loads", async () => {
+  const dom = new JSDOM("<!doctype html><div id='root'></div>", {
+    url: "http://localhost", pretendToBeVisual: true,
+  });
+  Object.assign(globalThis, {
+    window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement,
+    MutationObserver: dom.window.MutationObserver, IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  let registrations = 0;
+  Object.assign(dom.window, { unbiased: { registerVisual: async () => {
+    registrations++;
+    return "about:blank";
+  } } });
+  const container = dom.window.document.getElementById("root")!;
+  const source = "<div>Measured visual on remount</div>";
+  let root = createRoot(container);
+  try {
+    await act(async () => root.render(<InteractiveHtmlVisual source={source} />));
+    let frame = container.querySelector<HTMLIFrameElement>("iframe")!;
+    await act(async () => {
+      dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+        source: frame.contentWindow, origin: "null", data: { type: "unbiased-visual-height", height: 1180 },
+      }));
+      dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+        source: frame.contentWindow, origin: "null", data: { type: "unbiased-visual-ready" },
+      }));
+    });
+    assert.equal(frame.style.height, "1180px");
+    await act(async () => root.unmount());
+
+    root = createRoot(container);
+    await act(async () => root.render(<InteractiveHtmlVisual source={source} />));
+    const visual = container.querySelector<HTMLElement>(".app-interactive-html-visual")!;
+    frame = visual.querySelector<HTMLIFrameElement>("iframe")!;
+    assert.equal(registrations, 2);
+    assert.equal(visual.style.minHeight, "1180px");
+    assert.equal(frame.style.visibility, "hidden");
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+  }
+});

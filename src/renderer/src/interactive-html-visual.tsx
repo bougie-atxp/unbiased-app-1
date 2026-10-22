@@ -6,6 +6,14 @@ const INITIAL_HEIGHT = 440;
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 1600;
 const MAX_EXPANDED_HEIGHT = 100_000;
+const measuredHeights = new Map<string, number>();
+const MAX_CACHED_HEIGHTS = 32;
+
+function rememberHeight(source: string, height: number): void {
+  measuredHeights.delete(source);
+  measuredHeights.set(source, height);
+  if (measuredHeights.size > MAX_CACHED_HEIGHTS) measuredHeights.delete(measuredHeights.keys().next().value!);
+}
 
 function visualThemeSource(frame: HTMLElement): HTMLElement {
   for (let element = frame.parentElement; element; element = element.parentElement) {
@@ -27,11 +35,12 @@ function colorScheme(background: string): "light" | "dark" {
 export function InteractiveHtmlVisual({ source, previewSource, incomplete = false }: { source: string | null; previewSource?: string; incomplete?: boolean }) {
   const previewRef = useRef(previewSource ?? "");
   if (previewSource) previewRef.current = previewSource;
+  const registeredSourceRef = useRef<string | null>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const [height, setHeight] = useState(INITIAL_HEIGHT);
+  const [height, setHeight] = useState(() => source ? measuredHeights.get(source) ?? INITIAL_HEIGHT : INITIAL_HEIGHT);
   const [expanded, setExpanded] = useState(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
 
@@ -59,11 +68,15 @@ export function InteractiveHtmlVisual({ source, previewSource, incomplete = fals
     setUrl(null);
     setFailure(null);
     setReady(false);
-    setHeight(INITIAL_HEIGHT);
+    setHeight(source ? measuredHeights.get(source) ?? INITIAL_HEIGHT : INITIAL_HEIGHT);
+    registeredSourceRef.current = null;
     if (!source) return () => { active = false; };
     void window.unbiased.registerVisual(source).then((nextUrl) => {
       if (!active) return;
-      if (nextUrl) setUrl(nextUrl);
+      if (nextUrl) {
+        registeredSourceRef.current = source;
+        setUrl(nextUrl);
+      }
       else setFailure("registration-rejected");
     }).catch(() => { if (active) setFailure("registration-failed"); });
     return () => { active = false; };
@@ -92,7 +105,9 @@ export function InteractiveHtmlVisual({ source, previewSource, incomplete = fals
       } else if (event.data?.type === "unbiased-visual-height") {
         const next = event.data.height;
         if (typeof next === "number" && Number.isFinite(next)) {
-          setHeight(Math.max(MIN_HEIGHT, Math.min(MAX_EXPANDED_HEIGHT, Math.ceil(next))));
+          const measured = Math.max(MIN_HEIGHT, Math.min(MAX_EXPANDED_HEIGHT, Math.ceil(next)));
+          if (registeredSourceRef.current) rememberHeight(registeredSourceRef.current, measured);
+          setHeight(measured);
         }
       } else if (event.data?.type === "unbiased-visual-wheel") {
         const viewport = frameRef.current?.closest<HTMLElement>(".app-generated-visual-viewport:popover-open");
@@ -141,6 +156,7 @@ export function InteractiveHtmlVisual({ source, previewSource, incomplete = fals
       className="app-interactive-html-visual"
       style={{
         width: "100%", minWidth: 0, margin: "16px 0 20px", overflow: "hidden", position: "relative",
+        minHeight: ready ? undefined : Math.min(MAX_HEIGHT, height),
         border: "1px solid var(--border)", borderRadius: 28,
         background: "var(--panel)", boxShadow: "0 14px 36px rgba(0, 0, 0, 0.28)",
       }}

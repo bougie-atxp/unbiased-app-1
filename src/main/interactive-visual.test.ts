@@ -54,6 +54,36 @@ test("frame height follows content instead of the current viewport height", asyn
   }
 });
 
+test("completed visual reports height changes without repeating unchanged measurements", async () => {
+  const heights: number[] = [];
+  let triggerResize = () => {};
+  const dom = new JSDOM(interactiveVisualDocument("<div>Measured visual</div>"), {
+    url: "https://visual.test", runScripts: "dangerously",
+    beforeParse(window) {
+      Object.assign(window, { ResizeObserver: class {
+        constructor(callback: () => void) { triggerResize = callback; }
+        observe() {}
+      } });
+      window.postMessage = ((data: { type: string; height?: number }) => {
+        if (data.type === "unbiased-visual-height" && data.height !== undefined) heights.push(data.height);
+      }) as typeof window.postMessage;
+    },
+  });
+  try {
+    await new Promise<void>((resolve) => dom.window.addEventListener("load", () => resolve(), { once: true }));
+    Object.defineProperty(dom.window.document.body, "scrollHeight", { configurable: true, value: 640 });
+    triggerResize();
+    const measured = heights.length;
+    triggerResize();
+    assert.equal(heights.length, measured);
+    Object.defineProperty(dom.window.document.body, "scrollHeight", { configurable: true, value: 720 });
+    triggerResize();
+    assert.equal(heights.at(-1), 720);
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("expanded visual forwards wheel scrolling while preserving nested scrolling", async () => {
   const messages: { type: string; deltaY?: number }[] = [];
   const dom = new JSDOM(interactiveVisualDocument('<div id="nested" style="overflow-y:auto"><div>Content</div></div>'), {
@@ -131,6 +161,7 @@ test("the preview route uses only app-owned script and no generated script permi
   assert.equal(isInteractiveVisualPreviewUrl(INTERACTIVE_VISUAL_PREVIEW_URL), true);
   assert.equal(isInteractiveVisualPreviewUrl(`${INTERACTIVE_VISUAL_PREVIEW_URL}?next=1`), false);
   assert.match(doc, /visual-preview-style/);
+  assert.match(doc, /scrollbar-gutter: stable/);
   assert.match(doc, /unbiased-visual-preview-ready/);
   assert.match(doc, /script nonce="safe-preview-nonce"/);
   assert.match(csp, /script-src 'nonce-safe-preview-nonce'/);

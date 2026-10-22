@@ -10721,15 +10721,9 @@ function ChatPane({
     });
   }, []);
 
-  const handleScrollerScroll = useCallback(() => {
-    settleTranscriptBottom(transcriptScrollRef.current, scrollRef.current);
-  }, []);
-
   const setTranscriptScroller = useCallback((node: HTMLElement | Window | null) => {
-    scrollRef.current?.removeEventListener("scroll", handleScrollerScroll);
     scrollRef.current = node instanceof HTMLDivElement ? node : null;
-    scrollRef.current?.addEventListener("scroll", handleScrollerScroll, { passive: true });
-  }, [handleScrollerScroll]);
+  }, []);
 
   useEffect(() => () => {
     if (followFrameRef.current !== null) cancelAnimationFrame(followFrameRef.current);
@@ -10750,7 +10744,7 @@ function ChatPane({
     observedListRef.current = list;
     if (!list || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      settleTranscriptBottom(transcriptScrollRef.current, scrollRef.current);
+      requestTranscriptFollow();
     });
     observer.observe(list);
     if (scrollRef.current) observer.observe(scrollRef.current);
@@ -11174,6 +11168,7 @@ function ChatPane({
         {historyError ?? "Load earlier messages"}
       </button>
     ) : null,
+    Footer: () => <div aria-hidden="true" style={{ height: 48 }} />,
     // The loader reads the current session and offset from refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [historyOffset, historyError]);
