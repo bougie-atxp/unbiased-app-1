@@ -57,7 +57,7 @@ import { get as httpGet } from "node:http";
 import { EngineClient, engineVersionFromUserAgent, type EngineStatus } from "./engine";
 import { pollDeviceToken, requestDeviceAuthorization } from "./device-auth";
 import { RendererCrashRecovery } from "./crash-recovery";
-import { mcpApplyDecision, mcpConfigOverride, overridableServerNames, parseThreadMcp, serializeThreadMcp, THREAD_MCP_FILE } from "./thread-mcp";
+import { connectedConnectorNames, mcpApplyDecision, mcpConfigOverride, overridableServerNames, parseThreadMcp, serializeThreadMcp, THREAD_MCP_FILE } from "./thread-mcp";
 import { inferredOAuthScopes, protectedResourceScopes } from "./mcp-oauth-scopes";
 import { firstPartyMcpRegistration } from "./mcp-first-party-oauth";
 import {
@@ -4606,6 +4606,12 @@ function enabledMcpFor(threadId: string | null): string[] {
   return [...(threadMcp.get(rootThreadOf(threadId)) ?? [])].sort();
 }
 
+let connectorCatalogueForMcp: () => { name: string; url: string }[] = () => [];
+
+function connectedConnectors(servers: readonly UserMcpServer[]): string[] {
+  return connectedConnectorNames(servers, connectorCatalogueForMcp());
+}
+
 /** Threads whose MCP set changed while a turn was running; applied at turn end. */
 const mcpApplyPending = new Set<string>();
 
@@ -4620,11 +4626,13 @@ async function applyThreadMcp(threadId: string): Promise<void> {
   send("mcp:thread-applied", { threadId, enabled: enabledMcpFor(threadId) });
 }
 
-/** The `config` override for a thread: every server in mcp-servers.json the
- *  conversation has not enabled is off. */
-/** Every server the engine has that this conversation has not enabled. */
+/** Connected catalogue entries are app-wide; manual servers remain per-chat. */
 function mcpOverrideFor(threadId: string | null): Record<string, unknown> {
-  return mcpConfigOverride(overridableServerNames(readMcpConfig().servers), new Set(enabledMcpFor(threadId)));
+  const servers = readMcpConfig().servers;
+  return mcpConfigOverride(
+    overridableServerNames(servers),
+    new Set([...enabledMcpFor(threadId), ...connectedConnectors(servers)]),
+  );
 }
 
 // Re-declare everything a thread/start would. Tools are declared per
@@ -9669,11 +9677,14 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("mcp:thread-get", (_e, threadId: string | null) => {
     const cfg = readMcpConfig();
+    const automatic = connectedConnectors(cfg.servers);
+    const automaticNames = new Set(automatic);
     return {
       // Only servers that can actually be switched: a secret-bearing one is a
-      // managed plugin, so the panel must not offer it a switch.
-      configured: overridableServerNames(cfg.servers),
-      enabled: enabledMcpFor(threadId),
+      // managed plugin; catalogue connectors are available in every chat.
+      configured: overridableServerNames(cfg.servers).filter((name) => !automaticNames.has(name)),
+      enabled: enabledMcpFor(threadId).filter((name) => !automaticNames.has(name)),
+      automatic,
       pending: threadId ? mcpApplyPending.has(threadId) : false,
       running: threadId ? runningTurns.has(threadId) : false,
     };
@@ -10224,6 +10235,8 @@ app.whenReady().then(async () => {
     return readBundledCatalogue();
   }
 
+  connectorCatalogueForMcp = readConnectorCatalogue;
+
   function readBundledCatalogue(): Connector[] {
     const root = connectorCatalogueDir();
     let entries: string[];
@@ -10570,6 +10583,9 @@ app.whenReady().then(async () => {
     const server = cfg.servers.find((sv) => sv.name === name);
     let registered: string | null = null;
     if (cfg.error) return { ok: false, error: cfg.error };
+    if (server?.enabled === false) {
+      return { ok: false, error: `${name} is turned off. Turn it on before signing in.` };
+    }
     if (server?.url && !server.oauthClientId) {
       const reg = await registerOAuthClient(server.url);
       if ("clientId" in reg) {

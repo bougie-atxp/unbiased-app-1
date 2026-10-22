@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mcpApplyDecision, mcpConfigOverride, overridableServerNames, parseThreadMcp, serializeThreadMcp, mcpChipLabel, THREAD_MCP_FILE } from "./thread-mcp";
+import { connectedConnectorNames, mcpApplyDecision, mcpConfigOverride, overridableServerNames, parseThreadMcp, serializeThreadMcp, mcpChipLabel, THREAD_MCP_FILE } from "./thread-mcp";
 
 // Measured 2026-09-09: the Figma run started at 56,495 tokens, ~35k of them
 // MCP tool schemas from four connected servers the task never used. The
@@ -37,6 +37,29 @@ test("only servers the engine renders as mcp_servers entries can be overridden",
   assert.deepEqual(overridableServerNames(servers), ["figma_mcp", "Honeycomb"]);
   // A client id alone is fine — only a SECRET routes a server to the plugin path.
   assert.deepEqual(overridableServerNames([{ name: "a", oauthClientSecret: "" }]), ["a"]);
+});
+
+test("connected catalogue entries are available in every conversation without enabling manual servers", () => {
+  const servers = [
+    { name: "stripe-projects", url: "https://mcp.unbiased.ai/stripe-projects/mcp" },
+    { name: "figma-local", url: "http://127.0.0.1:3845/mcp" },
+  ];
+  const catalogue = [{ name: "stripe-projects", url: "https://mcp.unbiased.ai/stripe-projects/mcp" }];
+  const automatic = connectedConnectorNames(servers, catalogue);
+  assert.deepEqual(automatic, ["stripe-projects"]);
+  assert.deepEqual(mcpConfigOverride(overridableServerNames(servers), new Set(automatic)), {
+    mcp_servers: { "figma-local": { enabled: false } },
+  });
+});
+
+test("connector detection requires the published name and URL and respects the global off switch", () => {
+  const catalogue = [{ name: "stripe-projects", url: "https://mcp.unbiased.ai/stripe-projects/mcp" }];
+  assert.deepEqual(connectedConnectorNames([
+    { name: "stripe-projects", url: "https://other.example/mcp" },
+    { name: "stripe_projects", url: catalogue[0].url },
+    { name: "stripe-projects", url: catalogue[0].url, enabled: false },
+  ], catalogue), []);
+  assert.deepEqual(connectedConnectorNames([{ name: "stripe-projects", url: catalogue[0].url }], []), []);
 });
 
 test("the store round-trips and tolerates garbage", () => {

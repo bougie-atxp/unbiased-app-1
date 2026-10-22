@@ -657,7 +657,7 @@ declare global {
       onMcpStatus: (cb: (p: McpStatusEvent) => void) => () => void;
       mcpThreadGet: (
         threadId: string | null,
-      ) => Promise<{ configured: string[]; enabled: string[]; pending: boolean; running: boolean }>;
+      ) => Promise<{ configured: string[]; enabled: string[]; automatic: string[]; pending: boolean; running: boolean }>;
       mcpThreadSet: (
         threadId: string | null,
         enabled: string[],
@@ -13330,7 +13330,7 @@ function ConnectorsPanel({ onClose, onOpenFull }: { onClose: () => void; onOpenF
                     borderTop: i > 0 ? `1px solid ${colors.border}` : "none",
                   }}
                 >
-                  <span style={{ width: 26, height: 26, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: c.enabled ? 1 : 0.4 }}>
+                  <span style={{ width: 26, height: 26, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: c.enabled ? 1 : 0.7 }}>
                     {c.icon ? (
                       <img src={c.icon} alt="" style={{ maxWidth: 26, maxHeight: 26 }} />
                     ) : (
@@ -13338,35 +13338,44 @@ function ConnectorsPanel({ onClose, onOpenFull }: { onClose: () => void; onOpenF
                     )}
                   </span>
                   <span style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontSize: 14.5, fontWeight: 500, color: c.enabled ? colors.fg : colors.dim, letterSpacing: "var(--track-body)" }}>
+                    <div style={{ fontSize: 14.5, fontWeight: 500, color: colors.fg, letterSpacing: "var(--track-body)" }}>
                       {c.displayName}
                     </div>
                     <div style={{ fontSize: 13, color: colors.dim, marginTop: 3, lineHeight: 1.45, letterSpacing: "var(--track-meta)" }}>
-                      {c.authStatus === "oAuth" ? "Signed in" : "Needs sign-in"}
+                      {!c.enabled ? "Off" : c.authStatus === "oAuth" ? "Signed in" : "Needs sign-in"}
                     </div>
                   </span>
-                  {/* The same ring-with-a-tick the scheduled list uses for the
-                      same job, so "on" reads identically in both places. */}
                   <button
                     onClick={() => void toggle(c)}
                     disabled={busy !== null}
-                    aria-pressed={c.enabled}
+                    role="switch"
+                    aria-checked={c.enabled}
+                    aria-label={`${c.displayName} connector`}
                     title={c.enabled ? `Turn ${c.displayName} off` : `Turn ${c.displayName} on`}
                     style={{
-                      width: 18,
-                      height: 18,
+                      width: 38,
+                      height: 22,
                       flexShrink: 0,
-                      display: "grid",
-                      placeItems: "center",
-                      borderRadius: "50%",
-                      border: `1.5px solid ${c.enabled ? colors.accent : colors.border}`,
-                      background: c.enabled ? colors.accent : "transparent",
-                      color: "var(--accent-fg)",
+                      position: "relative",
+                      borderRadius: 11,
+                      border: "none",
+                      background: c.enabled ? colors.accent : "var(--gutter)",
                       cursor: "pointer",
                       padding: 0,
                     }}
                   >
-                    {c.enabled && <CheckIcon size={11} />}
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: 3,
+                        left: c.enabled ? 19 : 3,
+                        width: 16,
+                        height: 16,
+                        borderRadius: "50%",
+                        background: "#fff",
+                        transition: "left 120ms",
+                      }}
+                    />
                   </button>
                 </div>
               ))}
@@ -13476,6 +13485,15 @@ function ConnectorsView() {
       return;
     }
     setNotice(`Approve ${c.displayName} in your browser.`);
+  }
+
+  async function turnOn(c: ConnectorInfo) {
+    setNotice(null);
+    setBusy(c.name);
+    const res = await window.unbiased.connectorsSetEnabled(c.name, true);
+    setBusy(null);
+    setNotice(res.ok ? `${c.displayName} is on.` : (res.error ?? `Could not turn on ${c.displayName}.`));
+    void refresh();
   }
 
   async function saveClientId(c: ConnectorInfo) {
@@ -13588,7 +13606,11 @@ function ConnectorsView() {
                     </span>
                   ) : open.added ? (
                     <>
-                      {open.authStatus !== "oAuth" && (
+                      {!open.enabled ? (
+                        <button className="u-chip" onClick={() => void turnOn(open)} disabled={busy !== null} style={btnSmallStyle}>
+                          {busy === open.name ? "Turning on…" : "Turn on"}
+                        </button>
+                      ) : open.authStatus !== "oAuth" && (
                         <button className="u-chip" onClick={() => void signIn(open)} disabled={busy !== null} style={btnSmallStyle}>
                           {busy === open.name ? "Waiting…" : "Sign in"}
                         </button>
@@ -13844,7 +13866,7 @@ function ConnectorsView() {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(232px, 1fr))", gap: 12 }}>
                 {list.map((c) => {
-                  const signedIn = c.added && c.authStatus === "oAuth";
+                  const signedIn = c.added && c.enabled && c.authStatus === "oAuth";
                   return (
                     <div
                       key={c.name}
@@ -13933,7 +13955,16 @@ function ConnectorsView() {
                                 declined, a token expired. Saying "Needs
                                 sign-in" while offering only Remove left the one
                                 state the user can act on with no way to act. */}
-                            {!signedIn && (
+                            {!c.enabled ? (
+                              <button
+                                className="u-chip"
+                                onClick={() => void turnOn(c)}
+                                disabled={busy !== null}
+                                style={{ ...btnSmallStyle, fontSize: 12.5, padding: "5px 12px" }}
+                              >
+                                {busy === c.name ? "Turning on…" : "Turn on"}
+                              </button>
+                            ) : !signedIn && (
                               <button
                                 className="u-chip"
                                 onClick={() => void signIn(c)}
@@ -15039,6 +15070,7 @@ function McpPanel({ onClose, threadId }: { onClose: () => void; threadId: string
   // are not — see src/main/thread-mcp.ts for why nothing is on by default.
   const [convEnabled, setConvEnabled] = useState<string[]>([]);
   const [convConfigured, setConvConfigured] = useState<string[]>([]);
+  const [convAutomatic, setConvAutomatic] = useState<string[]>([]);
   const [convPending, setConvPending] = useState(false);
   const [convRunning, setConvRunning] = useState(false);
   const [convNote, setConvNote] = useState<string | null>(null);
@@ -15078,6 +15110,7 @@ function McpPanel({ onClose, threadId }: { onClose: () => void; threadId: string
     void window.unbiased.mcpThreadGet(threadId).then((r) => {
       setConvEnabled(r.enabled);
       setConvConfigured(r.configured);
+      setConvAutomatic(r.automatic);
       setConvPending(r.pending);
       setConvRunning(r.running);
     });
@@ -15382,6 +15415,7 @@ function McpPanel({ onClose, threadId }: { onClose: () => void; threadId: string
                         the row you could not read. */}
                     <span style={{ color: row.dot, fontWeight: 500 }}>{row.status}</span>
                     {row.detail ? ` · ${row.detail}` : ""}
+                    {convAutomatic.includes(row.name) ? " · Available in every conversation" : ""}
                   </div>
                 </span>
                 {/* A server that connected but has not been signed into is
@@ -19521,7 +19555,7 @@ function mcpChipLabel(enabled: readonly string[]): string {
   return enabled.length ? "MCP on" : "MCP off";
 }
 
-/** MCP servers for THIS conversation. Off by default: measured 2026-09-09,
+/** Manually added MCP servers for THIS conversation. Off by default: measured 2026-09-09,
  *  four connected servers cost ~35k tokens of a 124k window before the first
  *  message. A switch applies in place when the thread is idle, and at the end
  *  of the current turn otherwise — see mcp:thread-set. */
@@ -19561,7 +19595,7 @@ function ConversationMcp({ threadId, panelOpen, onOpenMcp }: { threadId: string 
     <button
       type="button"
       onClick={onOpenMcp}
-      title={on ? `MCP servers on for this conversation: ${enabled.join(", ")}. Click to change.` : "No MCP servers in this conversation. Click to turn one on."}
+      title={on ? `Manual MCP servers on for this conversation: ${enabled.join(", ")}. Click to change.` : "No manual MCP servers in this conversation. Connected catalogue connectors are available automatically."}
       style={{
         display: "flex",
         alignItems: "center",
