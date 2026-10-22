@@ -6229,6 +6229,16 @@ function createWindow(): void {
     if (/^https?:/.test(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
+  win.webContents.on("context-menu", (_event, params) => {
+    if (!params.linkURL) return;
+    let url: URL;
+    try { url = new URL(params.linkURL); } catch { return; }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return;
+    Menu.buildFromTemplate([
+      { label: "Open in default browser", click: () => void shell.openExternal(url.href) },
+      { label: "Copy link address", click: () => clipboard.writeText(url.href) },
+    ]).popup({ window: win ?? undefined });
+  });
   win.webContents.on("will-frame-navigate", (event) => {
     if (!event.isMainFrame && !registeredInteractiveVisualId(event.url) && !isInteractiveVisualPreviewUrl(event.url)) {
       event.preventDefault();
