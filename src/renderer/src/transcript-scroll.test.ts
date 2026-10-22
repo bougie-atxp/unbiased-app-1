@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isTranscriptAtBottom } from "./transcript-scroll";
+import { isTranscriptAtBottom, showScrollToLatest, transcriptScrollAfter } from "./transcript-scroll";
 
 test("transcript follows at the bottom, including fractional scroll positions", () => {
   assert.equal(isTranscriptAtBottom({ scrollHeight: 1000, clientHeight: 500, scrollTop: 500 }), true);
@@ -15,4 +15,22 @@ test("scrolling up pauses following until the reader returns to the bottom", () 
 
 test("a transcript too short to scroll is already at the bottom", () => {
   assert.equal(isTranscriptAtBottom({ scrollHeight: 300, clientHeight: 500, scrollTop: 0 }), true);
+});
+
+test("new content does not cancel explicit follow while the list measures its height", () => {
+  const following = { following: true, atBottom: true };
+  const measuring = transcriptScrollAfter(following, { type: "bottom-change", atBottom: false });
+  assert.equal(measuring.following, true);
+  assert.equal(showScrollToLatest(measuring), false);
+  assert.equal(transcriptScrollAfter(measuring, { type: "bottom-change", atBottom: true }).following, true);
+});
+
+test("user scroll pauses following until send or jump explicitly resumes it", () => {
+  const paused = transcriptScrollAfter({ following: true, atBottom: true }, { type: "user-scroll-up" });
+  assert.equal(paused.following, false);
+  assert.equal(showScrollToLatest(paused), true);
+  const atBottom = transcriptScrollAfter(paused, { type: "bottom-change", atBottom: true });
+  assert.equal(atBottom.following, false);
+  assert.equal(showScrollToLatest(atBottom), false);
+  assert.equal(transcriptScrollAfter(atBottom, { type: "follow" }).following, true);
 });

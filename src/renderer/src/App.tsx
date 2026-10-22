@@ -47,6 +47,7 @@ import { isStripeOnboardingPage } from "../../shared/stripe-onboarding-url";
 import type { PalScale, PalsSettings as PalsSettingsState } from "../../shared/pals";
 import { SideChatIdleTracker } from "./side-chat-idle";
 import { settleTurnOutput } from "./turn-completion";
+import { showScrollToLatest as shouldShowScrollToLatest, transcriptScrollAfter, type TranscriptScrollAction, type TranscriptScrollState } from "./transcript-scroll";
 import { finalAssistantIndices } from "./transcript-actions";
 import { completedWorkDuration } from "./work-duration";
 import { isComposerTypingKey } from "./type-to-focus";
@@ -9969,8 +9970,14 @@ function ChatPane({
   const savedRangeRef = useRef<Range | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const followTranscriptRef = useRef(true);
+  const transcriptScrollRef = useRef<TranscriptScrollState>({ following: true, atBottom: true });
+  const touchStartYRef = useRef<number | null>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const updateTranscriptScroll = (action: TranscriptScrollAction) => {
+    const next = transcriptScrollAfter(transcriptScrollRef.current, action);
+    transcriptScrollRef.current = next;
+    setShowScrollToLatest(shouldShowScrollToLatest(next));
+  };
   const paneRef = useRef<HTMLDivElement>(null);
 
   // Failsafe: if the compaction completion event never arrives (engine error,
@@ -10146,7 +10153,7 @@ function ChatPane({
     const conversationChanged = previousResetNonceRef.current !== reset.nonce;
     previousResetNonceRef.current = reset.nonce;
     threadIdRef.current = threadId ?? null;
-    followTranscriptRef.current = true;
+    transcriptScrollRef.current = { following: true, atBottom: true };
     transcriptSessionRef.current = reset.sessionId ?? null;
     historyOffsetRef.current = reset.offset ?? 0;
     setHistoryOffset(historyOffsetRef.current);
@@ -10702,8 +10709,12 @@ function ChatPane({
   }, [paneId]);
 
   useLayoutEffect(() => {
-    if (followTranscriptRef.current) virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+    if (transcriptScrollRef.current.following) virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
   }, [entries]);
+
+  const pauseTranscriptFollow = () => {
+    updateTranscriptScroll({ type: "user-scroll-up" });
+  };
 
   // Drawn anew every time this pane shows a (different) conversation.
   const chatPlaceholder = useMemo(
@@ -10744,8 +10755,7 @@ function ChatPane({
 
   /** Send a prepared message right now (fresh sends and queue flushes). */
   async function sendNow(q: QueuedMsg) {
-    followTranscriptRef.current = true;
-    setShowScrollToLatest(false);
+    updateTranscriptScroll({ type: "follow" });
     setBusy(true);
     producedRef.current = false;
     turnStartedAtRef.current = Date.now();
@@ -11057,7 +11067,7 @@ function ChatPane({
       }
       const current = entriesRef.current;
       const addedBlocks = toDisplayBlocks([...page.entries, ...current]).length - toDisplayBlocks(current).length;
-      followTranscriptRef.current = false;
+      updateTranscriptScroll({ type: "user-scroll-up" });
       historyOffsetRef.current = page.offset;
       setHistoryOffset(page.offset);
       setFirstBlockIndex((index) => index - addedBlocks);
@@ -11502,8 +11512,22 @@ function ChatPane({
           onWheelCapture={(e) => {
             const scroller = scrollRef.current;
             if (e.deltaY >= 0 || !scroller || scroller.scrollHeight <= scroller.clientHeight + 2) return;
-            followTranscriptRef.current = false;
-            setShowScrollToLatest(true);
+            pauseTranscriptFollow();
+          }}
+          onTouchStartCapture={(e) => { touchStartYRef.current = e.touches[0]?.clientY ?? null; }}
+          onTouchMoveCapture={(e) => {
+            const y = e.touches[0]?.clientY;
+            if (y === undefined) return;
+            if (touchStartYRef.current !== null && y > touchStartYRef.current + 2) pauseTranscriptFollow();
+            touchStartYRef.current = y;
+          }}
+          onTouchEndCapture={() => { touchStartYRef.current = null; }}
+          onKeyDownCapture={(e) => {
+            if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey)) pauseTranscriptFollow();
+          }}
+          onPointerDownCapture={(e) => {
+            const scroller = scrollRef.current;
+            if (scroller && e.target === scroller && e.clientX >= scroller.getBoundingClientRect().right - 16) pauseTranscriptFollow();
           }}
           style={{ flex: 1, minHeight: 0, position: "relative" }}
         >
@@ -11520,10 +11544,9 @@ function ChatPane({
               initialTopMostItemIndex={{ index: "LAST", align: "end" }}
               defaultItemHeight={120}
               increaseViewportBy={300}
-              followOutput={(atBottom) => followTranscriptRef.current && atBottom ? "auto" : false}
+              followOutput={() => transcriptScrollRef.current.following ? "auto" : false}
               atBottomStateChange={(atBottom) => {
-                followTranscriptRef.current = atBottom;
-                setShowScrollToLatest(!atBottom);
+                updateTranscriptScroll({ type: "bottom-change", atBottom });
               }}
               startReached={loadEarlierBlocks}
               components={transcriptComponents}
@@ -11604,8 +11627,7 @@ function ChatPane({
             title="Scroll to latest"
             aria-label="Scroll to latest"
             onClick={() => {
-              followTranscriptRef.current = true;
-              setShowScrollToLatest(false);
+              updateTranscriptScroll({ type: "follow" });
               virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
             }}
             style={{
