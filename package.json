@@ -1,6 +1,6 @@
 {
   "name": "unbiased-app",
-  "version": "1.13.19",
+  "version": "1.13.20",
   "description": "Unbiased desktop — Pareto-powered coding agent",
   "main": "out/main/index.js",
   "scripts": {
