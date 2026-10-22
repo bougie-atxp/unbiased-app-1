@@ -158,7 +158,13 @@ export function interactiveVisualDocument(source: string): string {
     parent.postMessage({ type: 'unbiased-visual-wheel', deltaY: event.deltaY, deltaMode: event.deltaMode }, '*');
   }, { passive: false });
   addEventListener('DOMContentLoaded', () => {
-    const report = () => parent.postMessage({ type: 'unbiased-visual-height', height: Math.ceil(document.body.scrollHeight) }, '*');
+    let lastHeight = -1;
+    const report = () => {
+      const height = Math.ceil(document.body.scrollHeight);
+      if (height === lastHeight) return;
+      lastHeight = height;
+      parent.postMessage({ type: 'unbiased-visual-height', height }, '*');
+    };
     if (typeof ResizeObserver !== 'undefined') {
       const observer = new ResizeObserver(report);
       observer.observe(document.body);

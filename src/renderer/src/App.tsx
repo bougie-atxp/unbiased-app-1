@@ -10721,15 +10721,9 @@ function ChatPane({
     });
   }, []);
 
-  const handleScrollerScroll = useCallback(() => {
-    settleTranscriptBottom(transcriptScrollRef.current, scrollRef.current);
-  }, []);
-
   const setTranscriptScroller = useCallback((node: HTMLElement | Window | null) => {
-    scrollRef.current?.removeEventListener("scroll", handleScrollerScroll);
     scrollRef.current = node instanceof HTMLDivElement ? node : null;
-    scrollRef.current?.addEventListener("scroll", handleScrollerScroll, { passive: true });
-  }, [handleScrollerScroll]);
+  }, []);
 
   useEffect(() => () => {
     if (followFrameRef.current !== null) cancelAnimationFrame(followFrameRef.current);
@@ -10750,7 +10744,7 @@ function ChatPane({
     observedListRef.current = list;
     if (!list || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      settleTranscriptBottom(transcriptScrollRef.current, scrollRef.current);
+      requestTranscriptFollow();
     });
     observer.observe(list);
     if (scrollRef.current) observer.observe(scrollRef.current);
