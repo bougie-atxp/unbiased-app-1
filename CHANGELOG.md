@@ -6,6 +6,18 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
+## 1.13.22 — October 22, 2026
+
+### Improved
+
+- **Recently closed side chats can be reopened.** Find them in Browser Recents for two hours, even after restarting the app. The remaining recovery time is shown there.
+- **An empty browser tab becomes the tool you open.** Choosing a tool or recent side chat from the start page reuses that tab.
+
+### Fixed
+
+- **Pal notices return to the right chat.** Opening a side chat's notice no longer takes you away from its parent conversation.
+- **The composer keeps focus after an annotation.** You can press Enter again without clicking back into the message box.
+
 ## 1.13.21 — October 22, 2026
 
 ### Fixed
