@@ -6,6 +6,17 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
+## 1.13.20 — October 22, 2026
+
+### Improved
+
+- **Connected catalogue tools are ready in every chat.** Tools from services you connected through the catalogue no longer need to be enabled separately for each conversation.
+- **Chats follow new activity while you work.** New replies and command output stay in view until you scroll up; sending a message or jumping to the latest resumes following.
+
+### Fixed
+
+- **Visual previews stay steady as they appear.** Streaming HTML visuals update existing content instead of flashing as each new section arrives.
+
 ## 1.13.19 — October 22, 2026
 
 ### Improved
