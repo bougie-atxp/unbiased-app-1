@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { followTranscriptHeight, isTranscriptAtBottom, showScrollToLatest, transcriptScrollAfter } from "./transcript-scroll";
+import { followTranscriptToLatest, isTranscriptAtBottom, showScrollToLatest, transcriptScrollAfter } from "./transcript-scroll";
 
 test("transcript follows at the bottom, including fractional scroll positions", () => {
   assert.equal(isTranscriptAtBottom({ scrollHeight: 1000, clientHeight: 500, scrollTop: 500 }), true);
@@ -25,17 +25,15 @@ test("new content does not cancel explicit follow while the list measures its he
   assert.equal(transcriptScrollAfter(measuring, { type: "bottom-change", atBottom: true }).following, true);
 });
 
-test("measured growth follows the newest content, but never moves a paused reader", () => {
-  const scroller = { scrollHeight: 900, clientHeight: 500, scrollTop: 400 };
-  scroller.scrollHeight = 1300;
-  followTranscriptHeight({ following: true, atBottom: false }, scroller);
-  assert.equal(scroller.scrollTop, 800);
+test("measured growth targets the last virtual row, but never moves a paused reader", () => {
+  const locations: Array<{ index: "LAST"; align: "end" }> = [];
+  const list = { scrollToIndex: (location: { index: "LAST"; align: "end" }) => locations.push(location) };
+  followTranscriptToLatest({ following: true, atBottom: false }, list);
+  assert.deepEqual(locations, [{ index: "LAST", align: "end" }]);
 
   const paused = transcriptScrollAfter({ following: true, atBottom: true }, { type: "user-scroll-up" });
-  scroller.scrollTop = 200;
-  scroller.scrollHeight = 1500;
-  followTranscriptHeight(paused, scroller);
-  assert.equal(scroller.scrollTop, 200);
+  followTranscriptToLatest(paused, list);
+  assert.equal(locations.length, 1);
 });
 
 test("user scroll pauses following until send or jump explicitly resumes it", () => {

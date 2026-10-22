@@ -4,13 +4,11 @@ export function isTranscriptAtBottom(scroll: { scrollHeight: number; scrollTop: 
 
 export type TranscriptScrollState = { following: boolean; atBottom: boolean };
 
-export function followTranscriptHeight(
+export function followTranscriptToLatest(
   state: TranscriptScrollState,
-  scroller: { scrollHeight: number; clientHeight: number; scrollTop: number } | null,
+  list: { scrollToIndex: (location: { index: "LAST"; align: "end" }) => void } | null,
 ): void {
-  if (state.following && scroller) {
-    scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-  }
+  if (state.following) list?.scrollToIndex({ index: "LAST", align: "end" });
 }
 export type TranscriptScrollAction =
   | { type: "follow" }

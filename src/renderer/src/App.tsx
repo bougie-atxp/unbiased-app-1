@@ -48,7 +48,7 @@ import { isStripeOnboardingPage } from "../../shared/stripe-onboarding-url";
 import type { PalScale, PalsSettings as PalsSettingsState } from "../../shared/pals";
 import { SideChatIdleTracker } from "./side-chat-idle";
 import { settleTurnOutput } from "./turn-completion";
-import { followTranscriptHeight, showScrollToLatest as shouldShowScrollToLatest, transcriptScrollAfter, type TranscriptScrollAction, type TranscriptScrollState } from "./transcript-scroll";
+import { followTranscriptToLatest, showScrollToLatest as shouldShowScrollToLatest, transcriptScrollAfter, type TranscriptScrollAction, type TranscriptScrollState } from "./transcript-scroll";
 import { finalAssistantIndices } from "./transcript-actions";
 import { completedWorkDuration } from "./work-duration";
 import { isComposerTypingKey } from "./type-to-focus";
@@ -10711,11 +10711,12 @@ function ChatPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paneId]);
 
+  // The DOM scroll range can lag behind virtual row measurement; aim at Virtuoso's last item.
   const requestTranscriptFollow = useCallback(() => {
     if (!transcriptScrollRef.current.following || followFrameRef.current !== null) return;
     followFrameRef.current = requestAnimationFrame(() => {
       followFrameRef.current = null;
-      followTranscriptHeight(transcriptScrollRef.current, scrollRef.current);
+      followTranscriptToLatest(transcriptScrollRef.current, virtuosoRef.current);
     });
   }, []);
 
@@ -11719,7 +11720,6 @@ function ChatPane({
             aria-label="Scroll to latest"
             onClick={() => {
               updateTranscriptScroll({ type: "follow" });
-              virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
               requestTranscriptFollow();
             }}
             style={{
