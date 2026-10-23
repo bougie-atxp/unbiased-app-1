@@ -8,6 +8,7 @@
     "build": "electron-vite build",
     "prepare:browser": "node build/prepare-browser.cjs",
     "smoke:browser": "node build/smoke-browser.cjs",
+    "smoke:pal-fullscreen": "electron build/smoke-pal-fullscreen.cjs",
     "smoke:visual-preview": "electron build/smoke-visual-preview.cjs",
     "smoke:visual-scroll": "electron build/smoke-visual-scroll.cjs",
     "smoke:visual-height": "electron build/smoke-visual-height.cjs",

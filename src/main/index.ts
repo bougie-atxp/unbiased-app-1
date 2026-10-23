@@ -40,6 +40,7 @@ import { PET_NOTICE_DURATION_MS, PET_NOTICE_SIZE, latestPetResponse, petNoticeSt
 import { savedPalSelection, type PalSelection } from "./pal-selection";
 import { shouldShowCompletedPetNotice } from "./pet-notice-visibility";
 import { PetWindowReadiness } from "./pet-window-readiness";
+import { activateMainWindowFromPal, PET_WORKSPACE_OPTIONS } from "./pet-window-activation";
 import { isPalSelection, ROBOT_PALS, type PalsSettings } from "../shared/pals";
 import { resolveEngineDir } from "./engine-path";
 import { matchingMessageSnippet, messagesFromTranscriptEntries } from "./thread-search";
@@ -292,7 +293,6 @@ let petSettleTimer: ReturnType<typeof setTimeout> | null = null;
 let petSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let petHoverTimer: ReturnType<typeof setInterval> | null = null;
 let petMotionTimer: ReturnType<typeof setTimeout> | null = null;
-let devDockRestoreTimer: ReturnType<typeof setTimeout> | null = null;
 let petHovered = false;
 type PetPreferences = { visible: boolean; x?: number; y?: number; selection?: PalSelection; scale?: PetScale };
 let petPreferences: PetPreferences = { visible: true };
@@ -5765,17 +5765,6 @@ function savePetPreferences(): void {
   }
 }
 
-function restoreDevDockAfterOverlay(): void {
-  if (process.platform !== "darwin" || productionBuild()) return;
-  if (devDockRestoreTimer) clearTimeout(devDockRestoreTimer);
-  // The cross-Space window temporarily switches macOS to accessory mode.
-  // Restoring the Dock in the same transition makes the Pal disappear again.
-  devDockRestoreTimer = setTimeout(() => {
-    devDockRestoreTimer = null;
-    void app.dock?.show();
-  }, 1200);
-}
-
 function palsSettings(): PalsSettings {
   return {
     visible: petPreferences.visible,
@@ -5869,6 +5858,7 @@ function showPetNotice(notice: { threadId: string; title: string; response: stri
       show: false,
       skipTaskbar: true,
       alwaysOnTop: true,
+      focusable: false,
       hasShadow: false,
       webPreferences: {
         preload: join(__dirname, "../preload/petNotice.js"),
@@ -5879,8 +5869,7 @@ function showPetNotice(notice: { threadId: string; title: string; response: stri
       },
     });
     petNoticeWin.setAlwaysOnTop(true, "floating");
-    if (process.platform === "darwin") petNoticeWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    restoreDevDockAfterOverlay();
+    if (process.platform === "darwin") petNoticeWin.setVisibleOnAllWorkspaces(true, PET_WORKSPACE_OPTIONS);
     petNoticeWin.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     petNoticeWin.webContents.on("will-navigate", (event) => event.preventDefault());
     petNoticeWin.webContents.on("did-finish-load", () => {
@@ -6034,8 +6023,7 @@ function createPetWindow(): void {
     },
   });
   petWin.setAlwaysOnTop(true, "floating");
-  if (process.platform === "darwin") petWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  restoreDevDockAfterOverlay();
+  if (process.platform === "darwin") petWin.setVisibleOnAllWorkspaces(true, PET_WORKSPACE_OPTIONS);
   const createdPetWindow = petWin;
   const readiness = new PetWindowReadiness({
     load: () => process.env.ELECTRON_RENDERER_URL
@@ -8633,9 +8621,9 @@ app.whenReady().then(async () => {
     petNotices = petNotices.filter((notice) => notice.id !== id);
     updatePetNoticeWindow();
     schedulePetNoticeExpiry();
-    if (win.isMinimized()) win.restore();
-    win.show();
-    win.focus();
+    activateMainWindowFromPal(win, () => {
+      if (process.platform === "darwin") app.focus({ steal: true });
+    });
     const sideRecord = sideChatRecents.forThread(selected.threadId);
     send("pet:notice-open-thread", sideRecord
       ? { threadId: sideRecord.parentThreadId, sidePaneId: sideRecord.paneId }
@@ -13000,7 +12988,6 @@ app.whenReady().then(async () => {
 
   createWindow();
   if (petPreferences.visible) createPetWindow();
-  restoreDevDockAfterOverlay();
   installAppMenu();
   void completeDevAccessibilityRecovery();
   // Check for updates shortly after launch (let the window settle first),
