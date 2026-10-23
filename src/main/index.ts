@@ -448,6 +448,7 @@ function agentChromeProfile(): string {
 }
 let managedChrome: ChildProcess | null = null;
 let browserStopping: Promise<void> | null = null;
+let browserShuttingDown = false;
 function stopManagedChrome(): Promise<void> {
   if (browserStopping) return browserStopping;
   const child = managedChrome;
@@ -457,7 +458,7 @@ function stopManagedChrome(): Promise<void> {
     const timer = setTimeout(() => {
       // Leave the guardian alive to finish cleanup rather than killing it
       // before it has reaped its browser. Startup recovery handles failures.
-      child.kill("SIGTERM"); done();
+      child.kill("SIGTERM"); resolve();
     }, 3500);
     child.once("exit", done);
     child.stdin?.end();
@@ -541,6 +542,7 @@ async function launchAgentChrome(
   port: number,
 ): Promise<{ ok: boolean; launched: boolean; firstRun: boolean; error?: string }> {
   if (browserStopping) await browserStopping;
+  if (browserShuttingDown) return { ok: false, launched: false, firstRun: false, error: "Unbiased is shutting down its browser." };
   if (managedChrome) {
     if (await cdpAlive(port) && await ownsChromeOnPort(port)) return { ok: true, launched: false, firstRun: false };
     await stopManagedChrome();
@@ -581,6 +583,7 @@ async function launchAgentChrome(
   // certain Google sign-in flows). UNBIASED_AGENT_CHROME_HEADED=1 restores the
   // real window for those cases without a rebuild.
   const headed = process.env.UNBIASED_AGENT_CHROME_HEADED === "1";
+  if (browserShuttingDown) return { ok: false, launched: false, firstRun, error: "Unbiased is shutting down its browser." };
   managedChrome = spawnProcess(
     supervisor,
     [
@@ -603,16 +606,20 @@ async function launchAgentChrome(
   );
   const child = managedChrome;
   let launchError = "";
+  let spawnFailed = false;
   child.stdout?.resume();
   child.stderr?.on("data", (data) => { launchError = (launchError + String(data)).slice(-2000); });
-  child.on("error", (error) => { launchError = error.message; });
+  child.on("error", (error) => {
+    launchError = error.message; spawnFailed = true;
+    if (managedChrome === child) managedChrome = null;
+  });
   child.on("exit", () => {
     // Only clear state if the process that died is still the current one.
     if (managedChrome === child) managedChrome = null;
   });
   for (let tries = 0; tries < 24; tries++) {
     await wait(500);
-    if (child.exitCode !== null || child.signalCode !== null) {
+    if (spawnFailed || child.exitCode !== null || child.signalCode !== null) {
       return { ok: false, launched: false, firstRun, error: launchError || "Private browser supervisor exited before startup." };
     }
     if (await cdpAlive(port) && await ownsChromeOnPort(port)) {
@@ -5737,7 +5744,8 @@ async function installUpdate(info: UpdateInfo): Promise<{ ok: boolean; error?: s
 /** Swap the staged bundle in and restart. Only reached once a download has
  *  been verified and staged, so the window where the app is missing is a
  *  single `mv` — not a 190MB copy. */
-function applyUpdate(): { ok: boolean; error?: string } {
+async function applyUpdate(): Promise<{ ok: boolean; error?: string }> {
+  if (browserShuttingDown) return { ok: false, error: "Unbiased is already preparing to quit or update." };
   if (!stagedUpdate || !existsSync(stagedUpdate.path)) {
     // The staged copy vanished (manual cleanup, disk tools). Fall back to
     // offering the download again rather than pretending we can relaunch.
@@ -5748,6 +5756,12 @@ function applyUpdate(): { ok: boolean; error?: string } {
   }
   const target = appBundlePath();
   try {
+    browserShuttingDown = true;
+    const guardian = managedChrome;
+    await stopManagedChrome();
+    if (guardian && guardian.exitCode === null && guardian.signalCode === null) {
+      throw new Error("The Agent browser is still shutting down. Retry the update in a moment.");
+    }
     rmSync(target, { recursive: true, force: true });
     execFileSync("mv", [stagedUpdate.path, target]);
     try {
@@ -5765,6 +5779,7 @@ function applyUpdate(): { ok: boolean; error?: string } {
     setTimeout(() => app.exit(0), 4000).unref();
     return { ok: true };
   } catch (err) {
+    browserShuttingDown = false;
     const message = err instanceof Error ? err.message : String(err);
     send("update:error", { message });
     return { ok: false, error: message };
@@ -13094,6 +13109,7 @@ app.whenReady().then(async () => {
 
 let browserQuitReady = false;
 app.on("before-quit", (event) => {
+  browserShuttingDown = true;
   if (browserQuitReady || !managedChrome) return;
   event.preventDefault();
   void stopManagedChrome().finally(() => { browserQuitReady = true; app.quit(); });

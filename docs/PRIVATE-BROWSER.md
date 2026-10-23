@@ -25,6 +25,8 @@ pipe (normal shutdown, app crash or SIGKILL) tells the guardian to terminate its
 browser group, allow two seconds for shutdown, then kill remaining members.
 The guardian reaps the root before exiting. Electron's quit/update path waits
 for this cleanup, bounded to fit the existing four-second update exit guard.
+Updates stop the private browser before replacing its executable/resources;
+if the guardian has not exited, the update returns a retryable error.
 
 An exclusive profile lock prevents simultaneous app instances from adopting
 the same browser. A process record stores the root PID and kernel process start
