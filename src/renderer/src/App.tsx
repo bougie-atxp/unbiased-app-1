@@ -1,4 +1,5 @@
-import { PortableSettings, CloudReadiness, type PortableAPI, type CloudAPI } from "./PortableSettings";
+import { CloudReadiness, type CloudAPI } from "./CloudReadiness";
+import type { SkillOwnership } from "../../main/skill-ownership";
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
@@ -521,6 +522,8 @@ type SkillCheck = {
 };
 
 type SkillEntry = {
+  ownership: SkillOwnership;
+  projectName: string | null;
   name: string;
   description?: string;
   shortDescription?: string | null;
@@ -600,11 +603,6 @@ declare global {
   interface Window {
     unbiased: {
       onAppCommand: (cb: (command: string) => void) => () => void;
-      portableTarget: PortableAPI["target"];
-      portableResolve: PortableAPI["read"];
-      portableRead: PortableAPI["read"];
-      portableInstall: PortableAPI["install"];
-      portableWrite: PortableAPI["write"];
       cloudStatus: CloudAPI["status"];
       cloudPreflight: CloudAPI["preflight"];
       resolveProjectMembership: (threadId:string,projectId:string|null) => Promise<{ok:boolean}>;
@@ -684,7 +682,7 @@ declare global {
       onMcpThreadApplied: (
         cb: (p: { threadId: string; enabled: string[]; error?: string }) => void,
       ) => () => void;
-      skillsList: (cwd?: string | null) => Promise<{
+      skillsList: (cwd?: string | null, projectId?: string | null) => Promise<{
         skills: SkillEntry[];
         cwd: string | null;
         roots: { bundled: string; global: string; project: string | null };
@@ -694,7 +692,7 @@ declare global {
       skillsReveal: (path: string, isDir?: boolean) => Promise<{ ok: boolean }>;
       skillsChoose: () => Promise<{ path: string | null }>;
       skillsValidate: (path: string) => Promise<SkillCheck>;
-      skillsInstall: (p: { path: string; name: string; scope: "global" | "project"; cwd: string | null }) =>
+      skillsInstall: (p: { path: string; name: string; scope: "global" | "project"; cwd: string | null; projectId: string | null }) =>
         Promise<{ ok: boolean; error?: string }>;
       skillsRemove: (path: string, cwd: string | null) => Promise<{ ok: boolean; error?: string }>;
       pathForDroppedFile: (file: File) => string;
@@ -6381,7 +6379,7 @@ export function App() {
         />
       )}
       {skillsOpen && (
-        <SkillsPanel cwd={activeProjectPath ?? null} onClose={() => setSkillsOpen(false)} />
+        <SkillsPanel cwd={activeProjectPath ?? null} projectId={activeProjectId} onClose={() => setSkillsOpen(false)} />
       )}
       {showChangelog && (
         <ChangelogModal releases={releases} onClose={() => setShowChangelog(false)} />
@@ -15922,7 +15920,7 @@ function SkillIcon({ size = 15 }: { size?: number }) {
  *  section — a skill sitting in ~/.agents/skills came from another tool
  *  entirely, and that is worth knowing without turning the panel into a
  *  filesystem tour. */
-function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void }) {
+function SkillsPanel({ cwd, projectId, onClose }: { cwd: string | null; projectId: string | null; onClose: () => void }) {
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   const [roots, setRoots] = useState<{ bundled: string; global: string; project: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -15932,7 +15930,7 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
 
   // Add flow
   const [adding, setAdding] = useState(false);
-  const [scope, setScope] = useState<"project" | "global">(cwd ? "project" : "global");
+  const [scope, setScope] = useState<"project" | "global">(projectId ? "project" : "global");
   const [picked, setPicked] = useState<string | null>(null);
   const [check, setCheck] = useState<SkillCheck | null>(null);
   const [url, setUrl] = useState("");
@@ -15943,13 +15941,13 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
   const [saving, setSaving] = useState(false);
 
   const refresh = useCallback(() => {
-    void window.unbiased.skillsList(cwd).then((r) => {
+    void window.unbiased.skillsList(cwd, projectId).then((r) => {
       setSkills(r.skills ?? []);
       setRoots(r.roots);
       setError(r.error);
       setLoading(false);
     });
-  }, [cwd]);
+  }, [cwd, projectId]);
   useEffect(refresh, [refresh]);
   useEffect(() => {
     void window.unbiased.skillsLimits().then((l) => setLimits({ label: l.label, maxFiles: l.maxFiles }));
@@ -15957,7 +15955,7 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
 
   function resetAdd() {
     setAdding(false); setPicked(null); setCheck(null); setName("");
-    setDragging(false); setUrl(""); setFetching(false); setScope(cwd ? "project" : "global");
+    setDragging(false); setUrl(""); setFetching(false); setScope(projectId ? "project" : "global");
   }
 
   function accept(r: SkillCheck) {
@@ -15991,7 +15989,7 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
   async function save() {
     if (!picked) return;
     setSaving(true);
-    const r = await window.unbiased.skillsInstall({ path: picked, name: name.trim(), scope, cwd });
+    const r = await window.unbiased.skillsInstall({ path: picked, name: name.trim(), scope, cwd, projectId });
     setSaving(false);
     if (!r.ok) { setCheck({ ok: false, error: r.error }); return; }
     resetAdd();
@@ -16014,20 +16012,24 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
     refresh();
   }
 
-  // Two buckets. Project = found in this conversation's folder. Everything
-  // else is available everywhere, whoever put it there.
+  // Persisted ownership drives grouping; a shared folder does not transfer a skill.
   const g = roots;
-  const inProject = (sk: SkillEntry) => !!g?.project && sk.path.startsWith(g.project);
+  const inProject = (sk: SkillEntry) => sk.ownership.scope === "project"
+    ? sk.ownership.projectId === projectId
+    : sk.ownership.scope === "folder" && !!g?.project && sk.path.startsWith(g.project + "/");
   const ours = (sk: SkillEntry) =>
-    (!!g?.global && sk.path.startsWith(g.global)) || inProject(sk);
+    (!!g?.global && sk.path.startsWith(g.global + "/")) || inProject(sk);
   const tagFor = (sk: SkillEntry): string | null => {
+    if (sk.ownership.scope === "project" && sk.ownership.projectId !== projectId) return sk.projectName ?? "Another project";
+    if (sk.ownership.scope === "folder") return "folder skill";
     if (ours(sk)) return null;
     if (g?.bundled && sk.path.startsWith(g.bundled)) return "included";
     if (sk.scope === "system") return "built in";
     return "another tool";
   };
   const project = skills.filter(inProject);
-  const global = skills.filter((sk) => !inProject(sk));
+  const global = skills.filter((sk) => sk.ownership.scope === "global");
+  const otherProjects = skills.filter((sk) => !inProject(sk) && sk.ownership.scope !== "global");
 
   const inset: React.CSSProperties = { background: "var(--panel-2)", borderRadius: 14, padding: "4px 16px", marginTop: 10 };
   const btnSecondary = btnSecondaryStyle;
@@ -16123,7 +16125,7 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
           </div>
           <p style={{ color: colors.dim, fontSize: 14, lineHeight: 1.55, margin: "12px 0 0" }}>
             A skill is a folder of instructions Pareto reads when a task calls for it.
-            Existing local skills apply to this folder or this device. Portable settings have explicit account, project, or conversation scope.
+            Add one to this project, or to every conversation.
           </p>
         </div>
 
@@ -16155,7 +16157,6 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
           />
         )}
 
-        <PortableSettings api={{target:window.unbiased.portableTarget,read:window.unbiased.portableRead,resolve:window.unbiased.portableResolve,install:window.unbiased.portableInstall,write:window.unbiased.portableWrite,choose:window.unbiased.skillsChoose,assignProject:window.unbiased.resolveProjectMembership}} />
         {!loading && !adding && (
           <>
             <Group
@@ -16164,6 +16165,7 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
               empty={cwd ? "Nothing yet." : "Open a project to add skills just for it."}
             />
             <Group title="Available everywhere" items={global} empty="Nothing yet." />
+            {otherProjects.length > 0 && <Group title="Other projects sharing this folder" items={otherProjects} empty="" />}
           </>
         )}
 
@@ -16172,16 +16174,16 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
             <div>
               <span style={fieldLabel}>Where should it apply?</span>
               <div style={{ display: "flex", gap: 8 }}>
-                {([["project", "This folder (legacy)"], ["global", "This device (legacy)"]] as const).map(([v, label]) => (
+                {([["project", "This project"], ["global", "Everywhere"]] as const).map(([v, label]) => (
                   <button
                     key={v}
                     onClick={() => setScope(v)}
-                    disabled={v === "project" && !cwd}
-                    title={v === "project" && !cwd ? "Open a project first" : undefined}
+                    disabled={v === "project" && !projectId}
+                    title={v === "project" && !projectId ? "Open a project first" : undefined}
                     style={{
                       ...(scope === v ? btnPrimary : btnSecondary),
                       padding: "8px 16px", fontSize: 13.5,
-                      opacity: v === "project" && !cwd ? 0.45 : 1,
+                      opacity: v === "project" && !projectId ? 0.45 : 1,
                     }}
                   >
                     {label}
@@ -16307,7 +16309,7 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
           ) : (
             <>
               <button onClick={onClose} style={btnSecondary}>Close</button>
-              <button onClick={() => { setAdding(true); setScope(cwd ? "project" : "global"); }} style={btnPrimary}>
+              <button onClick={() => { setAdding(true); setScope(projectId ? "project" : "global"); }} style={btnPrimary}>
                 <SkillIcon size={15} />
                 Add skill
               </button>
