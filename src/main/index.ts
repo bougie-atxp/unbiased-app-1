@@ -438,7 +438,7 @@ const threadAccessModes = new Map<string, AccessMode>();
 const browserNetGrants = new Set<string>();
 const browserConnectGrants = new Set<string>();
 const browserRuntime = new BrowserRuntimeClient({
-  entry: productionBuild() ? join(process.resourcesPath, "browser-runtime", "browser-runtime.js") : join(__dirname, "browser-runtime.js"),
+  entry: productionBuild() ? join(process.resourcesPath, "browser-runtime", "main.js") : join(app.getAppPath(), "build", "browser-runtime", "main.js"),
   options: { browserRoot: automationBrowserPaths(process.resourcesPath, productionBuild(), app.getAppPath()).root,
     home: app.getPath("home"), tempDir: app.getPath("temp"), osVersion: process.getSystemVersion(),
     headed: process.env.UNBIASED_AGENT_CHROME_HEADED === "1" },
@@ -620,8 +620,14 @@ function configuredProjectContext(cwd: string | null, threadId: string | null = 
   return project ? projectContextForDirectory({ cwd, projects: [project], worktrees: loadWorktrees(), assignedProject: project.primary }) : null;
 }
 
-function agentBrowserTools() {
-  return browserRuntime.capabilities?.tools.length ? browserRuntime.capabilities.tools : undefined;
+async function agentBrowserTools() {
+  try {
+    const tools = await browserRuntime.discoverTools();
+    return tools.length ? tools : undefined;
+  } catch (error) {
+    console.warn("[browser-runtime] Tool discovery failed", error);
+    return undefined;
+  }
 }
 
 const COMPUTER_USE_TOOLS = [
@@ -1284,7 +1290,7 @@ function dynamicToolCommandText(tool: string | undefined, rawArgs: unknown): str
  * a second family to that would have made scheduling silently disappear on any
  * machine without agent-browser installed.
  */
-function threadDynamicTools(): Record<string, unknown>[] | undefined {
+async function threadDynamicTools(): Promise<Record<string, unknown>[] | undefined> {
   // The same value decides what is on the menu and what handleComputerUseCall
   // will actually run, so a withheld verb cannot come back through the door.
   const screenshots = screenshotToolsOffered({ axAlive: ax?.alive === true });
@@ -1298,7 +1304,7 @@ function threadDynamicTools(): Record<string, unknown>[] | undefined {
     ...MEMORY_TOOLS,
     ...CHECKPOINT_TOOLS,
     IMAGE_OUTLINE_TOOL,
-    ...(agentBrowserTools() ?? []),
+    ...((await agentBrowserTools()) ?? []),
   ];
   return tools.length ? (tools as Record<string, unknown>[]) : undefined;
 }
@@ -3456,7 +3462,7 @@ const mcpApplyPending = new Set<string>();
  *  is running — the resume would kill it. */
 async function applyThreadMcp(threadId: string): Promise<void> {
   await engine.request("thread/unsubscribe", { threadId });
-  await engine.request("thread/resume", resumeParamsFor(threadId));
+  await engine.request("thread/resume", await resumeParamsFor(threadId));
   send("mcp:thread-applied", { threadId, enabled: enabledMcpFor(threadId) });
 }
 
@@ -3489,11 +3495,11 @@ function mcpOverrideFor(threadId: string | null): Record<string, unknown> {
  *  set. One function so the reopen path and the MCP-switch path can never
  *  disagree — a resume that forgot the override would silently hand the
  *  thread the engine's whole default server set back. */
-function resumeParamsFor(id: string): Record<string, unknown> {
+async function resumeParamsFor(id: string): Promise<Record<string, unknown>> {
   return {
     threadId: id,
     ...threadPolicy(),
-    dynamicTools: threadDynamicTools(),
+    dynamicTools: await threadDynamicTools(),
     // A cold reopen can safely recover thread-private notes by ID. Project
     // memory still needs a known cwd; never substitute the previous chat's.
     developerInstructions: developerInstructionsFor(threadCwds.get(id) ?? null, id),
@@ -6980,7 +6986,7 @@ async function runScheduledTask(
       // project. That is durable prompt injection, and no amount of
       // after-the-fact visibility fixes it: there is no one there to see it.
       developerInstructions: developerInstructionsFor(cwd),
-      dynamicTools: agentBrowserTools(),
+      dynamicTools: await agentBrowserTools(),
       // Tag it so the sidebar can leave it out. threadSource is a free-form
       // client string the engine hands straight back in thread/list, which
       // beats keeping our own ledger of run ids: the answer travels with the
@@ -7720,7 +7726,7 @@ app.whenReady().then(async () => {
         started = (await engine.request(target.method, {
           ...target.params,
           ...threadPolicy(),
-          dynamicTools: threadDynamicTools(),
+          dynamicTools: await threadDynamicTools(),
           developerInstructions: `${developerInstructionsFor(sideCwd, parentId)}\n\n` +
             "This is a side chat. Inherited parent history is background context, not an active task. " +
             "Follow this side chat's current request; do not continue parent work unless the user explicitly asks.",
@@ -7750,7 +7756,7 @@ app.whenReady().then(async () => {
           cwd,
           // Model-driven browser automation (agent-browser CLI), when
           // installed — the calls come back as item/tool/call requests.
-          dynamicTools: threadDynamicTools(),
+          dynamicTools: await threadDynamicTools(),
           developerInstructions: developerInstructionsFor(cwd, null, selectedProjectId),
           // Raw response items feed the sub-agent viewer (task text + spawn
           // instructions). Sub-threads inherit this from their parent.
@@ -10588,7 +10594,7 @@ app.whenReady().then(async () => {
     const started = (await engine.request("thread/start", {
       ...threadPolicy(),
       cwd,
-      dynamicTools: threadDynamicTools(),
+      dynamicTools: await threadDynamicTools(),
       developerInstructions: developerInstructionsFor(cwd, null, project?.id ?? null),
       experimentalRawEvents: true,
       config: mcpOverrideFor(null),
@@ -10614,7 +10620,7 @@ app.whenReady().then(async () => {
     const alreadyLoaded = running || paneForThread(id) !== null;
     const result = alreadyLoaded
       ? ((await engine.request("thread/read", { threadId: id, includeTurns: true })) as { thread: WireThread; cwd?: string })
-      : ((await engine.request("thread/resume", resumeParamsFor(id))) as { thread: WireThread; cwd?: string });
+      : ((await engine.request("thread/resume", await resumeParamsFor(id))) as { thread: WireThread; cwd?: string });
     const cwd = result.cwd ?? result.thread.cwd ?? null;
     if (cwd) threadCwds.set(id, cwd);
     const pane = ensurePane(paneId);
@@ -10674,7 +10680,7 @@ app.whenReady().then(async () => {
           thread: WireThread;
           cwd?: string;
         })
-      : ((await engine.request("thread/resume", resumeParamsFor(id))) as {
+      : ((await engine.request("thread/resume", await resumeParamsFor(id))) as {
           thread: WireThread;
           cwd?: string;
         });
@@ -10866,7 +10872,7 @@ app.whenReady().then(async () => {
     threadCwds.set(record.threadId, record.cwd);
     try {
       await sideChatInterrupts.get(record.threadId);
-      const result = await engine.request("thread/resume", resumeParamsFor(record.threadId)) as { thread: WireThread };
+      const result = await engine.request("thread/resume", await resumeParamsFor(record.threadId)) as { thread: WireThread };
       if (panes.main.threadId !== record.parentThreadId) return { error: "Original chat changed while restoring" };
       const replay = threadToEntries({ ...result.thread, turns: result.thread.turns?.slice(record.baselineTurns) });
       const page = await openTranscriptSession(record.threadId, replay.entries, {}, null);

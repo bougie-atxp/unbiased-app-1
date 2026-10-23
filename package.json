@@ -4,8 +4,8 @@
   "description": "Unbiased desktop — Pareto-powered coding agent",
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "node build/dev-launcher.cjs",
-    "build": "electron-vite build",
+    "dev": "npm run prepare:browser && node build/dev-launcher.cjs",
+    "build": "node build/prepare-browser.cjs --runtime-only && electron-vite build",
     "prepare:browser": "node build/prepare-browser.cjs",
     "smoke:browser": "node build/smoke-browser.cjs",
     "smoke:pal-fullscreen": "electron build/smoke-pal-fullscreen.cjs",
@@ -80,12 +80,8 @@
         "to": "icon.png"
       },
       {
-        "from": "out/main/browser-runtime.js",
-        "to": "browser-runtime/browser-runtime.js"
-      },
-      {
-        "from": "out/main/chunks",
-        "to": "browser-runtime/chunks"
+        "from": "build/browser-runtime",
+        "to": "browser-runtime"
       }
     ],
     "asarUnpack": [

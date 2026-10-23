@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerBrowserMirrorIpc } from "./browser-mirror-ipc";
-import { validateRequest } from "../browser-runtime/protocol";
+import { validateRequest } from "../../build/browser-runtime/protocol";
 
 test("desktop mirror IPC translates conversation IDs and transient pane sizes into valid runtime requests", async () => {
   const handlers = new Map<string, Function>();

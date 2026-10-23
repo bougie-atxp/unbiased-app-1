@@ -29,6 +29,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Read pinned browser repository
+        id: browser-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: unbiased-browser
+          permission-contents: read
+
+      - name: Prepare pinned browser client
+        run: node build/prepare-browser.cjs --runtime-only
+        env:
+          GITHUB_TOKEN: ${{ steps.browser-token.outputs.token }}
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -47,8 +62,20 @@ jobs:
         with:
           node-version: 22
 
-      - name: Fetch verified browser binaries
+      - name: Read pinned browser repository
+        id: browser-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: unbiased-browser
+          permission-contents: read
+
+      - name: Fetch and build pinned browser component
         run: node build/prepare-browser.cjs
+        env:
+          GITHUB_TOKEN: ${{ steps.browser-token.outputs.token }}
 
       - name: Install runtime build dependencies
         run: npm ci

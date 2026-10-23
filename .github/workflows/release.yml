@@ -45,7 +45,7 @@ jobs:
       # One token for every cross-repo step below. `repositories:` is not
       # optional here: by default the minted token is scoped to THIS repo
       # alone, and this job also reads unbiased-app-engine and writes
-      # unbiased-app-releases. The App must be installed on all three.
+      # unbiased-app-releases. The App must also be installed on unbiased-browser.
       - name: mint a release token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -57,6 +57,7 @@ jobs:
             unbiased-app
             unbiased-app-engine
             unbiased-app-releases
+            unbiased-browser
 
       # The engine must sit BESIDE the app: package.json's extraResources
       # copies from ../unbiased-app-engine/dist/bundle.
@@ -140,6 +141,8 @@ jobs:
       - name: build DMG
         working-directory: unbiased-app
         run: npm run dist
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
       # The bridge is spawned at runtime from Contents/Resources/ax; if the
       # copy silently did not happen, the app ships without desktop control
@@ -191,7 +194,7 @@ jobs:
 
       - name: smoke test packaged standalone runtime without Electron
         working-directory: unbiased-app
-        run: node build/smoke-browser-runtime.cjs release/mac-arm64/Unbiased.app/Contents/Resources/browser release/mac-arm64/Unbiased.app/Contents/Resources/browser-runtime/browser-runtime.js
+        run: node build/smoke-browser-runtime.cjs release/mac-arm64/Unbiased.app/Contents/Resources/browser release/mac-arm64/Unbiased.app/Contents/Resources/browser-runtime/main.js
 
       - name: publish release to the public repo
         working-directory: unbiased-app

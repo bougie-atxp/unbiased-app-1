@@ -32,7 +32,7 @@ async function main() {
   const win = new BrowserWindow({ show: false, width: 1000, height: 750, webPreferences: {
     preload: resolve("out/preload/index.js"), contextIsolation: true, sandbox: true,
   } });
-  const runtime = new BrowserRuntimeClient({ entry: resolve("out/main/browser-runtime.js"),
+  const runtime = new BrowserRuntimeClient({ entry: resolve("build/browser-runtime/main.js"),
     options: { browserRoot: resolve("build/browser-bundle"), home, tempDir: home, osVersion: "13.0", port },
     onEvent: (event, payload) => { if (!win.isDestroyed()) win.webContents.send(event, payload); },
   });

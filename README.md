@@ -31,7 +31,9 @@ for macOS Accessibility or Screen Recording access only when they need it.
 
 Agent Browser includes a pinned control binary and a private browser, so no
 Homebrew or Chrome installation is needed. Browser automation requires macOS
-13 or newer. Its separate application identity keeps external links going to
+13 or newer. It is built from an exact commit of
+[`unbiased-browser`](https://github.com/circuitandchisel/unbiased-browser).
+Its separate application identity keeps external links going to
 your normal browser; its separate profile requires its own website sign-ins.
 
 ## Features
@@ -114,6 +116,10 @@ npm ci
 npm run prepare:browser
 npm run dev
 ```
+
+Browser preparation requires Git read access to the internal `unbiased-browser`
+repository. [Browser integration](docs/PRIVATE-BROWSER.md) explains the source
+pin, local source override and component checks.
 
 `UNBIASED_ENGINE_DIR` overrides the engine location for testing. In a
 packaged app the engine is expected beside the app in `extraResources`.
