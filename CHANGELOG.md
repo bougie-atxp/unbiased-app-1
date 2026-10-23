@@ -6,6 +6,14 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
+## 1.13.23 — October 23, 2026
+
+### Improved
+
+- **Projects can share the same source folder.** Each keeps its own identity and saved notes, and existing chats stay with their original project.
+- **Skills settings are simpler.** Choose This project or Everywhere when adding a skill. Skills remember where they belong, and the separate Portable account settings form is gone.
+- **The sidebar is easier to scan.** Project and conversation rows have matching rounded backgrounds and aligned titles, without the extra connector line and empty circle.
+
 ## 1.13.22 — October 22, 2026
 
 ### Improved
