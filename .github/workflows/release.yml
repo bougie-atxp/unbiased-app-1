@@ -180,7 +180,8 @@ jobs:
           test -n "$expected_version"
           test "$("$app/Contents/Resources/engine/pareto-app-server" --version)" = "codex-app-server $expected_version"
           test -x "$app/Contents/Resources/browser/agent-browser"
-          test ! -e "$app/Contents/Resources/browser/chrome-mac-arm64"
+          test -x "$app/Contents/Resources/browser/browser-supervisor"
+          test -x "$app/Contents/Resources/browser/Unbiased Browser.app/Contents/MacOS/Google Chrome for Testing"
           codesign --verify --deep --strict "$app"
           ls -lh release/*.dmg
 

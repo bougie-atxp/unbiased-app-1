@@ -43,7 +43,7 @@ import { PetWindowReadiness } from "./pet-window-readiness";
 import { isPalSelection, ROBOT_PALS, type PalsSettings } from "../shared/pals";
 import { resolveEngineDir } from "./engine-path";
 import { matchingMessageSnippet, messagesFromTranscriptEntries } from "./thread-search";
-import { agentBrowserCandidates, chromeCandidates } from "./browser-binaries";
+import { agentBrowserCandidates, automationBrowserPaths } from "./browser-binaries";
 import { agentStyleInstructions, DEFAULT_AGENT_STYLE, parseAgentStylePrefs, type AgentStylePrefs } from "../shared/agent-style";
 import { projectContextForDirectory } from "./project-context";
 import { ProjectStore } from "./project-store";
@@ -440,15 +440,44 @@ function defaultChatDir(): string {
 const threadAccessModes = new Map<string, AccessMode>();
 const browserNetGrants = new Set<string>();
 const browserConnectGrants = new Set<string>();
-// Unbiased's own Chrome, launched on demand once the user approves session
-// access. It CANNOT be their everyday profile: since Chrome 136 the browser
-// refuses remote debugging on the default user-data-dir, so we keep a
-// persistent profile of our own — signed into once, reused forever after.
+// Automation uses only our private application identity and a private profile.
+// Never silently launch an installed everyday browser, even with another profile.
 const AGENT_CHROME_PORT = 9222;
 function agentChromeProfile(): string {
-  return join(app.getPath("home"), ".unbiased", "chrome-profile");
+  return join(app.getPath("home"), ".unbiased", "browser-profile");
 }
 let managedChrome: ChildProcess | null = null;
+let browserStopping: Promise<void> | null = null;
+function stopManagedChrome(): Promise<void> {
+  if (browserStopping) return browserStopping;
+  const child = managedChrome;
+  if (!child) return Promise.resolve();
+  browserStopping = new Promise<void>((resolve) => {
+    const done = () => { clearTimeout(timer); if (managedChrome === child) managedChrome = null; resolve(); };
+    const timer = setTimeout(() => {
+      // Leave the guardian alive to finish cleanup rather than killing it
+      // before it has reaped its browser. Startup recovery handles failures.
+      child.kill("SIGTERM"); done();
+    }, 3500);
+    child.once("exit", done);
+    child.stdin?.end();
+  }).finally(() => { browserStopping = null; });
+  return browserStopping;
+}
+function privateBrowser() {
+  return automationBrowserPaths(process.resourcesPath, app.isPackaged, app.getAppPath());
+}
+function browserProcessRecord() {
+  return join(app.getPath("home"), ".unbiased", "automation-browser.pid");
+}
+function browserGuardianCommand(supervisor: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(supervisor, args, { timeout: 6000, maxBuffer: 4096 }, (error, _out, stderr) => {
+      if (error) reject(new Error(String(stderr).trim() || error.message));
+      else resolve();
+    });
+  });
+}
 // Two threads can call browser_connect at once; without this both would spawn
 // Chrome against the same profile, the loser would exit on Chrome's profile
 // singleton, and its exit handler would wipe state belonging to the winner.
@@ -481,20 +510,16 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * believing it belonged to the user, which suppressed the mirror pane and
  * made resetting a stale tab unsafe.
  *
- * Ownership is decided by the profile directory on the listening process's
- * command line: only our Chrome runs with `agentChromeProfile()`. Wrong-way
- * failures are safe — an unreadable answer means "not ours", which only ever
- * makes us more conservative.
+ * Ownership requires the private executable AND its exact profile argument.
+ * An occupied debugging port alone never authorizes adoption or termination.
  */
 function ownsChromeOnPort(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     execFile("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], { timeout: 4000 }, (err, pids) => {
       const pid = String(pids ?? "").trim().split(/\s+/).filter(Boolean)[0];
       if (err || !pid) return resolve(false);
-      execFile("ps", ["-p", pid, "-o", "command="], { timeout: 4000, maxBuffer: 1_000_000 }, (err2, cmd) => {
-        if (err2) return resolve(false);
-        resolve(String(cmd).includes(`--user-data-dir=${agentChromeProfile()}`));
-      });
+      const paths = privateBrowser();
+      execFile(paths.supervisor, ["--owns", pid, paths.executable, agentChromeProfile()], { timeout: 4000 }, (error) => resolve(!error));
     });
   });
 }
@@ -515,22 +540,38 @@ async function ensureAgentChrome(
 async function launchAgentChrome(
   port: number,
 ): Promise<{ ok: boolean; launched: boolean; firstRun: boolean; error?: string }> {
-  if (await cdpAlive(port)) return { ok: true, launched: false, firstRun: false };
-  const bin = chromeCandidates().find((b) => existsSync(b));
-  if (!bin) {
+  if (browserStopping) await browserStopping;
+  if (managedChrome) {
+    if (await cdpAlive(port) && await ownsChromeOnPort(port)) return { ok: true, launched: false, firstRun: false };
+    await stopManagedChrome();
+  }
+  if (process.platform === "darwin" && Number(process.getSystemVersion().split(".")[0]) < 13) {
+    return { ok: false, launched: false, firstRun: false, error: "The private Agent browser requires macOS 13 or newer. Update macOS to use browser automation." };
+  }
+  const { executable: bin, supervisor, denyDirectLaunch } = privateBrowser();
+  if (!existsSync(bin) || !existsSync(supervisor) || !existsSync(denyDirectLaunch)) {
     return {
       ok: false,
       launched: false,
       firstRun: false,
-      error: "No Chrome, Chromium, Brave, or Edge installation found in /Applications.",
+      error: "Unbiased's private browser is missing. Reinstall Unbiased, or run npm run prepare:browser in development.",
     };
   }
   const profile = agentChromeProfile();
   const firstRun = !existsSync(profile);
   try {
     mkdirSync(profile, { recursive: true });
+    // Older releases used installed Chrome with this separate profile. Only
+    // orphaned roots are retired; a live older app must be quit by the user.
+    await browserGuardianCommand(supervisor, ["--retire-legacy", join(app.getPath("home"), ".unbiased", "chrome-profile")]);
+    // Recovery verifies the recorded PID's start time, executable and exact
+    // profile, and refuses when another live supervisor owns the profile.
+    await browserGuardianCommand(supervisor, ["--recover", browserProcessRecord(), bin, profile]);
   } catch (err) {
-    return { ok: false, launched: false, firstRun, error: `Could not create ${profile}: ${String(err)}` };
+    return { ok: false, launched: false, firstRun, error: `Could not prepare the private browser: ${String(err)}` };
+  }
+  if (await cdpAlive(port)) {
+    return { ok: false, launched: false, firstRun, error: `Port ${port} is already in use. Close the older Unbiased browser or explicitly connect to the browser you want to use.` };
   }
   // Windowless by default: the Agent browser side tab IS the window, so a
   // second Chrome on the desktop is just clutter. The tab streams frames and
@@ -541,8 +582,9 @@ async function launchAgentChrome(
   // real window for those cases without a rebuild.
   const headed = process.env.UNBIASED_AGENT_CHROME_HEADED === "1";
   managedChrome = spawnProcess(
-    bin,
+    supervisor,
     [
+      browserProcessRecord(), bin, profile,
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${profile}`,
       ...(headed
@@ -557,22 +599,30 @@ async function launchAgentChrome(
       "--no-default-browser-check",
       "about:blank",
     ],
-    { stdio: "ignore" },
+    { detached: true, stdio: ["pipe", "pipe", "pipe"] },
   );
   const child = managedChrome;
+  let launchError = "";
+  child.stdout?.resume();
+  child.stderr?.on("data", (data) => { launchError = (launchError + String(data)).slice(-2000); });
+  child.on("error", (error) => { launchError = error.message; });
   child.on("exit", () => {
     // Only clear state if the process that died is still the current one.
     if (managedChrome === child) managedChrome = null;
   });
   for (let tries = 0; tries < 24; tries++) {
     await wait(500);
-    if (await cdpAlive(port)) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return { ok: false, launched: false, firstRun, error: launchError || "Private browser supervisor exited before startup." };
+    }
+    if (await cdpAlive(port) && await ownsChromeOnPort(port)) {
       // Our Chrome is up — same signal the per-tool path sends, so the pane
       // appears on a cold start too, before the first tool returns.
       send("agentmirror:activity", { tool: "launch" });
       return { ok: true, launched: true, firstRun };
     }
   }
+  await stopManagedChrome();
   return { ok: false, launched: true, firstRun, error: `Chrome started but never opened port ${port}.` };
 }
 
@@ -591,6 +641,7 @@ let browserAttachedExternal = false;
 // Binding once, before the first tool that needs a page, makes the pane and
 // the agent the same browser by construction.
 let browserSessionBound = false;
+let browserConnectedEndpoint: string | null = null;
 
 /**
  * Make sure the CLI is attached to a browser we can also mirror.
@@ -599,7 +650,14 @@ let browserSessionBound = false;
 async function ensureBrowserSession(): Promise<string | null> {
   // A browser the user pointed us at is already attached and is not ours to
   // re-target; leave it exactly as it is.
-  if (browserSessionBound || browserAttachedExternal) return null;
+  if (browserAttachedExternal) return null;
+  if (browserSessionBound) {
+    if (managedChrome && await cdpAlive(AGENT_CHROME_PORT) && await ownsChromeOnPort(AGENT_CHROME_PORT)) return null;
+    browserSessionBound = false;
+    browserConnectedEndpoint = null;
+    browserTabs.clear();
+    browserActiveRoot = null;
+  }
   const ready = await ensureAgentChrome(AGENT_CHROME_PORT);
   if (!ready.ok) {
     return (
@@ -607,10 +665,10 @@ async function ensureBrowserSession(): Promise<string | null> {
       "Use browser_search and public pages instead."
     );
   }
-  // Already listening and not ours: the user's own debuggable browser. Adopt
-  // it, but mark it external so we never close it or mirror it uninvited.
-  if (!ready.launched && !(await ownsChromeOnPort(AGENT_CHROME_PORT))) {
-    browserAttachedExternal = true;
+  // If the process disappears or the port changes hands during launch, fail
+  // closed. External attachments require an explicit browser_connect call.
+  if (!(await ownsChromeOnPort(AGENT_CHROME_PORT))) {
+    return "The private browser disconnected before attachment. Retry the browser tool.";
   }
   const r = await runAgentBrowser(["connect", String(AGENT_CHROME_PORT)], 30_000);
   // `connect` exits 0 even when discovery fails, so read the output.
@@ -618,6 +676,7 @@ async function ensureBrowserSession(): Promise<string | null> {
     return `Could not attach to a browser on port ${AGENT_CHROME_PORT}: ${r.out || "no detail"}`;
   }
   browserSessionBound = true;
+  browserConnectedEndpoint = String(AGENT_CHROME_PORT);
   // A Chrome of OURS that we did not just launch is a leftover from a previous
   // run, still parked on whatever it was last doing. Blank it, so the pane
   // opens on this session's work instead of presenting a stale page as the
@@ -2105,6 +2164,16 @@ function threadDynamicTools(): Record<string, unknown>[] | undefined {
   return tools.length ? (tools as Record<string, unknown>[]) : undefined;
 }
 
+const browserCLINamespace = `unbiased-${process.pid}-${randomUUID().slice(0, 8)}`;
+function browserCLIEnv() {
+  return {
+    ...process.env,
+    AGENT_BROWSER_NAMESPACE: browserCLINamespace,
+    // A disconnected CLI must fail instead of starting an unsupervised browser.
+    AGENT_BROWSER_EXECUTABLE_PATH: privateBrowser().denyDirectLaunch,
+  };
+}
+
 function runAgentBrowser(args: string[], timeoutMs = 60_000): Promise<{ ok: boolean; out: string }> {
   const bin = agentBrowserBin();
   if (!bin)
@@ -2119,7 +2188,9 @@ function runAgentBrowser(args: string[], timeoutMs = 60_000): Promise<{ ok: bool
         "browse with shell commands instead.",
     });
   return new Promise((resolve) =>
-    execFile(bin, args, { timeout: timeoutMs, maxBuffer: 4_000_000 }, (err, stdout, stderr) =>
+    execFile(bin, browserConnectedEndpoint && args[0] !== "connect" && args[0] !== "close"
+      ? [...args, "--cdp", browserConnectedEndpoint] : args,
+    { timeout: timeoutMs, maxBuffer: 4_000_000, env: browserCLIEnv() }, (err, stdout, stderr) =>
       resolve({
         ok: !err,
         out: [stdout, stderr].map((x) => String(x).trim()).filter(Boolean).join("\n") || (err ? String(err) : ""),
@@ -3640,7 +3711,9 @@ async function handleAgentBrowserCall(
         // Approved above — now make a debuggable browser exist. Nothing for
         // the user to run: an already-listening browser is reused, otherwise
         // we start Unbiased's own Chrome and wait for its port.
-        const ready = await ensureAgentChrome(target.port);
+        const ready = await cdpAlive(target.port) && !(await ownsChromeOnPort(target.port))
+          ? { ok: true, launched: false, firstRun: false }
+          : await ensureAgentChrome(target.port);
         if (!ready.ok) {
           return text(
             `Could not start a browser session: ${ready.error ?? "unknown error"}. ` +
@@ -3657,8 +3730,7 @@ async function handleAgentBrowserCall(
       if (!r.ok || /✗|failed|refused/i.test(r.out)) {
         // Don't leave a window open for a session that never attached.
         if (launched && managedChrome) {
-          managedChrome.kill();
-          managedChrome = null;
+          await stopManagedChrome();
         }
         return text(`Attach failed on ${connectArg}: ${r.out || "no detail"}`, false);
       }
@@ -3669,19 +3741,19 @@ async function handleAgentBrowserCall(
       browserAttachedExternal =
         "url" in target ? true : launched ? false : !(await ownsChromeOnPort(target.port));
       browserSessionBound = true;
+      browserConnectedEndpoint = connectArg;
       if (launched && firstRun) {
         return text(
-          "Attached to a freshly created Unbiased Chrome profile — a browser window is now open on the " +
-            "user's screen, but it is NOT signed into anything yet (Chrome refuses remote debugging on their " +
-            "everyday profile, so this is a separate profile that persists for next time). Tell the user to " +
-            "sign in to the site you need in that new window, then continue. Do not guess credentials or ask " +
+          "Attached to a freshly created private Unbiased Browser profile. It is available in the Agent browser side panel, " +
+            "but it is NOT signed into anything yet. Sign-ins from the old automation browser are not imported. Tell the user to " +
+            "sign in to the site you need in the Agent browser, then continue. Do not guess credentials or ask " +
             "them to type any password to you.",
           true,
         );
       }
       return text(
         (launched
-          ? "Attached to Unbiased's Chrome (a window is open on the user's screen). It may already hold " +
+          ? "Attached to the private Unbiased Browser in the Agent browser side panel. It may already hold " +
             "sign-ins from earlier sessions."
           : "Attached to the browser already listening on that endpoint.") +
           " If a page comes back signed out, ask the user to sign in in that window rather than looking for " +
@@ -3732,12 +3804,12 @@ async function handleAgentBrowserCall(
       // debugging port too — leaving that open all session is what let any
       // local process attach to the signed-in profile.
       if (managedChrome) {
-        managedChrome.kill();
-        managedChrome = null;
+        await stopManagedChrome();
       }
       // The CLI session is no longer bound to anything; the next browser tool
       // has to attach again rather than assuming a live page.
       browserSessionBound = false;
+      browserConnectedEndpoint = null;
       // Every conversation's tab went with the browser. Keeping the registry
       // would hand the next call a label that no longer exists, and the
       // recovery path would then quietly create a tab in a browser we just
@@ -13020,6 +13092,13 @@ app.whenReady().then(async () => {
   // then calls auth:login, which validates and starts the engine.
 });
 
+let browserQuitReady = false;
+app.on("before-quit", (event) => {
+  if (browserQuitReady || !managedChrome) return;
+  event.preventDefault();
+  void stopManagedChrome().finally(() => { browserQuitReady = true; app.quit(); });
+});
+
 app.on("window-all-closed", () => {
   for (const pty of ptys.values()) pty.kill();
   ptys.clear();
@@ -13038,8 +13117,7 @@ app.on("window-all-closed", () => {
   engine.stop();
   // The agent browser's daemon outlives us otherwise — close every session.
   const bin = agentBrowserBinCache;
-  if (bin && !browserAttachedExternal) execFile(bin, ["close", "--all"], () => {});
+  if (bin && !browserAttachedExternal) execFile(bin, ["close", "--all"], { env: browserCLIEnv() }, () => {});
   // Our own Chrome goes with us; its profile (and logins) persist on disk.
-  managedChrome?.kill();
   app.quit();
 });

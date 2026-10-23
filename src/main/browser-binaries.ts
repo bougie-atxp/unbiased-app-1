@@ -12,11 +12,12 @@ export function agentBrowserCandidates(resourcesPath: string, packaged: boolean,
   ];
 }
 
-export function chromeCandidates(): string[] {
-  return [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-  ];
+export function automationBrowserPaths(resourcesPath: string, packaged: boolean, appPath: string) {
+  const root = packaged ? join(resourcesPath, "browser") : join(appPath, "build", "browser-bundle");
+  return {
+    root,
+    executable: join(root, "Unbiased Browser.app", "Contents", "MacOS", "Google Chrome for Testing"),
+    supervisor: join(root, "browser-supervisor"),
+    denyDirectLaunch: join(root, "browser-no-direct-launch"),
+  };
 }

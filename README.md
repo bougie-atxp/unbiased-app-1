@@ -29,8 +29,10 @@ On first launch, choose **Sign in with browser** to select an Unbiased
 workload, or paste an existing Unbiased API key. Desktop-control features ask
 for macOS Accessibility or Screen Recording access only when they need it.
 
-Agent Browser includes a pinned control binary, so no Homebrew installation
-is needed. Browser control uses an installed Chrome, Chromium, Brave, or Edge.
+Agent Browser includes a pinned control binary and a private browser, so no
+Homebrew or Chrome installation is needed. Browser automation requires macOS
+13 or newer. Its separate application identity keeps external links going to
+your normal browser; its separate profile requires its own website sign-ins.
 
 ## Features
 
@@ -109,6 +111,7 @@ cd ../unbiased-ax && make bundle
 # 2. Install and run
 cd ../unbiased-app
 npm ci
+npm run prepare:browser
 npm run dev
 ```
 
