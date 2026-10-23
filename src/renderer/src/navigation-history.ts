@@ -1,6 +1,6 @@
 export type NavigationLocation =
   | { kind: "home" }
-  | { kind: "project"; path: string; name: string }
+  | { kind: "project"; id: string; path: string; name: string }
   | { kind: "thread"; id: string }
   | { kind: "connectors" }
   | { kind: "scheduled" }
@@ -18,7 +18,7 @@ export const initialNavigationHistory: NavigationHistory = {
 
 function sameLocation(a: NavigationLocation, b: NavigationLocation): boolean {
   if (a.kind !== b.kind) return false;
-  if (a.kind === "project" && b.kind === "project") return a.path === b.path;
+  if (a.kind === "project" && b.kind === "project") return a.id === b.id;
   if (a.kind === "thread" && b.kind === "thread") return a.id === b.id;
   return true;
 }
