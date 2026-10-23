@@ -31,7 +31,7 @@ distribution with Unbiased-specific macOS bundle identifiers and handler
 registrations removed. Upstream browser resources and component notices remain
 in `Contents/Resources/browser/Unbiased Browser.app`; the browser's
 `chrome://credits` page lists third-party component credits. The exact artifact
-and checksum are recorded in `build/browser.lock.json`.
+and checksum are recorded in the pinned `unbiased-browser` repository at `scripts/browser.lock.json`.
 
 ## Robot Head Pal
 

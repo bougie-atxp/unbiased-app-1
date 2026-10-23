@@ -1,86 +1,72 @@
-// Stage a pinned CLI, private browser application, and lifetime supervisor.
+// Build one immutable browser component revision. No browser implementation lives here.
+const fs = require("node:fs");
+const { join, resolve } = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { copyFileSync, existsSync, mkdirSync, rmSync, renameSync, chmodSync, readdirSync, writeFileSync } = require("node:fs");
-const { join } = require("node:path");
-
-if (process.platform !== "darwin" || process.arch !== "arm64") {
-  throw new Error("The browser bundle currently supports only macOS arm64");
-}
-
-const root = join(__dirname, "..");
-const cache = join(root, "build", ".browser-cache");
-const bundle = join(root, "build", "browser-bundle");
-const browserPin = require("./browser.lock.json");
-const artifacts = [
-  {
-    file: "agent-browser-darwin-arm64-v0.38.1",
-    url: "https://github.com/vercel-labs/agent-browser/releases/download/v0.38.1/agent-browser-darwin-arm64",
-    sha256: "2e61287259053ea964d39e77002c6a34af0e589e55ccff25e659efae7e892e0d",
-  },
-  {
-    file: "agent-browser-LICENSE-v0.38.1",
-    url: "https://raw.githubusercontent.com/vercel-labs/agent-browser/v0.38.1/LICENSE",
-    sha256: "014bb31e83d5c2e76aea1cc6e82217346ab41362f32cb355ad0f5c10aa0aeaff",
-  },
-  browserPin,
-];
-
-function checksum(path) {
-  return execFileSync("shasum", ["-a", "256", path], { encoding: "utf8" }).split(" ")[0];
-}
-
-function fetchVerified({ file, url, sha256 }) {
-  const path = join(cache, file);
-  if (!existsSync(path) || checksum(path) !== sha256) {
-    const partial = `${path}.partial`;
-    rmSync(partial, { force: true });
-    execFileSync("curl", ["--fail", "--location", "--retry", "3", "--output", partial, url], { stdio: "inherit" });
-    if (checksum(partial) !== sha256) {
-      rmSync(partial, { force: true });
-      throw new Error(`SHA-256 mismatch for ${file}`);
-    }
-    renameSync(partial, path);
+const root = resolve(__dirname, "..");
+const lock = require("../browser-runtime.lock.json");
+function run(command, args, cwd, capture = false) {
+  const env = { ...process.env };
+  // GitHub App token is scoped by CI to this repository. Do not put it in URLs/logs.
+  if (env.GITHUB_TOKEN) {
+    env.GIT_CONFIG_COUNT = "1";
+    env.GIT_CONFIG_KEY_0 = "http.https://github.com/.extraheader";
+    env.GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic " + Buffer.from("x-access-token:" + env.GITHUB_TOKEN).toString("base64");
   }
-  return path;
+  return execFileSync(command, args, { cwd, env, stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit", encoding: "utf8" });
 }
-
-mkdirSync(cache, { recursive: true });
-const [cli, license, chrome] = artifacts.map(fetchVerified);
-rmSync(bundle, { recursive: true, force: true });
-mkdirSync(bundle, { recursive: true });
-copyFileSync(cli, join(bundle, "agent-browser"));
-chmodSync(join(bundle, "agent-browser"), 0o755);
-mkdirSync(join(bundle, "licenses", "agent-browser"), { recursive: true });
-copyFileSync(license, join(bundle, "licenses", "agent-browser", "LICENSE"));
-const unpacked = join(cache, "unpacked-chrome");
-rmSync(unpacked, { recursive: true, force: true });
-execFileSync("ditto", ["-x", "-k", chrome, unpacked]);
-const browserApp = join(bundle, "Unbiased Browser.app");
-execFileSync("ditto", [join(unpacked, "chrome-mac-arm64", "Google Chrome for Testing.app"), browserApp]);
-const privateId = browserPin.bundleId;
-function rewriteIdentities(dir) {
-  for (const item of readdirSync(dir, { withFileTypes: true })) {
-    if (item.isDirectory()) rewriteIdentities(join(dir, item.name));
-    if (item.isFile() && item.name === "Info.plist") {
-      const plist = join(dir, item.name);
-      let id;
-      try { id = execFileSync("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", plist], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { continue; }
-      if (id.startsWith("com.google.chrome.for.testing")) {
-        execFileSync("/usr/libexec/PlistBuddy", ["-c", `Set :CFBundleIdentifier ${id.replace("com.google.chrome.for.testing", privateId)}`, plist]);
-      }
-    }
+function sourceDirectory() {
+  if (lock.repository !== "circuitandchisel/unbiased-browser" || !/^[a-f0-9]{40}$/.test(lock.revision) || lock.protocolVersion !== 1 || !/^\d+\.\d+\.\d+$/.test(lock.version)) throw new Error("Invalid browser component lock");
+  const override = process.env.UNBIASED_BROWSER_SOURCE_DIR;
+  const source = override ? resolve(override) : join(root, "build", ".browser-source", lock.revision);
+  if (!fs.existsSync(join(source, ".git")) && !override) {
+    fs.mkdirSync(source, { recursive: true });
+    run("git", ["init", "--quiet"], source);
+    run("git", ["remote", "add", "origin", `https://github.com/${lock.repository}.git`], source);
   }
+  let head;
+  try { head = run("git", ["rev-parse", "HEAD"], source, true).trim(); } catch {}
+  if (head !== lock.revision && !override) {
+    run("git", ["fetch", "--depth", "1", "origin", lock.revision], source);
+    run("git", ["checkout", "--detach", lock.revision], source);
+    head = run("git", ["rev-parse", "HEAD"], source, true).trim();
+  }
+  if (head !== lock.revision) throw new Error("Browser source must match browser-runtime.lock.json exactly");
+  if (run("git", ["status", "--porcelain", "--untracked-files=no"], source, true).trim()) throw new Error("Browser source has tracked modifications; commit and update the pin first");
+  const pkg = JSON.parse(fs.readFileSync(join(source, "package.json"), "utf8"));
+  if (pkg.version !== lock.version) throw new Error("Browser package version does not match its pin");
+  return source;
 }
-rewriteIdentities(browserApp);
-const plist = join(browserApp, "Contents", "Info.plist");
-for (const key of ["CFBundleURLTypes", "CFBundleDocumentTypes", "UTExportedTypeDeclarations", "UTImportedTypeDeclarations"]) {
-  try { execFileSync("/usr/libexec/PlistBuddy", ["-c", `Delete :${key}`, plist], { stdio: "ignore" }); } catch {}
+function prepare(runtimeOnly = false) {
+  const source = sourceDirectory();
+  // Conformance wrappers execute from this checkout, including after a cached
+  // runtime was prepared from a different local checkout of the same revision.
+  if (!fs.existsSync(join(source, "node_modules", "tsx", "package.json"))) run("npm", ["ci"], source);
+  const destination = join(root, "build", "browser-runtime");
+  const stamp = join(destination, "source.json");
+  let prior;
+  try { prior = JSON.parse(fs.readFileSync(stamp, "utf8")); } catch {}
+  const nativeDestination = join(root, "build", "browser-bundle");
+  const current = prior?.revision === lock.revision && fs.existsSync(join(destination, "main.js")) && fs.existsSync(join(destination, "client.d.ts"));
+  if (current && (runtimeOnly || (prior.native && fs.existsSync(join(nativeDestination, "browser-supervisor"))))) return source;
+  if (!current) {
+    run("npm", ["ci"], source);
+    run("npm", ["run", "build"], source);
+    const component = JSON.parse(fs.readFileSync(join(source, "dist", "component.json"), "utf8"));
+    if (component.version !== lock.version || component.protocolVersion !== lock.protocolVersion) throw new Error("Browser build metadata is incompatible");
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.mkdirSync(destination, { recursive: true });
+    for (const name of fs.readdirSync(join(source, "dist"))) {
+      if (/\.(js|d\.ts)$/.test(name) || name === "component.json") fs.copyFileSync(join(source, "dist", name), join(destination, name));
+    }
+    for (const name of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]) fs.copyFileSync(join(source, name), join(destination, name));
+  }
+  if (!runtimeOnly) {
+    run("npm", ["run", "prepare:browser"], source);
+    fs.rmSync(nativeDestination, { recursive: true, force: true });
+    fs.cpSync(join(source, "build", "browser-bundle"), nativeDestination, { recursive: true, verbatimSymlinks: true });
+  }
+  fs.writeFileSync(stamp, JSON.stringify({ ...lock, native: !runtimeOnly || (current && prior.native) }, null, 2) + "\n");
+  return source;
 }
-execFileSync("/usr/libexec/PlistBuddy", ["-c", "Set :CFBundleDisplayName Unbiased Browser", plist]);
-execFileSync("codesign", ["--force", "--deep", "--sign", "-", "--timestamp=none", browserApp], { stdio: "inherit" });
-execFileSync("codesign", ["--verify", "--deep", "--strict", browserApp]);
-execFileSync("clang", ["-Wall", "-Wextra", "-Werror", "-O2", "-mmacosx-version-min=13.0", join(__dirname, "browser-supervisor.c"), "-o", join(bundle, "browser-supervisor")], { stdio: "inherit" });
-writeFileSync(join(bundle, "browser-no-direct-launch"), '#!/bin/sh\nprintf "%s\\n" "Unbiased Browser must be launched by its lifetime supervisor. Retry the browser tool." >&2\nexit 1\n', { mode: 0o755 });
-writeFileSync(join(bundle, "browser.json"), JSON.stringify({ version: browserPin.version, minimumMacOS: browserPin.minimumMacOS, bundleId: privateId, executable: "Unbiased Browser.app/Contents/MacOS/Google Chrome for Testing" }, null, 2) + "\n");
-rmSync(unpacked, { recursive: true, force: true });
-console.log(`Browser bundle ready: ${bundle}`);
+module.exports = { prepare };
+if (require.main === module) prepare(process.argv.includes("--runtime-only"));
