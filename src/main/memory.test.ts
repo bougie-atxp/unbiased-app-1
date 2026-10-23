@@ -17,6 +17,7 @@ import {
   renderMemorySection,
   saveMemoryNote,
   scopedMemoryDir,
+  selectedProjectMemoryDir,
   threadMemoryDir,
   validateMemory,
 } from "./memory";
@@ -319,4 +320,21 @@ test("new memory files and directories are private", () => {
   assert.equal(statSync(dir).mode & 0o077, 0);
   assert.equal(statSync(join(dir, "secret.md")).mode & 0o077, 0);
   assert.equal(statSync(join(dir, "MEMORY.md")).mode & 0o077, 0);
+});
+
+
+test("project IDs isolate memory even when the working repository is shared", () => {
+  const root = "/memory";
+  const first = selectedProjectMemoryDir(root, { id: "one" }, "/scratch", null);
+  const second = selectedProjectMemoryDir(root, { id: "two" }, "/scratch", null);
+  assert.notEqual(first, second);
+  assert.equal(first, "/memory/projects/one");
+  assert.equal(selectedProjectMemoryDir(root, null, "/scratch", null), null);
+});
+
+test("migrated projects keep existing notes and ordinary chats stay private", () => {
+  const root = "/memory";
+  const id = "00000000-0000-0000-0000-000000000001";
+  assert.equal(selectedProjectMemoryDir(root, { id: "one", legacyMemoryPath: "/repo" }, "/scratch", id), projectMemoryDir(root, "/repo"));
+  assert.equal(selectedProjectMemoryDir(root, null, "/scratch", id), threadMemoryDir(root, id));
 });
