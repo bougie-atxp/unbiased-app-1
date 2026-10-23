@@ -18,6 +18,7 @@ export type ProjectRecord = {
   icon: string;
   color: string | null;
   sources: SourceAttachment[];
+  legacyMemoryPath?: string;
 };
 export function projectRecord(
   raw: unknown,
@@ -63,6 +64,7 @@ export function projectRecord(
     icon: p.icon ?? "folder",
     color: p.color ?? null,
     sources,
+    ...((previous?.legacyMemoryPath ?? p.legacyMemoryPath) ? { legacyMemoryPath: previous?.legacyMemoryPath ?? p.legacyMemoryPath } : {}),
   };
 }
 export function readProjects(file: string): ProjectRecord[] {

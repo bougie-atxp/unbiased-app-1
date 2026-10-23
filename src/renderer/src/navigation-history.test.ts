@@ -16,8 +16,16 @@ test("navigation history supports back, forward, and a new branch", () => {
 });
 
 test("starting a thread replaces its empty chat and repeat visits are ignored", () => {
-  const project = pushNavigation(initialNavigationHistory, { kind: "project", path: "/repo", name: "Repo" });
+  const project = pushNavigation(initialNavigationHistory, { kind: "project", id: "project-a", path: "/repo", name: "Repo" });
   const thread = replaceNavigation(project, { kind: "thread", id: "a" });
   assert.deepEqual(navigationTarget(thread, -1), { kind: "home" });
   assert.equal(pushNavigation(thread, { kind: "thread", id: "a" }), thread);
+});
+
+test("projects sharing a repository have independent navigation entries", () => {
+  const first = pushNavigation(initialNavigationHistory, { kind: "project", id: "one", path: "/repo", name: "One" });
+  const second = pushNavigation(first, { kind: "project", id: "two", path: "/repo", name: "Two" });
+  assert.equal(second.entries.length, 3);
+  assert.deepEqual(navigationTarget(second, -1), first.entries[1]);
+  assert.equal(pushNavigation(second, { kind: "project", id: "two", path: "/new-primary", name: "Renamed" }), second);
 });

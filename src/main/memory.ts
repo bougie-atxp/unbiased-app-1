@@ -192,6 +192,19 @@ export function scopedMemoryDir(
   return projectMemoryDir(root, project);
 }
 
+/** Project identity, rather than cwd, isolates notes when repositories are shared. */
+export function selectedProjectMemoryDir(
+  root: string,
+  project: { id: string; legacyMemoryPath?: string } | null,
+  defaultCwd: string,
+  threadId: string | null,
+): string | null {
+  if (!project) return threadId ? threadMemoryDir(root, threadId) : null;
+  return project.legacyMemoryPath
+    ? scopedMemoryDir(root, project.legacyMemoryPath, defaultCwd, threadId)
+    : join(root, "projects", project.id);
+}
+
 // ── fs layer ────────────────────────────────────────────────────────────
 
 /** Every path built from a note name goes through this gate first — the

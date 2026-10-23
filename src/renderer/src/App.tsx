@@ -320,9 +320,12 @@ function looksLikeFilePath(text: string): boolean {
   if (t.includes("/") && /^[./~]?[\w.@/-]+\.[A-Za-z0-9]{1,8}$/.test(t)) return true;
   return /^[\w.-]+\.(ts|tsx|js|jsx|mjs|cjs|json|go|rs|py|sh|bash|zsh|toml|yaml|yml|css|scss|html|md|sql|txt|lock)$/.test(t);
 }
+type ProjectSelection = { id: string; name: string; path: string };
 type ProjectInfo = {
+  id: string;
   name: string;
   path: string;
+  legacyPreferencePath?: string;
   icon?: string;
   color?: string | null;
   folders?: string[];
@@ -335,7 +338,7 @@ type SettingsTab = "appearance" | "agent" | "pals" | "account" | "updates" | "re
  *  after thread/start does not include the new id. Without a stand-in row, a
  *  chat you start and leave running is invisible until its first turn ends,
  *  which for a long job reads as "it deleted my chat". */
-type PendingThread = { id: string; title: string; projectPath: string | null; createdAt: string };
+type PendingThread = { id: string; title: string; projectId: string | null; createdAt: string };
 
 /** Stand-in title until the engine names the thread — the first line of what
  *  was sent, which is roughly what it derives its own title from anyway. */
@@ -365,16 +368,16 @@ function mergePendingThreads(sidebar: SidebarData, pending: PendingThread[]): Si
   const extra = pending.filter((p) => !known.has(p.id));
   if (extra.length === 0) return sidebar;
   const row = (p: PendingThread): ThreadSummary => ({ id: p.id, title: p.title, createdAt: p.createdAt });
-  const paths = new Set(sidebar.projects.map((p) => p.path));
+  const paths = new Set(sidebar.projects.map((p) => p.id));
   return {
     ...sidebar,
     projects: sidebar.projects.map((pr) => {
-      const mine = extra.filter((p) => p.projectPath === pr.path);
+      const mine = extra.filter((p) => p.projectId === pr.id);
       return mine.length ? { ...pr, threads: [...mine.map(row), ...pr.threads] } : pr;
     }),
     // A stand-in whose project is gone still belongs somewhere visible.
     recents: [
-      ...extra.filter((p) => !p.projectPath || !paths.has(p.projectPath)).map(row),
+      ...extra.filter((p) => !p.projectId || !paths.has(p.projectId)).map(row),
       ...sidebar.recents,
     ],
   };
@@ -824,9 +827,9 @@ declare global {
       } | null>;
       mountThread: (id: string) => Promise<NonNullable<Awaited<ReturnType<Window["unbiased"]["openThread"]>>> & { lease: string }>;
       threadPage: (sessionId: string, before: number, limit?: number) => Promise<{ entries: Entry[]; offset: number; total: number; expired: boolean }>;
-      createMultiThread: (projectPath?: string | null, replaceId?: string, workMode?: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<{ id: string; cwd: string; branch: string | null }>;
+      createMultiThread: (projectId?: string | null, replaceId?: string, workMode?: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<{ id: string; cwd: string; branch: string | null }>;
       unmountThread: (id: string, lease: string) => Promise<{ ok: boolean }>;
-      detachThread: (cwd?: string) => Promise<{ ok: boolean }>;
+      detachThread: (projectId?: string) => Promise<{ ok: boolean }>;
       deleteThread: (id: string) => Promise<{ ok: boolean }>;
       resetSideChat: (paneId?: string) => Promise<{ ok: boolean }>;
       subagentsList: (parent: string) => Promise<{ agents: SubAgent[] }>;
@@ -853,21 +856,21 @@ declare global {
         }) => void,
       ) => () => void;
       onMessageBoundary: (cb: (p: { paneId: PaneId }) => void) => () => void;
-      chooseProject: () => Promise<{ path: string | null; name: string | null }>;
+      chooseProject: () => Promise<{ id?: string; path: string | null; name: string | null }>;
       createProject: (record: {
         name: string;
         folders: string[];
         primary: string;
         icon: string;
         color: string | null;
-      }) => Promise<{ path: string | null; name: string | null; error?: string }>;
+      }) => Promise<{ id?: string; path: string | null; name: string | null; error?: string }>;
       pickProjectLocation: () => Promise<{ path: string | null }>;
       renameThread: (threadId: string, name: string) => Promise<{ ok: boolean; error?: string }>;
-      assignThreadProject: (threadId: string, projectPath: string) => Promise<{ ok: boolean }>;
-      archiveProjectChats: (path: string) => Promise<{ archived: number }>;
-      removeProject: (path: string) => Promise<{ ok: boolean }>;
+      assignThreadProject: (threadId: string, projectId: string) => Promise<{ ok: boolean }>;
+      archiveProjectChats: (projectId: string) => Promise<{ archived: number }>;
+      removeProject: (projectId: string) => Promise<{ ok: boolean }>;
       updateProject: (
-        path: string,
+        projectId: string,
         record: { name: string; folders: string[]; primary: string; icon: string; color: string | null },
       ) => Promise<{ ok: boolean; error?: string }>;
       revealProject: (path: string) => Promise<{ ok: boolean }>;
@@ -1269,7 +1272,7 @@ export function App() {
     } catch { return []; }
   });
   const [freshMultiIds, setFreshMultiIds] = useState<Set<string>>(() => new Set());
-  const [freshMultiProjects, setFreshMultiProjects] = useState<Record<string, { name: string; path: string } | null>>({});
+  const [freshMultiProjects, setFreshMultiProjects] = useState<Record<string, ProjectSelection | null>>({});
   const [freshMultiWork, setFreshMultiWork] = useState<Record<string, { mode: "local" | "worktree" | "existing"; cwd: string; branch: string | null }>>({});
   const multiDraftsRef = useRef(new Map<string, ConversationDrafts<Attachment>>());
   useEffect(() => { localStorage.setItem("multiViewChats", JSON.stringify(multiIds.filter((id) => !freshMultiIds.has(id)))); }, [multiIds, freshMultiIds]);
@@ -1460,17 +1463,17 @@ export function App() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const [activeProject, setActiveProject] = useState<{ name: string; path: string } | null>(null);
+  const [activeProject, setActiveProject] = useState<ProjectSelection | null>(null);
   const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
   const [hoveredProject, setHoveredProject] = useState<string | null>(null);
   // Which project row's ⋯ menu is open (fixed-positioned at the button's
   // screen rect — the nav's overflow would clip an absolute menu at
   // narrow sidebar widths), and the pending confirm dialog.
-  const [projMenu, setProjMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const [projMenu, setProjMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [confirmDialog, setConfirmDialog] = useState<{
     kind: "archive" | "remove";
-    path: string;
+    id: string;
     name: string;
     count: number;
   } | null>(null);
@@ -1481,7 +1484,8 @@ export function App() {
   // surface; create just starts blank and lands on project:create.
   const [editProj, setEditProj] = useState<{
     mode: "create" | "edit";
-    path: string; // edit: the record's primary at open time — the update key
+    id: string; // Stable project identity; repositories may be shared.
+    path: string;
     name: string;
     folders: string[];
     primary: string;
@@ -1564,17 +1568,18 @@ export function App() {
         icon: editProj.icon,
         color: editProj.color,
       });
-      if (!r.path || !r.name) {
+      if (!r.id || !r.path || !r.name) {
         setEditProj((e) => (e ? { ...e, error: r.error ?? "Couldn't create the project" } : e));
         return;
       }
       if (editProj.targetFreshId && freshMultiIds.has(editProj.targetFreshId)) {
         try {
-          await selectFreshEnvironment(editProj.targetFreshId, { name: r.name, path: r.path }, "local");
+          await selectFreshEnvironment(editProj.targetFreshId, { id: r.id, name: r.name, path: r.path }, "local");
         } catch (cause) {
           setEditProj((e) => e ? {
             ...e,
             mode: "edit",
+            id: r.id!,
             path: r.path!,
             primary: r.path!,
             folders: e.folders.length ? e.folders : [r.path!],
@@ -1588,8 +1593,8 @@ export function App() {
         return;
       }
       setEditProj(null);
-      visit({ kind: "project", path: r.path, name: r.name });
-      setActiveProject({ name: r.name, path: r.path });
+      visit({ kind: "project", id: r.id, path: r.path, name: r.name });
+      setActiveProject({ id: r.id, name: r.name, path: r.path });
       setActiveThreadId(null);
       setMainStarted(false);
       setMainReset((r2) => ({ entries: [], nonce: r2.nonce + 1 }));
@@ -1597,7 +1602,7 @@ export function App() {
       void refreshThreads();
       return;
     }
-    const r = await window.unbiased.updateProject(editProj.path, {
+    const r = await window.unbiased.updateProject(editProj.id, {
       name: editProj.name,
       folders: editProj.folders,
       primary: editProj.primary,
@@ -1608,8 +1613,8 @@ export function App() {
       setEditProj((e) => (e ? { ...e, error: r.error ?? "Save failed" } : e));
       return;
     }
-    if (activeProject?.path === editProj.path) {
-      setActiveProject({ name: editProj.name.trim() || activeProject.name, path: editProj.primary });
+    if (activeProject?.id === editProj.id) {
+      setActiveProject({ id: editProj.id, name: editProj.name.trim() || activeProject.name, path: editProj.primary });
     }
     setEditProj(null);
     void refreshThreads();
@@ -1627,9 +1632,10 @@ export function App() {
     void refreshThreads();
   }
 
-  async function doMoveThread(projectPath: string) {
+  async function doMoveThread(projectId: string) {
     if (!moveDialog) return;
-    await window.unbiased.assignThreadProject(moveDialog.id, projectPath);
+    await window.unbiased.assignThreadProject(moveDialog.id, projectId);
+    if (activeThreadId === moveDialog.id) setActiveProject(null);
     setPinnedThreads((current) => current.map((t) => t.id === moveDialog.id ? { ...t, inProject: true } : t));
     setMoveDialog(null);
     void refreshThreads();
@@ -1658,14 +1664,14 @@ export function App() {
 
   async function runConfirmedAction() {
     if (!confirmDialog) return;
-    const { kind, path } = confirmDialog;
+    const { kind, id } = confirmDialog;
     if (kind === "archive") {
-      await window.unbiased.archiveProjectChats(path);
-      const archived = new Set(sidebar.projects.find((p) => p.path === path)?.threads.map((t) => t.id) ?? []);
+      await window.unbiased.archiveProjectChats(id);
+      const archived = new Set(sidebar.projects.find((p) => p.id === id)?.threads.map((t) => t.id) ?? []);
       setUnreadCompletedThreads((current) => new Set([...current].filter((id) => !archived.has(id))));
       // The active conversation may have just been archived.
       const wasActive = sidebar.projects.some(
-        (p) => p.path === path && p.threads.some((t) => t.id === activeThreadId),
+        (p) => p.id === id && p.threads.some((t) => t.id === activeThreadId),
       );
       if (wasActive) {
         await window.unbiased.detachThread();
@@ -1675,8 +1681,8 @@ export function App() {
         resetSideView();
       }
     } else {
-      await window.unbiased.removeProject(path);
-      if (activeProject?.path === path) setActiveProject(null);
+      await window.unbiased.removeProject(id);
+      if (activeProject?.id === id) setActiveProject(null);
     }
     setConfirmDialog(null);
     void refreshThreads();
@@ -1753,9 +1759,9 @@ export function App() {
 
   function changeWorkMode(sel: WorkSel) {
     // Only the generic modes persist; a specific worktree is per-session.
-    if (sel.mode !== "existing" && activeProjectPath) {
+    if (sel.mode !== "existing" && activeProjectId) {
       const store = workModeStore();
-      store[activeProjectPath] = sel.mode;
+      store[activeProjectId] = sel.mode;
       localStorage.setItem("workModeByProject", JSON.stringify(store));
     }
     setWorkSelState(sel);
@@ -2096,7 +2102,7 @@ export function App() {
     visit(activeThreadId
       ? { kind: "thread", id: activeThreadId }
       : activeProject
-        ? { kind: "project", path: activeProject.path, name: activeProject.name }
+        ? { kind: "project", id: activeProject.id, path: activeProject.path, name: activeProject.name }
         : { kind: "home" });
   }
 
@@ -2132,8 +2138,8 @@ export function App() {
     setMultiIds((ids) => addMultiViewChat(ids, id));
   }
 
-  async function selectFreshEnvironment(id: string, project: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) {
-    const { id: nextId, cwd, branch } = await window.unbiased.createMultiThread(project?.path, id, mode, worktreeDir);
+  async function selectFreshEnvironment(id: string, project: ProjectSelection | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) {
+    const { id: nextId, cwd, branch } = await window.unbiased.createMultiThread(project?.id, id, mode, worktreeDir);
     const previous = multiDraftsRef.current.get(id)?.current();
     const nextDraft = new ConversationDrafts<Attachment>(nextId, 0);
     if (previous) {
@@ -2272,6 +2278,12 @@ export function App() {
 
   async function refreshThreads() {
     const data = await window.unbiased.listThreads();
+    const modes = workModeStore();
+    for (const project of data.projects) {
+      const legacy = project.legacyPreferencePath && modes[project.legacyPreferencePath];
+      if (!Object.hasOwn(modes, project.id) && legacy) modes[project.id] = legacy;
+    }
+    localStorage.setItem("workModeByProject", JSON.stringify(modes));
     setSidebar(data);
     if (data.running) setRunningThreads(new Set(data.running));
   }
@@ -2403,15 +2415,16 @@ export function App() {
   // Switching away from a running conversation is fine — its turn keeps
   // going in the engine and the sidebar shows it as active. Only genuinely
   // destructive actions still wait.
-  async function newChat(project?: { name: string; path: string }, record = true) {
+  async function newChat(project?: ProjectSelection, record = true) {
+    if (project) project = sidebar.projects.find((p) => p.id === project!.id) ?? project;
     const seq = ++openSeqRef.current;
     setScheduledOpen(false);
     setConnectorsOpen(false);
     setMultiOpen(false);
     snapshotSideView();
-    await window.unbiased.detachThread(project?.path);
+    await window.unbiased.detachThread(project?.id);
     if (openSeqRef.current !== seq) return;
-    if (record) visit(project ? { kind: "project", path: project.path, name: project.name } : { kind: "home" });
+    if (record) visit(project ? { kind: "project", id: project.id, path: project.path, name: project.name } : { kind: "home" });
     setActiveProject(project ?? null);
     setActiveThreadId(null);
     setMainStarted(false);
@@ -2419,24 +2432,24 @@ export function App() {
     resetSideView();
   }
 
-  async function selectNewChatProject(project: { name: string; path: string } | null) {
-    await window.unbiased.detachThread(project?.path);
-    const mode = project ? workModeStore()[project.path] ?? "local" : "local";
+  async function selectNewChatProject(project: ProjectSelection | null) {
+    await window.unbiased.detachThread(project?.id);
+    const mode = project ? workModeStore()[project.id] ?? "local" : "local";
     await window.unbiased.setWorkMode(mode);
     setActiveProject(project);
     setActiveThreadId(null);
-    visit(project ? { kind: "project", path: project.path, name: project.name } : { kind: "home" });
+    visit(project ? { kind: "project", id: project.id, path: project.path, name: project.name } : { kind: "home" });
   }
 
   async function openProjectDialog() {
-    const { path, name } = await window.unbiased.chooseProject();
-    if (!path || !name) return; // cancelled
+    const { id, path, name } = await window.unbiased.chooseProject();
+    if (!id || !path || !name) return; // cancelled
     ++openSeqRef.current;
     setScheduledOpen(false);
     setConnectorsOpen(false);
     snapshotSideView();
-    visit({ kind: "project", path, name });
-    setActiveProject({ name, path });
+    visit({ kind: "project", id, path, name });
+    setActiveProject({ id, name, path });
     setActiveThreadId(null);
     setMainStarted(false);
     setMainReset((r) => ({ entries: [], nonce: r.nonce + 1 }));
@@ -2549,7 +2562,7 @@ export function App() {
     try {
       let pending: Promise<void> | null = null;
       if (target.kind === "thread") pending = openThread(target.id, false);
-      else if (target.kind === "project") pending = newChat({ name: target.name, path: target.path }, false);
+      else if (target.kind === "project") pending = newChat({ id: target.id, name: target.name, path: target.path }, false);
       else if (target.kind === "home") pending = newChat(undefined, false);
       else if (target.kind === "scheduled") showScheduledPage(undefined, false);
       else if (target.kind === "multi") showMultiView(false);
@@ -3327,13 +3340,14 @@ export function App() {
     p.threads.some((t) => t.id === activeThreadId),
   );
   const activeProjectName = activeProject?.name ?? activeSidebarProject?.name ?? null;
+  const activeProjectId = activeProject?.id ?? activeSidebarProject?.id ?? null;
   const activeProjectPath = activeProject?.path ?? activeSidebarProject?.path ?? null;
   /** Exactly one row in the sidebar is ever lit. A project carries the
    *  highlight only until its chat has a thread (the thread row takes over
    *  from there) — and neither may claim it while Scheduled, which is a
    *  destination of its own, is what you are actually looking at. */
-  const litProject = (path: string) =>
-    !pageOpen && activeProject?.path === path && !activeThreadId;
+  const litProject = (id: string) =>
+    !pageOpen && activeProject?.id === id && !activeThreadId;
   const inProject = activeProjectName !== null;
   /** The side panel belongs to a CONVERSATION — its tabs are that chat's
    *  agents, files, terminals and side chats. Scheduled and Connectors are
@@ -3415,12 +3429,12 @@ export function App() {
   // it to main so the next thread/start uses it. This also drops any
   // selected existing worktree — it belonged to the previous project.
   useEffect(() => {
-    const stored = activeProjectPath ? workModeStore()[activeProjectPath] : undefined;
+    const stored = activeProjectId ? workModeStore()[activeProjectId] : undefined;
     const sel: WorkSel = stored === "worktree" ? { mode: "worktree" } : { mode: "local" };
     setWorkSelState(sel);
     void window.unbiased.setWorkMode(sel.mode);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProjectPath]);
+  }, [activeProjectId, activeProjectPath]);
 
   useEffect(() => {
     if (!activeProjectPath) {
@@ -3757,6 +3771,7 @@ export function App() {
               onClick={() =>
                 setEditProj({
                   mode: "create",
+                  id: "",
                   path: "",
                   name: "",
                   folders: [],
@@ -3788,17 +3803,17 @@ export function App() {
           </div>
           {!projectsCollapsed &&
           sidebarView.projects.map((p) => (
-            <div key={p.path} style={{ marginBottom: 12 }}>
+            <div key={p.id} data-project-id={p.id} style={{ marginBottom: 12 }}>
               {/* A label, not a button — chats in a project start from the
                   pencil that appears on hover. */}
               <div
-                onMouseEnter={() => setHoveredProject(p.path)}
+                onMouseEnter={() => setHoveredProject(p.id)}
                 onMouseLeave={() => setHoveredProject(null)}
                 onClick={() =>
                   setCollapsedProjects((cur) => {
                     const next = new Set(cur);
-                    if (next.has(p.path)) next.delete(p.path);
-                    else next.add(p.path);
+                    if (next.has(p.id)) next.delete(p.id);
+                    else next.add(p.id);
                     return next;
                   })
                 }
@@ -3831,7 +3846,7 @@ export function App() {
                   boxSizing: "border-box",
                 }}
                 className="u-sidebar-row"
-                data-active={litProject(p.path)}
+                data-active={litProject(p.id)}
               >
                 <ProjectIcon icon={p.icon} color={p.color} />
                 <span
@@ -3845,7 +3860,7 @@ export function App() {
                 >
                   {p.name}
                 </span>
-                {(hoveredProject === p.path || projMenu?.path === p.path) && (
+                {(hoveredProject === p.id || projMenu?.id === p.id) && (
                   <span
                     data-projmenu
                     onClick={(e) => e.stopPropagation()}
@@ -3855,12 +3870,12 @@ export function App() {
                       onClick={(e) => {
                         const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
                         setProjMenu((cur) =>
-                          cur?.path === p.path ? null : { path: p.path, x: r.right, y: r.bottom + 6 },
+                          cur?.id === p.id ? null : { id: p.id, x: r.right, y: r.bottom + 6 },
                         );
                       }}
                       title="Project options"
                       aria-label="Project options"
-                      aria-expanded={projMenu?.path === p.path}
+                      aria-expanded={projMenu?.id === p.id}
                       style={{
                         background: "transparent",
                         border: "none",
@@ -3873,7 +3888,7 @@ export function App() {
                       <EllipsisIcon />
                     </button>
                     <button
-                      onClick={() => void newChat({ name: p.name, path: p.path })}
+                      onClick={() => void newChat({ id: p.id, name: p.name, path: p.path })}
                       title={`New chat in ${p.name}`}
                       aria-label={`New chat in ${p.name}`}
                       style={{
@@ -3887,7 +3902,7 @@ export function App() {
                     >
                       <NewChatIcon />
                     </button>
-                    {projMenu?.path === p.path && (
+                    {projMenu?.id === p.id && (
                       <div
                         data-popover
                         style={{
@@ -3955,6 +3970,7 @@ export function App() {
                             setProjMenu(null);
                             setEditProj({
                               mode: "edit",
+                              id: p.id,
                               path: p.path,
                               name: p.name,
                               folders: p.folders ?? [p.path],
@@ -3987,7 +4003,7 @@ export function App() {
                             setProjMenu(null);
                             setConfirmDialog({
                               kind: "archive",
-                              path: p.path,
+                              id: p.id,
                               name: p.name,
                               count: p.threads.length,
                             });
@@ -4002,7 +4018,7 @@ export function App() {
                           iconSurface
                           onClick={() => {
                             setProjMenu(null);
-                            setConfirmDialog({ kind: "remove", path: p.path, name: p.name, count: 0 });
+                            setConfirmDialog({ kind: "remove", id: p.id, name: p.name, count: 0 });
                           }}
                         />
                       </div>
@@ -4010,7 +4026,7 @@ export function App() {
                   </span>
                 )}
               </div>
-              {!collapsedProjects.has(p.path) && p.threads.some((t) => !pinnedThreadIds.has(t.id)) && (
+              {!collapsedProjects.has(p.id) && p.threads.some((t) => !pinnedThreadIds.has(t.id)) && (
                 <div className="u-sidebar-thread-list">
                   {p.threads.filter((t) => !pinnedThreadIds.has(t.id)).map((t) => (
                     <ThreadRow
@@ -4124,12 +4140,12 @@ export function App() {
             setProjectsCollapsed(false);
             setCollapsedProjects((current) => {
               const next = new Set(current);
-              next.delete(project.path);
+              next.delete(project.id);
               return next;
             });
             requestAnimationFrame(() => {
-              [...document.querySelectorAll<HTMLElement>("[data-project-path]")]
-                .find((element) => element.dataset.projectPath === project.path)
+              [...document.querySelectorAll<HTMLElement>("[data-project-id]")]
+                .find((element) => element.dataset.projectId === project.id)
                 ?.scrollIntoView({ block: "nearest" });
             });
           }}
@@ -4179,9 +4195,9 @@ export function App() {
             onOpenProject={() => { setNavPeekOpen(false); void openProjectDialog(); }}
             onCreateProject={() => {
               setNavPeekOpen(false);
-              setEditProj({ mode: "create", path: "", name: "", folders: [], primary: "", icon: "folder", color: null, pickerOpen: false, error: null });
+              setEditProj({ mode: "create", id: "", path: "", name: "", folders: [], primary: "", icon: "folder", color: null, pickerOpen: false, error: null });
             }}
-            onStartProjectChat={(project) => { setNavPeekOpen(false); void newChat({ name: project.name, path: project.path }); }}
+            onStartProjectChat={(project) => { setNavPeekOpen(false); void newChat({ id: project.id, name: project.name, path: project.path }); }}
             onOpenConnectors={() => { setNavPeekOpen(false); showConnectorsPage(); }}
             onOpenSkills={() => { setNavPeekOpen(false); setSkillsOpen(true); }}
             onOpenScheduled={(key) => { setNavPeekOpen(false); showScheduledPage(key); }}
@@ -4298,7 +4314,7 @@ export function App() {
               onCreate={createMosaicChat}
               onOpenChat={(id) => { setNavPeekOpen(false); void openThread(id); }}
               onRemove={removeFromMultiView}
-              onCreateProject={(id) => setEditProj({ mode: "create", path: "", name: "", folders: [], primary: "", icon: "folder", color: null, pickerOpen: false, error: null, targetFreshId: id })}
+              onCreateProject={(id) => setEditProj({ mode: "create", id: "", path: "", name: "", folders: [], primary: "", icon: "folder", color: null, pickerOpen: false, error: null, targetFreshId: id })}
               onFreshTurnLanded={(id) => {
                 setFreshMultiIds((ids) => { const next = new Set(ids); next.delete(id); return next; });
                 setFreshMultiProjects((projects) => { const next = { ...projects }; delete next[id]; return next; });
@@ -4738,7 +4754,7 @@ export function App() {
                   // this box upward; children truncate themselves.
                 }}
               >
-                <NewChatProjectPicker selected={activeProjectPath ? { name: activeProjectName ?? activeProjectPath, path: activeProjectPath } : null} projects={sidebarView.projects} onSelect={selectNewChatProject} onCreateProject={() => setEditProj({ mode: "create", path: "", name: "", folders: [], primary: "", icon: "folder", color: null, pickerOpen: false, error: null })} />
+                <NewChatProjectPicker selected={activeProjectPath && activeProjectId ? { id: activeProjectId, name: activeProjectName ?? activeProjectPath, path: activeProjectPath } : null} projects={sidebarView.projects} onSelect={selectNewChatProject} onCreateProject={() => setEditProj({ mode: "create", id: "", path: "", name: "", folders: [], primary: "", icon: "folder", color: null, pickerOpen: false, error: null })} />
                 {activeProjectPath && <>
                 <span data-workmenu style={{ position: "relative", display: "flex", flexShrink: 0 }}>
                   <button
@@ -5060,7 +5076,7 @@ export function App() {
                     {
                       id,
                       title: provisionalTitle(firstMessage),
-                      projectPath: activeProject?.path ?? null,
+                      projectId: activeProject?.id ?? null,
                       createdAt: new Date().toISOString(),
                     },
                   ],
@@ -6317,10 +6333,10 @@ export function App() {
               {editProj.mode === "edit" && (
                 <button
                   onClick={() => {
-                    const path = editProj.path;
+                    const id = editProj.id;
                     const name = editProj.name;
                     setEditProj(null);
-                    setConfirmDialog({ kind: "remove", path, name, count: 0 });
+                    setConfirmDialog({ kind: "remove", id, name, count: 0 });
                   }}
                   style={{ background: "rgba(240, 149, 149, 0.14)", border: "none", borderRadius: 10, color: colors.err, fontSize: 13.5, cursor: "pointer", fontFamily: "inherit", padding: "9px 16px" }}
                 >
@@ -6465,8 +6481,8 @@ export function App() {
             <div style={{ maxHeight: 260, overflowY: "auto", marginTop: 12 }}>
               {sidebar.projects.map((pr) => (
                 <button
-                  key={pr.path}
-                  onClick={() => void doMoveThread(pr.path)}
+                  key={pr.id}
+                  onClick={() => void doMoveThread(pr.id)}
                   title={pr.path}
                   style={{
                     display: "flex",
@@ -9311,7 +9327,7 @@ function useEntryTransition(open = true): boolean {
 function MultiView({ ids, freshIds, freshProjects, freshWork, drafts, projects, threads, width, connected, accessMode, onAccessModeChange, planMode, onTogglePlanMode, onAdd, onCreate, onOpenChat, onRemove, onCreateProject, onFreshTurnLanded, onSelectFreshEnvironment, onTurnLanded, onOpenFile, onPreviewImage, onOpenLink, onOpenMcp, onOpenConnectors, onOpenSkills }: {
   ids: string[];
   freshIds: Set<string>;
-  freshProjects: Record<string, { name: string; path: string } | null>;
+  freshProjects: Record<string, ProjectSelection | null>;
   freshWork: Record<string, { mode: "local" | "worktree" | "existing"; cwd: string; branch: string | null }>;
   drafts: Map<string, ConversationDrafts<Attachment>>;
   projects: ProjectInfo[];
@@ -9328,7 +9344,7 @@ function MultiView({ ids, freshIds, freshProjects, freshWork, drafts, projects, 
   onRemove: (id: string) => void;
   onCreateProject: (id: string) => void;
   onFreshTurnLanded: (id: string) => void;
-  onSelectFreshEnvironment: (id: string, project: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
+  onSelectFreshEnvironment: (id: string, project: ProjectSelection | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
   onTurnLanded: () => void;
   onOpenFile: (path: string) => void;
   onPreviewImage: (attachment: Attachment) => void;
@@ -9386,9 +9402,9 @@ function MosaicEmptyState({ onCreate }: { onCreate: () => Promise<void> }) {
 }
 
 function NewChatProjectPicker({ selected, projects, onSelect, onCreateProject, disabled = false }: {
-  selected: { name: string; path: string } | null;
+  selected: ProjectSelection | null;
   projects: ProjectInfo[];
-  onSelect: (project: { name: string; path: string } | null) => Promise<void>;
+  onSelect: (project: ProjectSelection | null) => Promise<void>;
   onCreateProject: () => void;
   disabled?: boolean;
 }) {
@@ -9437,8 +9453,8 @@ function NewChatProjectPicker({ selected, projects, onSelect, onCreateProject, d
     document.addEventListener("keydown", onKeyDown);
     return () => { document.removeEventListener("mousedown", onPointerDown); document.removeEventListener("keydown", onKeyDown); };
   }, [open]);
-  const choose = async (project: { name: string; path: string } | null) => {
-    if (project?.path === selected?.path) { setOpen(false); return; }
+  const choose = async (project: ProjectSelection | null) => {
+    if (project?.id === selected?.id) { setOpen(false); return; }
     setBusy(true);
     setError(null);
     try {
@@ -9453,7 +9469,7 @@ function NewChatProjectPicker({ selected, projects, onSelect, onCreateProject, d
   const search = query.trim().toLocaleLowerCase();
   const filtered = projects.filter((project) => `${project.name} ${project.path}`.toLocaleLowerCase().includes(search));
   const showNone = !search || "none".includes(search);
-  const selectedProject = projects.find((project) => project.path === selected?.path);
+  const selectedProject = projects.find((project) => project.id === selected?.id);
   return <span ref={ref} style={{ position: "relative", display: "flex", minWidth: 0, flexShrink: 0 }}>
     <button type="button" title="Choose where this chat works" aria-label="Choose where this chat works" aria-expanded={open} aria-haspopup="dialog" disabled={disabled || busy} onClick={() => { setQuery(""); setError(null); setOpen((value) => !value); }} style={{ display: "flex", alignItems: "center", gap: 7, maxWidth: 220, padding: "3px 5px", border: 0, background: "transparent", color: selected ? colors.fg : colors.dim, fontSize: 13, fontFamily: "inherit", cursor: disabled || busy ? "default" : "pointer" }}>
       {selected ? <ProjectIcon icon={selectedProject?.icon} color={selectedProject?.color} size={14} /> : <FolderOutlineIcon size={14} />}
@@ -9477,10 +9493,10 @@ function NewChatProjectPicker({ selected, projects, onSelect, onCreateProject, d
           {!selected && <Check size={16} className="u-project-picker-check" />}
         </button>}
         {showNone && filtered.length > 0 && <div className="u-project-picker-separator" />}
-        {filtered.map((project) => <button type="button" className="u-project-picker-row" aria-pressed={project.path === selected?.path} key={project.path} title={project.path} disabled={busy} onClick={() => void choose(project)}>
+        {filtered.map((project) => <button type="button" className="u-project-picker-row" aria-pressed={project.id === selected?.id} key={project.id} title={project.path} disabled={busy} onClick={() => void choose(project)}>
           <ProjectIcon icon={project.icon} color={project.color} size={18} />
           <span className="u-project-picker-project"><span className="u-project-picker-name">{project.name}</span><span className="u-project-picker-path">{project.path.split(/[\\/]/).filter(Boolean).at(-1)}</span></span>
-          {project.path === selected?.path && <Check size={16} className="u-project-picker-check" />}
+          {project.id === selected?.id && <Check size={16} className="u-project-picker-check" />}
         </button>)}
         {!showNone && filtered.length === 0 && <div className="u-project-picker-empty">No matching projects</div>}
       </div>
@@ -9493,10 +9509,10 @@ function NewChatProjectPicker({ selected, projects, onSelect, onCreateProject, d
 }
 
 function MosaicNewChatEnvironment({ project, work, projects, onSelect, onCreateProject, disabled }: {
-  project: { name: string; path: string } | null;
+  project: ProjectSelection | null;
   work?: { mode: "local" | "worktree" | "existing"; cwd: string; branch: string | null };
   projects: ProjectInfo[];
-  onSelect: (project: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
+  onSelect: (project: ProjectSelection | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
   onCreateProject: () => void;
   disabled: boolean;
 }) {
@@ -9533,7 +9549,7 @@ function MosaicNewChatEnvironment({ project, work, projects, onSelect, onCreateP
     document.addEventListener("keydown", escape);
     return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", escape); };
   }, [workOpen, branchOpen]);
-  const selectEnvironment = async (nextProject: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", dir?: string) => {
+  const selectEnvironment = async (nextProject: ProjectSelection | null, mode: "local" | "worktree" | "existing", dir?: string) => {
     setChanging(true);
     setError(null);
     try {
@@ -9635,11 +9651,11 @@ function MultiViewTile({ id, columnSpan, fresh, project, work, projects, drafts,
   id: string;
   columnSpan: number;
   fresh: boolean;
-  project: { name: string; path: string } | null;
+  project: ProjectSelection | null;
   work?: { mode: "local" | "worktree" | "existing"; cwd: string; branch: string | null };
   projects: ProjectInfo[];
   drafts?: ConversationDrafts<Attachment>;
-  onSelectEnvironment: (project: { name: string; path: string } | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
+  onSelectEnvironment: (project: ProjectSelection | null, mode: "local" | "worktree" | "existing", worktreeDir?: string) => Promise<void>;
   onCreateProject: () => void;
   title: string;
   connected: boolean;
@@ -18560,7 +18576,7 @@ function ChatSearchDialog({
       action: () => onOpenThread(thread.id),
     })),
     ...projects.map((project) => ({
-      key: `project:${project.path}`,
+      key: `project:${project.id}`,
       section: "Projects",
       label: project.name,
       detail: undefined as string | undefined,
@@ -18897,7 +18913,7 @@ function SidebarSectionPreview({
             <SidebarPreviewLabel>Projects</SidebarPreviewLabel>
             {projectRows.map((project) => (
               <SidebarPreviewRow
-                key={project.path}
+                key={project.id}
                 icon={<ProjectIcon icon={project.icon} color={project.color} />}
                 title={project.name}
                 detail={`${project.threads.length} ${project.threads.length === 1 ? "chat" : "chats"}`}

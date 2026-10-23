@@ -6,7 +6,7 @@ import { EnvironmentStore, TurnEnvironments } from "./environment-store";
 import { exportConnector, resolveEnvironment, validateScope, sameOwner, type Owner, type SettingsScope, type EnvironmentManifest } from "./environment";
 import { installScopedSkill } from "./scoped-skills";
 import { readJson, atomicJson } from "./atomic-store";
-import { assignMembership, membershipFor, projectRecord, readProjects, type ProjectRecord } from "./project-identity";
+import { projectRecord, type ProjectRecord } from "./project-identity";
 import {
   app,
   BrowserWindow,
@@ -45,6 +45,7 @@ import { matchingMessageSnippet, messagesFromTranscriptEntries } from "./thread-
 import { agentBrowserCandidates, chromeCandidates } from "./browser-binaries";
 import { agentStyleInstructions, DEFAULT_AGENT_STYLE, parseAgentStylePrefs, type AgentStylePrefs } from "../shared/agent-style";
 import { projectContextForDirectory } from "./project-context";
+import { ProjectStore } from "./project-store";
 import { OPENUI_VISUAL_INSTRUCTIONS, VISUALIZE_DIRECTIVE } from "./visual-instructions";
 import { epochMillis } from "../shared/conversation-time";
 import { alignRunningTurnStart, chooseTranscript, initialTranscriptPage, replaceTranscriptTail, retitleTranscript, transcriptPage, type TranscriptRow } from "../shared/transcript-pages";
@@ -176,7 +177,7 @@ import {
   migrateLegacyPlainMemory,
   renderMemorySection,
   saveMemoryNote,
-  scopedMemoryDir,
+  selectedProjectMemoryDir,
   validateMemory,
 } from "./memory";
 import { writeAutomaticMemory } from "./automatic-memory";
@@ -1295,18 +1296,18 @@ function baseDeveloperInstructions(): string {
   return `${APP_DEVELOPER_INSTRUCTIONS}\n\n${agentStyleInstructions(agentStylePrefs())}`;
 }
 
-function developerInstructionsFor(cwd: string | null, threadId: string | null = null): string {
-  const dir = memoryDirForCwd(cwd, threadId);
+function developerInstructionsFor(cwd: string | null, threadId: string | null = null, projectId?: string | null): string {
+  const dir = memoryDirForCwd(cwd, threadId, projectId);
   const section = dir ? renderMemorySection(loadMemoryNotes(dir), dir) : "";
   const base = baseDeveloperInstructions();
-  return [base, configuredProjectContext(cwd, threadId), section].filter(Boolean).join("\n\n");
+  return [base, configuredProjectContext(cwd, threadId, projectId), section].filter(Boolean).join("\n\n");
 }
 
-function configuredProjectContext(cwd: string | null, threadId: string | null = null): string | null {
-  const assignedProject = threadId ? loadThreadProjects()[rootThreadOf(threadId)] ?? null : null;
-  return projectContextForDirectory({
-    cwd, projects: loadProjects(), worktrees: loadWorktrees(), assignedProject,
-  });
+function configuredProjectContext(cwd: string | null, threadId: string | null = null, projectId?: string | null): string | null {
+  const project = projectId !== undefined
+    ? loadProjects().find((p) => p.id === projectId) ?? null
+    : threadProject(threadId, cwd);
+  return project ? projectContextForDirectory({ cwd, projects: [project], worktrees: loadWorktrees(), assignedProject: project.primary }) : null;
 }
 
 const AGENT_BROWSER_TOOLS = [
@@ -4145,11 +4146,11 @@ const memoryRoot = () => join(homedir(), ".unbiased", "memory");
 
 /** Projects share their notes; ordinary chats have no shared memory until
  *  the engine assigns a thread ID. Unknown cwd fails closed to that thread. */
-function memoryDirForCwd(cwd: string | null, threadId: string | null = null): string | null {
-  return scopedMemoryDir(
-    memoryRoot(), cwd, defaultChatDir(), threadId,
-    cwd ? loadWorktrees()[cwd]?.project : undefined,
-  );
+function memoryDirForCwd(cwd: string | null, threadId: string | null = null, projectId?: string | null): string | null {
+  const project = projectId !== undefined
+    ? loadProjects().find((p) => p.id === projectId) ?? null
+    : threadProject(threadId, cwd);
+  return selectedProjectMemoryDir(memoryRoot(), project, defaultChatDir(), threadId ? rootThreadOf(threadId) : null);
 }
 
 // ── The learning sidecar (observe-only) ─────────────────────────────────
@@ -4241,6 +4242,7 @@ function scheduleAutomaticMemory(threadId: string, reason: "compaction" | "25-tu
 // (a plain chat, listed under Recents). Set by the project picker or by
 // clicking a project header; consumed when the lazy thread is created.
 let pendingCwd: string | null = null;
+let pendingProjectId: string | null = null;
 const projectContextSeen = new Map<string, string>();
 
 // User-selectable access mode (Codex-style). Applied to every new thread
@@ -4603,9 +4605,7 @@ async function searchableThreadMessages(id: string, updatedAt?: string | number)
 // Projects the user has explicitly opened. Persisted so a project appears
 // in the sidebar the moment it's chosen — before (and regardless of) any
 // conversation existing in it. Thread cwds merge in at list time.
-function projectsFile(): string {
-  return join(app.getPath("userData"), "projects.json");
-}
+
 
 // Two different truths, deliberately reported separately: `connected` is
 // what the running engine actually has (authoritative, but empty while the
@@ -4657,22 +4657,6 @@ function readMcpConfig(): { servers: UserMcpServer[]; error: string | null } {
     return { servers: (raw.servers as UserMcpServer[]) ?? [], error: null };
   } catch {
     return { servers: [], error: `${mcpConfigPath()} is not valid JSON. Fix or delete it — saving now would discard whatever it holds.` };
-  }
-}
-
-// App-side thread → project assignment. The engine pins a thread's cwd at
-// creation, so "moving" a Recents chat into a project is a GROUPING override
-// the app owns, not an engine mutation.
-function threadProjectsFile(): string {
-  return join(app.getPath("userData"), "thread-projects.json");
-}
-
-function loadThreadProjects(): Record<string, string> {
-  try {
-    const parsed = JSON.parse(readFileSync(threadProjectsFile(), "utf8"));
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
   }
 }
 
@@ -4768,38 +4752,24 @@ function resumeParamsFor(id: string): Record<string, unknown> {
   };
 }
 
-// A project is a display name + one or more source folders (chats whose cwd
-// falls in ANY of them group under it), a primary folder (the cwd new chats
-// start in), and an icon/color identity. Legacy projects.json was a bare
-// path array — migrated on load.
-function recordFromPath(path: string): ProjectRecord { return projectRecord(path); }
-function loadProjects(): ProjectRecord[] { return readProjects(projectsFile()); }
-function saveProjects(projects: ProjectRecord[]): void { atomicJson(projectsFile(), projects); }
-function membershipFile(): string { return join(app.getPath("userData"), "conversation-projects.json"); }
-async function allLegacyThreads(): Promise<WireThread[]> {
-  const threads:WireThread[]=[];
-  for (const archived of [false,true]) {
-    let cursor:string|undefined;const seen=new Set<string>();
-    do {
-      const page=await engine.request("thread/list",{limit:100,archived,...(cursor?{cursor}:{})}) as {data?:WireThread[];nextCursor?:string|null};
-      threads.push(...(page.data ?? []));cursor=page.nextCursor ?? undefined;
-      if(cursor){if(seen.has(cursor))throw new Error("Thread pagination did not advance; project metadata was not changed");seen.add(cursor)}
-    }while(cursor);
-  }
-  return threads;
-}
-
+// Project identity is independent of the repository used as its working directory.
+function projectStore(): ProjectStore { return new ProjectStore(app.getPath("userData")); }
+function loadProjects(): ProjectRecord[] { return projectStore().list(); }
+function saveProjects(projects: ProjectRecord[]): void { projectStore().save(projects); }
 function projectMembership(id: string, cwd?: string) {
-  const legacy = loadThreadProjects()[id];
-  return membershipFor(membershipFile(), id, loadProjects(), legacy ?? cwd, loadWorktrees());
+  return projectStore().membership(id, cwd, loadWorktrees());
 }
-
-function rememberProject(path: string): void {
+function rememberProject(path: string): ProjectRecord {
   const projects = loadProjects();
-  if (!projects.some((p) => p.folders.includes(path))) {
-    projects.unshift(recordFromPath(path));
-    saveProjects(projects);
-  }
+  const existing = projects.find((p) => p.folders.includes(path));
+  if (existing) return existing;
+  const record = projectRecord(path);
+  projects.unshift(record);
+  saveProjects(projects);
+  return record;
+}
+function threadProject(threadId: string | null, cwd: string | null): ProjectRecord | null {
+  return projectStore().projectFor(threadId ? rootThreadOf(threadId) : null, cwd, loadWorktrees());
 }
 
 function threadTitle(t: WireThread): string {
@@ -5946,9 +5916,7 @@ async function showCompletedPetNotice(threadId: string, reply: string, streamedR
   if (!reply.trim()) reply = streamedReply;
   if (version !== petNoticeVersion || !petWin || petWin.isDestroyed()) return;
   if (!shouldShowCompletedPetNotice(threadId, win?.isFocused() ?? false, visiblePetThreadIds, visiblePetPaneIds, panes)) return;
-  const worktrees = loadWorktrees();
-  const effectiveCwd = loadThreadProjects()[threadId] ?? (cwd && worktrees[cwd] ? worktrees[cwd].project : cwd);
-  const project = loadProjects().find((record) => effectiveCwd && record.folders.includes(effectiveCwd));
+  const project = threadProject(threadId, cwd);
   showPetNotice({ threadId, title: project ? `${project.name} / ${title}` : title, response: petResponseFirstLine(reply) });
 }
 
@@ -7025,7 +6993,7 @@ function wireNotifications(): void {
             const name = existing?.name && existing.name !== taskName ? existing.name : (stashedNickname ?? taskName);
             conversationLineage.register(p.agentThreadId,threadId);
             const parentMembership = projectMembership(threadId,threadCwds.get(threadId) ?? undefined);
-            assignMembership(membershipFile(),p.agentThreadId,parentMembership.projectId);
+            projectStore().assign(p.agentThreadId,parentMembership.projectId);
             subAgents.set(p.agentThreadId, {
               parent: threadId,
               path: p.agentPath,
@@ -8977,6 +8945,7 @@ app.whenReady().then(async () => {
       let started: { thread: { id: string } };
       const sideParentId = paneId.startsWith("side:") ? panes.main.threadId : null;
       let startedCwd: string;
+      const selectedProjectId = sideParentId ? threadProject(sideParentId, mainCwd)?.id ?? null : pendingProjectId;
       if (paneId.startsWith("side")) {
         const parentId = sideParentId;
         if (!parentId) throw new Error("Start a main chat before using a side chat");
@@ -9006,7 +8975,7 @@ app.whenReady().then(async () => {
           ...target.params,
           ...threadPolicy(),
           dynamicTools: threadDynamicTools(),
-          developerInstructions: `${developerInstructionsFor(sideCwd)}\n\n` +
+          developerInstructions: `${developerInstructionsFor(sideCwd, parentId)}\n\n` +
             "This is a side chat. Inherited parent history is background context, not an active task. " +
             "Follow this side chat's current request; do not continue parent work unless the user explicitly asks.",
           experimentalRawEvents: true,
@@ -9036,7 +9005,7 @@ app.whenReady().then(async () => {
           // Model-driven browser automation (agent-browser CLI), when
           // installed — the calls come back as item/tool/call requests.
           dynamicTools: threadDynamicTools(),
-          developerInstructions: developerInstructionsFor(cwd),
+          developerInstructions: developerInstructionsFor(cwd, null, selectedProjectId),
           // Raw response items feed the sub-agent viewer (task text + spawn
           // instructions). Sub-threads inherit this from their parent.
           experimentalRawEvents: true,
@@ -9049,6 +9018,7 @@ app.whenReady().then(async () => {
         void engine.request("thread/delete", { threadId: started.thread.id }).catch(() => undefined);
         throw new Error("This side chat was closed while starting");
       }
+      projectStore().assign(started.thread.id, selectedProjectId);
       pane.threadId = started.thread.id;
       if (paneId.startsWith("side:") && sideParentId) {
         threadMcp.set(started.thread.id, new Set(enabledMcpFor(sideParentId)));
@@ -9075,7 +9045,7 @@ app.whenReady().then(async () => {
       }
       const parent = sideParentId;
       const membership = parent ? projectMembership(parent, startedCwd) : projectMembership(started.thread.id, startedCwd);
-      if (parent) { conversationLineage.register(started.thread.id,parent); assignMembership(membershipFile(), started.thread.id, membership.projectId); }
+      if (parent) { conversationLineage.register(started.thread.id,parent); projectStore().assign(started.thread.id, membership.projectId); }
 
       // The choice made in the composer before the first message belongs to
       // the thread that message created.
@@ -11600,35 +11570,16 @@ app.whenReady().then(async () => {
       (thread) => thread.threadSource !== SCHEDULED_THREAD_SOURCE && thread.threadSource !== SIDE_CHAT_THREAD_SOURCE &&
         !scheduledThreadIds.has(thread.id) && !sideThreadIds.has(thread.id),
     );
-    const home = app.getPath("home");
-
-    // Codex-style sections: threads group under a project only when the
-    // user has explicitly opened (and not removed) that folder — the
-    // projects.json list is authoritative. Everything else, including
-    // chats of removed projects, lists under Recents. Keyed by full path
-    // so two folders sharing a basename stay distinct; explicitly opened
-    // projects render even with zero conversations.
     const records = loadProjects();
-    const projectMap = new Map<string, ThreadSummary[]>();
-    for (const r of records) projectMap.set(r.primary, []);
-    // Runs from before threadSource was set carry no tag, so their threads
-    // would still surface. The task records name the most recent one per task,
-    // which is exactly the set currently visible in Recents. Older untagged
-    // runs may still linger — deleting those rows once is the only cleanup.
+    const projectMap = new Map(records.map((r) => [r.id, [] as ThreadSummary[]]));
     const worktrees = loadWorktrees();
-    const threadProjectOverrides = loadThreadProjects();
     const recents: ThreadSummary[] = [];
     for (const t of threads) {
       petThreadTitles.set(t.id, threadTitle(t));
       const summary: ThreadSummary = { id: t.id, title: threadTitle(t), createdAt: t.createdAt, updatedAt: t.updatedAt };
-      // Explicit assignment wins, then worktree conversations group under
-      // their parent project, then the thread's own cwd.
-      const effectiveCwd =
-        threadProjectOverrides[t.id] ?? (t.cwd && worktrees[t.cwd] ? worktrees[t.cwd].project : t.cwd);
-      const membership = projectMembership(t.id, effectiveCwd);
-      const primary = records.find(r => r.id === membership.projectId)?.primary;
+      const membership = projectStore().membership(t.id, t.cwd, worktrees);
       Object.assign(summary, { projectId: membership.projectId, projectResolution: membership.resolution });
-      const group = primary ? projectMap.get(primary) : undefined;
+      const group = membership.projectId ? projectMap.get(membership.projectId) : undefined;
       if (group) group.push(summary);
       else recents.push(summary);
     }
@@ -11641,7 +11592,8 @@ app.whenReady().then(async () => {
         icon: r.icon,
         color: r.color,
         folders: r.folders,
-        threads: projectMap.get(r.primary) ?? [],
+        legacyPreferencePath: r.legacyMemoryPath,
+        threads: projectMap.get(r.id) ?? [],
       })),
       recents,
       // Threads with a live turn — seeds the sidebar activity indicators.
@@ -11698,19 +11650,16 @@ app.whenReady().then(async () => {
 
   // Archive every chat in a project (engine-side thread/archive — they
   // drop out of thread/list but survive for a future archived view).
-  ipcMain.handle("project:archive-chats", async (_e, path: string) => {
+  ipcMain.handle("project:archive-chats", async (_e, projectId: string) => {
     const sideThreadIds = new Set(sideChatRecents.all().map((record) => record.threadId));
     const threads = await listVisibleThreads(
       (cursor) => engine.request("thread/list", { limit: 100, ...(cursor ? { cursor } : {}) }) as Promise<{ data: WireThread[]; nextCursor?: string | null }>,
       (thread) => thread.threadSource !== SIDE_CHAT_THREAD_SOURCE && !sideThreadIds.has(thread.id),
       Number.MAX_SAFE_INTEGER,
     );
-    const record = loadProjects().find((r) => r.primary === path);
-    // Match the sidebar's grouping exactly (threads:list): explicit
-    // assignment wins, then worktree→project mapping, then the thread's own
-    // cwd — so this archives precisely the chats listed under the project.
-    const targets = threads.filter(t => record && projectMembership(t.id,t.cwd).projectId === record.id);
-
+    if (!loadProjects().some((p) => p.id === projectId)) return { archived: 0 };
+    const worktrees = loadWorktrees();
+    const targets = threads.filter((t) => projectStore().projectFor(t.id, t.cwd ?? null, worktrees)?.id === projectId);
     for (const t of targets) {
       await engine.request("thread/archive", { threadId: t.id });
       if (panes.main.threadId === t.id) {
@@ -11724,29 +11673,29 @@ app.whenReady().then(async () => {
 
   // Remove = forget the project in the app. Files and chats survive;
   // its chats regroup under Recents (see threads:list).
-  ipcMain.handle("project:remove", async (_e, path: string) => {
-    for (const thread of await allLegacyThreads()) projectMembership(thread.id,thread.cwd);
-    saveProjects(loadProjects().filter((p) => p.primary !== path));
+  ipcMain.handle("project:remove", (_e, projectId: string) => {
+    saveProjects(loadProjects().filter((p) => p.id !== projectId));
+    if (pendingProjectId === projectId) {
+      pendingProjectId = null;
+      pendingCwd = null;
+      if (!panes.main.threadId) mainCwd = null;
+    }
     return { ok: true };
   });
 
-  // Edit-project save: name, icon, color, folders, primary — matched by the
-  // project's previous primary path.
-  ipcMain.handle("project:update", async (_e, p: { path: string; record: ProjectRecord }) => {
-    const existing=loadProjects().find(project=>project.primary===p.path);
-    if(!existing)return {ok:false,error:"Project not found"};
-    if(!p.record.folders.length)return {ok:false,error:"A project needs at least one folder"};
-    // Rename/reorder/primary edits remain local and work while the engine is offline.
-    if(existing.folders.some(folder=>!p.record.folders.includes(folder))) {
-      for (const thread of await allLegacyThreads()) projectMembership(thread.id,thread.cwd);
-    }
+  // Edit only the selected project, even when its primary repository is shared.
+  ipcMain.handle("project:update", (_e, p: { projectId: string; record: ProjectRecord }) => {
     const projects = loadProjects();
-    const idx = projects.findIndex((r) => r.primary === p.path);
+    const idx = projects.findIndex((r) => r.id === p.projectId);
     if (idx === -1) return { ok: false, error: "Project not found" };
     const rec = p.record;
     if (!rec.folders.length) return { ok: false, error: "A project needs at least one folder" };
     projects[idx] = projectRecord(rec, projects[idx]);
     saveProjects(projects);
+    if (pendingProjectId === p.projectId && !panes.main.threadId) {
+      pendingCwd = projects[idx].primary;
+      mainCwd = projects[idx].primary;
+    }
     return { ok: true, record: projects[idx] };
   });
 
@@ -11769,20 +11718,13 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("projects:resolve-membership", (_e, p: { threadId: string; projectId: string | null }) => {
     if (p.projectId !== null && !loadProjects().some(r => r.id === p.projectId)) throw new Error("Project not found");
-    assignMembership(membershipFile(), p.threadId, p.projectId);
+    projectStore().assign(p.threadId, p.projectId);
     return { ok: true };
   });
 
-  ipcMain.handle("threads:assign-project", (_e, p: { threadId: string; projectPath: string }) => {
-    const map = loadThreadProjects();
-    rememberProject(p.projectPath);
-    const candidates = loadProjects().filter(r => r.folders.includes(p.projectPath));
-    if (candidates.length !== 1) throw new Error("Ambiguous project folder; choose the explicit project in portable settings");
-    const project = candidates[0];
-    assignMembership(membershipFile(), p.threadId, project.id);
-    map[p.threadId] = p.projectPath;
-    atomicJson(threadProjectsFile(), map);
-    rememberProject(p.projectPath);
+  ipcMain.handle("threads:assign-project", (_e, p: { threadId: string; projectId: string }) => {
+    if (!loadProjects().some((r) => r.id === p.projectId)) return { ok: false };
+    projectStore().assign(p.threadId, p.projectId);
     return { ok: true };
   });
 
@@ -11817,17 +11759,16 @@ app.whenReady().then(async () => {
         folders.push(primary);
       }
       const projects = loadProjects();
-      if (projects.some((r) => r.primary === primary)) {
-        return { path: null, name: null, error: "A project already uses that primary folder" };
-      }
-      projects.unshift(projectRecord({ name, folders, primary, icon: p.icon ?? "folder", color: p.color ?? null }));
+      const id = randomUUID();
+      projects.unshift(projectRecord({ id, name, folders, primary, icon: p.icon ?? "folder", color: p.color ?? null }));
       saveProjects(projects);
+      pendingProjectId = id;
       pendingCwd = primary;
       mainCwd = primary;
       panes.main.threadId = null;
       panes.main.turnId = null;
       resetSidePanes();
-      return { path: primary, name };
+      return { id, path: primary, name };
     },
   );
 
@@ -11857,20 +11798,20 @@ app.whenReady().then(async () => {
     if (result.canceled || result.filePaths.length === 0) return { path: null, name: null };
     const path = result.filePaths[0];
     rememberDialogDir("project", path);
-    rememberProject(path);
-    pendingCwd = path;
-    mainCwd = path;
+    const project = rememberProject(path);
+    pendingProjectId = project.id;
+    pendingCwd = project.primary;
+    mainCwd = project.primary;
     panes.main.threadId = null;
     panes.main.turnId = null;
     resetSidePanes();
-    return { path, name: path.split("/").filter(Boolean).pop() ?? path };
+    return { id: project.id, path: project.primary, name: project.name };
   });
 
-  ipcMain.handle("threads:create-multi", async (_e, options?: { projectPath?: string | null; replaceId?: string; workMode?: "local" | "worktree" | "existing"; worktreeDir?: string }) => {
-    const projectPath = options?.projectPath ?? null;
-    if (projectPath && (!loadProjects().some((project) => project.folders.includes(projectPath)) || !existsSync(projectPath))) {
-      throw new Error("Project is no longer available");
-    }
+  ipcMain.handle("threads:create-multi", async (_e, options?: { projectId?: string | null; replaceId?: string; workMode?: "local" | "worktree" | "existing"; worktreeDir?: string }) => {
+    const project = options?.projectId ? loadProjects().find((p) => p.id === options.projectId) : null;
+    const projectPath = project?.primary ?? null;
+    if (options?.projectId && (!projectPath || !existsSync(projectPath))) throw new Error("Project is no longer available");
     const selectedMode = options?.workMode ?? "local";
     if (selectedMode !== "local" && !projectPath) throw new Error("Choose a project first");
     const oldId = options?.replaceId;
@@ -11896,11 +11837,12 @@ app.whenReady().then(async () => {
       ...threadPolicy(),
       cwd,
       dynamicTools: threadDynamicTools(),
-      developerInstructions: developerInstructionsFor(cwd),
+      developerInstructions: developerInstructionsFor(cwd, null, project?.id ?? null),
       experimentalRawEvents: true,
       config: mcpOverrideFor(null),
     })) as { thread: { id: string } };
     const id = started.thread.id;
+    projectStore().assign(id, project?.id ?? null);
     threadCwds.set(id, cwd);
     threadAccessModes.set(id, accessMode);
     ensurePane(`multi:${id}`).threadId = id;
@@ -12047,7 +11989,11 @@ app.whenReady().then(async () => {
     });
   });
 
-  ipcMain.handle("threads:detach", (_e, cwd?: string) => {
+  ipcMain.handle("threads:detach", (_e, projectId?: string) => {
+    const project = projectId ? loadProjects().find((p) => p.id === projectId) : null;
+    if (projectId && !project) throw new Error("Project is no longer available");
+    const cwd = project?.primary;
+    pendingProjectId = project?.id ?? null;
     ++mainOpenSequence;
     // Fresh main-chat view: the next send creates a new thread, in `cwd` if given.
     if (!panes.main.threadId || !panes[`multi:${panes.main.threadId}`]) settleLocalApprovals(panes.main.threadId);
