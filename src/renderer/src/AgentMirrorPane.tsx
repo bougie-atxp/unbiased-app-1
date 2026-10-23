@@ -118,7 +118,7 @@ export function AgentMirrorPane({ active, threadId }: { active: boolean; threadI
   const onWheel = (e: React.WheelEvent) => {
     const p = toPage(e.clientX, e.clientY);
     if (!p) return;
-    send({ kind: "wheel", x: p.x, y: p.y, deltaX: -e.deltaX, deltaY: -e.deltaY, modifiers: modsOf(e) });
+    send({ kind: "wheel", x: p.x, y: p.y, deltaX: e.deltaX, deltaY: e.deltaY, modifiers: modsOf(e) });
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {

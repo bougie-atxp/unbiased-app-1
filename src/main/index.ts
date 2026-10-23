@@ -1311,7 +1311,7 @@ async function ensureBrowserAllowed(tool: string, threadId: string | null, detai
   const attaching = tool === "browser_connect";
   if (attaching) {
     if (browserConnectGrants.has(root)) return null;
-  } else if ((threadAccessModes.get(root) ?? accessMode) !== "ask" || browserNetGrants.has(root)) {
+  } else if (liveAccessMode(root) !== "ask" || browserNetGrants.has(root)) {
     return null;
   }
   const decision = await requestLocalApproval(
@@ -8457,7 +8457,11 @@ app.whenReady().then(async () => {
     // follow, but this app's local cards can and should: a user who sets Full
     // access mid-conversation means it now, not in the next conversation.
     // Clearing session grants with it, so tightening the mode really tightens.
-    if (accessMode === "ask") axGrants.clear();
+    if (accessMode === "ask") {
+      axGrants.clear();
+      browserNetGrants.clear();
+      browserConnectGrants.clear();
+    }
     return { mode: accessMode };
   });
 

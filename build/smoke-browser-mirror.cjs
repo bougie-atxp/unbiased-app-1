@@ -14,9 +14,15 @@ async function main() {
   const home = mkdtempSync(join(tmpdir(), "unbiased-mirror-smoke-"));
   app.setPath("userData", join(home, "electron"));
   await app.whenReady();
-  const fixture = createServer((_req, res) => {
+  let scrollPosition = { x: 0, y: 0 };
+  const fixture = createServer((req, res) => {
+    const url = new URL(req.url, "http://localhost");
+    if (url.pathname === "/scroll") {
+      scrollPosition = { x: Number(url.searchParams.get("x")), y: Number(url.searchParams.get("y")) };
+      res.writeHead(204); res.end(); return;
+    }
     res.setHeader("Content-Type", "text/html");
-    res.end('<!doctype html><title>Mirror fixture</title><h1>Mirroring works</h1><label>Name<input aria-label="Name"></label>');
+    res.end('<!doctype html><title>Mirror fixture</title><style>body{min-width:3000px;min-height:3000px}</style><h1>Mirroring works</h1><label>Name<input aria-label="Name"></label><script>onscroll=()=>fetch(`/scroll?x=${scrollX}&y=${scrollY}`)</script>');
   });
   await new Promise(done => fixture.listen(0, "127.0.0.1", done));
   const portServer = require("node:net").createServer();
@@ -62,6 +68,25 @@ async function main() {
     await evaluate("document.querySelector('button').click()");
     await until("!!document.querySelector('img') && document.querySelector('img').naturalWidth > 0");
     assert.ok(await evaluate(`document.body.innerText.includes('http://127.0.0.1:')`));
+    // Send real DOM wheel events through the pane's React handler, then read
+    // the fixture's scroll position independently from its local HTTP beacon.
+    async function wheel(deltaX, deltaY, check) {
+      await evaluate(`(() => {
+        const img = document.querySelector('img'), box = img.getBoundingClientRect();
+        img.parentElement.dispatchEvent(new WheelEvent('wheel', { bubbles:true,
+          clientX:box.left+box.width/2, clientY:box.top+box.height/2,
+          deltaX:${deltaX}, deltaY:${deltaY} }));
+      })()`);
+      for (let i=0;i<60;i++) {
+        if (check(scrollPosition)) return;
+        await new Promise(done=>setTimeout(done,100));
+      }
+      assert.ok(check(scrollPosition), `Wheel direction did not reach the page: ${JSON.stringify(scrollPosition)}`);
+    }
+    await wheel(0, 300, p => p.y > 0);
+    await wheel(0, -300, p => p.y === 0);
+    await wheel(300, 0, p => p.x > 0);
+    await wheel(-300, 0, p => p.x === 0);
     // This deliberately starts before a pane is laid out and while zoomed out.
     assert.equal((await evaluate(`window.unbiased.agentMirrorStart({threadId:'side-chat',width:0,height:0,dpr:0.8})`)).ok, true);
     await until("!!document.querySelector('img') && document.querySelector('img').naturalWidth > 0");
@@ -69,7 +94,7 @@ async function main() {
     await until("document.querySelector('img').naturalWidth >= 700");
     const screenshot = process.env.UNBIASED_MIRROR_SCREENSHOT || "/tmp/unbiased-browser-mirror-verified.png";
     writeFileSync(screenshot, (await win.webContents.capturePage()).toPNG());
-    console.log(`PASS: actual Electron pane + preload + desktop IPC + runtime rendered JPEG frames; failed start displayed error; Retry, conversation mapping, unlaid-out/zoomed pane and resize worked. Screenshot: ${screenshot}`);
+    console.log(`PASS: actual Electron pane + preload + desktop IPC + runtime rendered JPEG frames; failed start displayed error; Retry, conversation mapping, vertical/horizontal wheel directions, unlaid-out/zoomed pane and resize worked. Screenshot: ${screenshot}`);
   } finally {
     await runtime.shutdown();
     win.destroy();
