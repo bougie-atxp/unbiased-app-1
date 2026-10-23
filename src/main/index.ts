@@ -1,3 +1,4 @@
+import { registerBrowserMirrorIpc } from "./browser-mirror-ipc";
 import { SkillOwnershipStore, installOwnedSkill } from "./skill-ownership";
 import { ScopedIdentity } from "./scoped-identity";
 import { ConversationLineage } from "./conversation-lineage";
@@ -11530,17 +11531,7 @@ app.whenReady().then(async () => {
   });
 
   // ── Agent-browser mirror IPC ──
-  const runtimeView = (method: "view.start"|"view.stop"|"view.resize"|"view.input", params: Record<string,unknown>) =>
-    browserRuntime.request(method,params).catch(error=>({ok:false,error:String(error)}));
-  const viewSize = (p: {width?:unknown;height?:unknown;dpr?:unknown}) => ({
-    width: Math.min(16384,Math.max(1,Number(p?.width)||800)),
-    height: Math.min(16384,Math.max(1,Number(p?.height)||600)),
-    dpr: Math.min(3,Math.max(1,Number(p?.dpr)||1)),
-  });
-  ipcMain.handle("agentmirror:start", (_e, p) => runtimeView("view.start", {...viewSize(p),sessionId:rootThreadOf(p?.threadId ?? null)}));
-  ipcMain.handle("agentmirror:stop", () => runtimeView("view.stop", {}));
-  ipcMain.handle("agentmirror:resize", (_e, p) => runtimeView("view.resize", viewSize(p)));
-  ipcMain.handle("agentmirror:input", (_e, p) => runtimeView("view.input", p));
+  registerBrowserMirrorIpc(ipcMain, browserRuntime, rootThreadOf);
 
   // A copied/pasted image lives in the native clipboard; persist it to a
   // temp PNG so it can ride the next turn as a localImage input item.

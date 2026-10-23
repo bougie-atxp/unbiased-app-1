@@ -40,7 +40,9 @@ function browserProcessRecord() {
   return join(options.home, ".unbiased", "automation-browser.pid");
 }
 async function browserGuardianCommand(supervisor: string, args: string[]): Promise<void> {
-  const deadline = Date.now() + 3000;
+  // Cleanup includes process scheduling, group termination and reaping. Leave
+  // margin on loaded hosts; this still refuses a live owner's lock unchanged.
+  const deadline = Date.now() + 8000;
   for (;;) {
     const result = await new Promise<{error:ExecException|null;stderr:string}>(resolve => {
       execFile(supervisor, args, {timeout:6000,maxBuffer:4096}, (error,_out,stderr) => resolve({error,stderr:String(stderr)}));
@@ -598,13 +600,13 @@ function mirrorTeardown(notify: boolean): void {
 /** Attach to the most recently active page tab and start streaming frames.
  *  maxWidth/maxHeight bound the JPEG Chrome renders — the pane's size, so a
  *  small pane never pays for 4K frames. */
-async function mirrorStart(maxWidth: number, maxHeight: number): Promise<{ ok: boolean; error?: string }> {
+async function mirrorStart(maxWidth: number, maxHeight: number): Promise<{ ok: boolean; error?: string; reason?: string }> {
   mirrorTeardown(false);
   try {
     const res = await fetch(`http://127.0.0.1:${AGENT_CHROME_PORT}/json/list`, {
       signal: AbortSignal.timeout(3_000),
     });
-    if (!res.ok) return { ok: false, error: `CDP list failed (${res.status})` };
+    if (!res.ok) throw new Error(`CDP list failed (${res.status})`);
     const targets = (await res.json()) as CdpTarget[];
     const page = pickMirrorTarget(targets);
     if (!page) {
@@ -613,7 +615,7 @@ async function mirrorStart(maxWidth: number, maxHeight: number): Promise<{ ok: b
       // conversation just has no tab in it yet.
       const hasPages = targets.some((t) => t.type === "page");
       send("agentmirror:state", { connected: false, reason: hasPages ? "no-tab" : "no-browser" });
-      return { ok: false, error: hasPages ? "this conversation has no browser tab yet" : "no page tab to mirror" };
+      return { ok: false, reason: hasPages ? "no-tab" : "no-browser", error: hasPages ? "this conversation has no browser tab yet" : "no page tab to mirror" };
     }
     mirrorTargetId = page.id ?? null;
 
@@ -687,7 +689,9 @@ async function mirrorStart(maxWidth: number, maxHeight: number): Promise<{ ok: b
     return { ok: true };
   } catch (err) {
     mirrorTeardown(false);
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    const error = err instanceof Error ? err.message : String(err);
+    send("agentmirror:state", { connected: false, reason: "connection-error", error });
+    return { ok: false, reason: "connection-error", error };
   }
 }
 

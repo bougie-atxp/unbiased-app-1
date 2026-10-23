@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "dist": "npm run prepare:browser && electron-vite build && electron-builder --publish never",
     "test": "node --import tsx --test src/main/*.test.ts src/renderer/src/*.test.ts",
-    "smoke:browser-runtime": "node build/smoke-browser-runtime.cjs"
+    "smoke:browser-runtime": "node build/smoke-browser-runtime.cjs",
+    "smoke:browser-mirror": "electron build/smoke-browser-mirror.cjs"
   },
   "build": {
     "appId": "ai.unbiased.desktop",
