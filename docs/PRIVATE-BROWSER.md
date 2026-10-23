@@ -18,8 +18,9 @@ Upstream credits remain in the browser's resources (`chrome://credits`).
 
 ## Process lifetime and ownership
 
-Electron starts `browser-supervisor` in its own process group and holds a private
-stdin pipe open. The guardian forks the browser into a second dedicated process
+Electron calls a standalone Node browser runtime over a private stdio protocol;
+the runtime starts `browser-supervisor` and holds its private stdin pipe open.
+The guardian forks the browser into a dedicated process
 group. Browser children inherit `/dev/null`, not the lifetime pipe. Closing the
 pipe (normal shutdown, app crash or SIGKILL) tells the guardian to terminate its
 browser group, allow two seconds for shutdown, then kill remaining members.
@@ -27,6 +28,8 @@ The guardian reaps the root before exiting. Electron's quit/update path waits
 for this cleanup, bounded to fit the existing four-second update exit guard.
 Updates stop the private browser before replacing its executable/resources;
 if the guardian has not exited, the update returns a retryable error.
+The runtime also shuts down on host stdin closure; killing the runtime closes
+the guardian's lease. See `src/browser-runtime/README.md` for the interface.
 
 An exclusive profile lock prevents simultaneous app instances from adopting
 the same browser. A process record stores the root PID and kernel process start

@@ -8288,6 +8288,8 @@ function AgentMirrorPane({ active, threadId }: { active: boolean; threadId: stri
   // into a pane nobody is looking at.
   useEffect(() => {
     if (!active) return;
+    setFrame(null);
+    setStatus({connected:false});
     const el = wrapRef.current;
     const w = el?.clientWidth ?? 800;
     const h = el?.clientHeight ?? 600;

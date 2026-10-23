@@ -189,6 +189,10 @@ jobs:
         working-directory: unbiased-app
         run: node build/smoke-browser.cjs release/mac-arm64/Unbiased.app/Contents/Resources/browser
 
+      - name: smoke test packaged standalone runtime without Electron
+        working-directory: unbiased-app
+        run: node build/smoke-browser-runtime.cjs release/mac-arm64/Unbiased.app/Contents/Resources/browser release/mac-arm64/Unbiased.app/Contents/Resources/browser-runtime/browser-runtime.js
+
       - name: publish release to the public repo
         working-directory: unbiased-app
         env:

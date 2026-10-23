@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - "naveen/**" # Validate stacked PRs before their parent reaches main.
   push:
     branches:
       - main
@@ -49,5 +50,14 @@ jobs:
       - name: Fetch verified browser binaries
         run: node build/prepare-browser.cjs
 
+      - name: Install runtime build dependencies
+        run: npm ci
+
+      - name: Build desktop and standalone runtime
+        run: npm run build
+
       - name: Smoke test browser control
         run: node build/smoke-browser.cjs
+
+      - name: Smoke test standalone browser runtime
+        run: npm run smoke:browser-runtime

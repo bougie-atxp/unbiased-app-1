@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   // Keep dependencies (notably @lydell/node-pty's native binding) external
   // to the main/preload bundles — they resolve from node_modules at runtime.
-  main: { plugins: [externalizeDepsPlugin()] },
+  main: { plugins: [externalizeDepsPlugin()], build: { rollupOptions: { input: { index: "src/main/index.ts", "browser-runtime": "src/browser-runtime/main.ts" } } } },
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: { rollupOptions: { input: { index: "src/preload/index.ts", pet: "src/preload/pet.ts", petNotice: "src/preload/pet-notice.ts" } } },
