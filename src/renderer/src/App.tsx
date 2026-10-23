@@ -1,5 +1,7 @@
+import { PortableSettings, CloudReadiness, type PortableAPI, type CloudAPI } from "./PortableSettings";
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+
 import Markdown from "react-markdown";
 import { Virtuoso } from "react-virtuoso";
 // The changelog SHIPS with the build so the Updates tab works offline and on
@@ -598,6 +600,15 @@ declare global {
   interface Window {
     unbiased: {
       onAppCommand: (cb: (command: string) => void) => () => void;
+      portableTarget: PortableAPI["target"];
+      portableResolve: PortableAPI["read"];
+      portableRead: PortableAPI["read"];
+      portableInstall: PortableAPI["install"];
+      portableWrite: PortableAPI["write"];
+      cloudStatus: CloudAPI["status"];
+      cloudPreflight: CloudAPI["preflight"];
+      resolveProjectMembership: (threadId:string,projectId:string|null) => Promise<{ok:boolean}>;
+
       getEngineStatus: () => Promise<EngineStatus>;
       onEngineStatus: (cb: (status: EngineStatus) => void) => () => void;
       checkUpdate: () => Promise<UpdateInfo | { none: true }>;
@@ -16112,7 +16123,7 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
           </div>
           <p style={{ color: colors.dim, fontSize: 14, lineHeight: 1.55, margin: "12px 0 0" }}>
             A skill is a folder of instructions Pareto reads when a task calls for it.
-            Add one to this project, or to every conversation.
+            Existing local skills apply to this folder or this device. Portable settings have explicit account, project, or conversation scope.
           </p>
         </div>
 
@@ -16144,6 +16155,7 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
           />
         )}
 
+        <PortableSettings api={{target:window.unbiased.portableTarget,read:window.unbiased.portableRead,resolve:window.unbiased.portableResolve,install:window.unbiased.portableInstall,write:window.unbiased.portableWrite,choose:window.unbiased.skillsChoose,assignProject:window.unbiased.resolveProjectMembership}} />
         {!loading && !adding && (
           <>
             <Group
@@ -16160,7 +16172,7 @@ function SkillsPanel({ cwd, onClose }: { cwd: string | null; onClose: () => void
             <div>
               <span style={fieldLabel}>Where should it apply?</span>
               <div style={{ display: "flex", gap: 8 }}>
-                {([["project", "This project"], ["global", "Everywhere"]] as const).map(([v, label]) => (
+                {([["project", "This folder (legacy)"], ["global", "This device (legacy)"]] as const).map(([v, label]) => (
                   <button
                     key={v}
                     onClick={() => setScope(v)}
@@ -17706,6 +17718,7 @@ function SettingsView({
         ) : tab === "account" ? (
           <div style={{ maxWidth: 760, margin: "0 auto" }}>
             <h1 style={{ fontSize: 28, fontWeight: 600, letterSpacing: "var(--track-title)", lineHeight: 1.15, margin: "0 0 28px" }}>Account</h1>
+            <CloudReadiness api={{status:window.unbiased.cloudStatus,preflight:window.unbiased.cloudPreflight}} />
             <div
               style={{
                 border: `1px solid ${colors.border}`,

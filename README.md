@@ -128,3 +128,10 @@ npx electron .     # run the built app
 Licensed under Apache-2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE), and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The Unbiased name and logo
 are covered separately by [TRADEMARKS.md](TRADEMARKS.md).
+
+## Portable environments and cloud foundations
+
+See [CLOUD-FOUNDATIONS.md](docs/CLOUD-FOUNDATIONS.md) for stable project identities,
+scoped settings, manifest validation and current engine limitations, and
+[RELAY-INTEGRATION.md](docs/RELAY-INTEGRATION.md) for required cloud APIs.
+Cloud continuation and scoped skill activation remain unavailable in this build.

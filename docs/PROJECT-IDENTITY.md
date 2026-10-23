@@ -29,3 +29,10 @@ The JSON stores are written through a temporary file and rename. Their
 read-modify-write operations are synchronous on Electron's main thread.
 Unreadable JSON raises an error rather than replacing user data with an empty
 store. No engine or server protocol change is required.
+
+Cloud foundations use this same project store for sidebar grouping and portable
+settings resolution. Each source also retains its source, repository and checkout
+IDs. Earlier `conversation-projects.json` assignments are read during migration;
+new assignments use `project-memberships.json`. Ambiguous nested source matches
+stay in Recents until the user selects a project. Historical exact folder
+ownership continues to protect older chats when projects share a repository.

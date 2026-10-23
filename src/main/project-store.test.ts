@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProjectStore, type ProjectRecord } from "./project-store";
 
 function fixture(t: test.TestContext, raw: unknown = []): { dir: string; store: ProjectStore } {
-  const dir = mkdtempSync(join(tmpdir(), "project-identity-"));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "project-identity-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, "projects.json"), JSON.stringify(raw));
   return { dir, store: new ProjectStore(dir) };
@@ -107,4 +107,46 @@ test("prototype-shaped thread IDs persist without changing other assignments", (
   const reopened = new ProjectStore(dir);
   assert.equal(reopened.projectFor("__proto__", "/elsewhere")?.id, "one");
   assert.equal(reopened.projectFor("constructor", "/repo"), null);
+});
+
+
+test("portable source identities and legacy memory survive shared-project edits", (t) => {
+  const { dir, store } = fixture(t, ["/repo"]);
+  const original = store.list()[0];
+  const source = original.sources[0];
+  store.save([project("second"), { ...original, name: "Renamed" }]);
+  const reopened = new ProjectStore(dir);
+  const retained = reopened.list().find(p => p.id === original.id)!;
+  assert.deepEqual(retained.sources[0], source);
+  assert.equal(retained.legacyMemoryPath, "/repo");
+  assert.notEqual(reopened.list()[0].sources[0].id, source.id);
+  assert.equal(reopened.membership("old", "/repo").projectId, original.id);
+  reopened.assign("new", "second");
+  assert.equal(reopened.membership("new", "/repo").projectId, "second");
+  assert.equal(reopened.projectFor("new", "/repo")?.id, "second");
+});
+
+test("earlier portable assignments migrate and explicit moves override them everywhere", (t) => {
+  const { dir, store } = fixture(t, [project("one"), project("two")]);
+  writeFileSync(join(dir, "conversation-projects.json"), JSON.stringify({
+    chat: { projectId: "two", resolution: "explicit" },
+    regular: { projectId: null, resolution: "explicit" },
+    ambiguous: { projectId: null, resolution: "ambiguous", candidates: ["one", "two"] },
+  }));
+  assert.equal(store.membership("chat", "/repo").projectId, "two");
+  assert.equal(store.projectFor("chat", "/repo")?.id, "two");
+  assert.equal(store.membership("regular", "/repo").projectId, null);
+  assert.equal(store.membership("ambiguous", "/repo").resolution, "ambiguous");
+  store.assign("chat", "one");
+  store.assign("ambiguous", "two");
+  assert.equal(new ProjectStore(dir).membership("chat", "/repo").projectId, "one");
+  assert.equal(store.membership("ambiguous", "/repo").projectId, "two");
+});
+
+test("overlapping nested sources expose ambiguous membership until selected", (t) => {
+  const { store } = fixture(t, [project("one", ["/work"]), project("two", ["/work/api"])]);
+  assert.equal(store.membership("chat", "/work/api/src").resolution, "ambiguous");
+  assert.equal(store.projectFor("chat", "/work/api/src"), null);
+  store.assign("chat", "two");
+  assert.equal(store.projectFor("chat", "/work/api/src")?.id, "two");
 });
