@@ -3836,8 +3836,9 @@ export function App() {
                   // selected rows at once — the view you are in, and the chat
                   // you were in before it.
                   borderRadius: 9,
-                  padding: "8px 8px 6px",
+                  padding: "7px 8px",
                   fontSize: 14.5,
+                  lineHeight: "20px",
                   fontWeight: 500,
                   letterSpacing: "var(--track-body)",
                   color: "var(--fg-soft)",
