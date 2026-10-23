@@ -3835,19 +3835,19 @@ export function App() {
                   // claim the highlight. Without this the sidebar showed two
                   // selected rows at once — the view you are in, and the chat
                   // you were in before it.
-                  borderRadius: 9,
-                  padding: "7px 8px",
+                  borderRadius: 12,
+                  padding: "9px 12px",
                   fontSize: 14.5,
                   lineHeight: "20px",
-                  fontWeight: 500,
+                  fontWeight: 400,
                   letterSpacing: "var(--track-body)",
                   color: "var(--fg-soft)",
                   boxSizing: "border-box",
                 }}
-                className="u-sidebar-row"
+                className="u-sidebar-row u-sidebar-project-row"
                 data-active={litProject(p.id)}
               >
-                <ProjectIcon icon={p.icon} color={p.color} />
+                <ProjectIcon icon={p.icon} color={p.color} size={18} />
                 <span
                   style={{
                     flex: 1,
@@ -20136,7 +20136,7 @@ function ThreadRow({
       }}
       onMouseEnter={() => onHover(thread.id)}
       onMouseLeave={() => onHover(null)}
-      className="u-sidebar-row"
+      className="u-sidebar-row u-sidebar-conversation-row"
       data-active={active}
       style={{
         display: "flex",
@@ -20144,9 +20144,9 @@ function ThreadRow({
         position: "relative",
         // Selection is a slightly stronger neutral material than hover. This
         // keeps the title aligned while avoiding a decorative accent rail.
-        borderRadius: 9,
+        borderRadius: 12,
         marginBottom: 2,
-        paddingLeft: indent ? 24 : 0,
+        paddingLeft: indent ? 32 : 4,
       }}
     >
       {indent && (
@@ -20158,7 +20158,7 @@ function ThreadRow({
           className="u-sidebar-pin-toggle"
           style={{
             position: "absolute",
-            left: 1,
+            left: 8,
             top: "calc(50% - 11px)",
             width: 22,
             height: 22,
@@ -20175,7 +20175,7 @@ function ThreadRow({
           {pinned ? <PinOff size={14} strokeWidth={1.8} /> : <Pin size={14} strokeWidth={1.8} />}
         </button>
       )}
-      {indent && (
+      {indent && (running || unread) && (
         <span
           className={`u-sidebar-thread-dot${running ? " is-running" : unread ? " is-unread" : ""}`}
           role={running || unread ? "status" : undefined}
@@ -20195,7 +20195,7 @@ function ThreadRow({
           background: "transparent",
           color: active ? colors.fg : "var(--fg-soft)",
           border: "none",
-          padding: indent ? "7px 4px 7px 18px" : "7px 4px 7px 8px",
+          padding: "9px 8px",
           fontSize: 14.5,
           fontWeight: 400,
           lineHeight: "20px",

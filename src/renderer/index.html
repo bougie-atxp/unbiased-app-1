@@ -166,21 +166,17 @@
       .u-sidebar-thread-list {
         position: relative;
       }
-      .u-sidebar-thread-list::before {
-        content: "";
-        position: absolute;
-        top: 0;
-        bottom: 0;
-        left: 30px;
-        width: 1px;
-        background: color-mix(in srgb, var(--fg) 18%, transparent);
-        pointer-events: none;
-        z-index: 1;
+      .u-sidebar-project-row {
+        margin-bottom: 2px;
+      }
+      .u-sidebar-project-row[data-active="true"],
+      .u-sidebar-conversation-row[data-active="true"] {
+        box-shadow: none;
       }
       .u-sidebar-thread-dot {
         position: absolute;
         top: 50%;
-        left: 26px;
+        left: 15px;
         width: 9px;
         height: 9px;
         box-sizing: border-box;
@@ -212,6 +208,10 @@
         pointer-events: auto;
       }
       .u-sidebar-pin-toggle:hover { color: var(--fg); }
+      .u-sidebar-conversation-row:hover .u-sidebar-thread-dot,
+      .u-sidebar-conversation-row:focus-within .u-sidebar-thread-dot {
+        opacity: 0;
+      }
       .u-sidebar-recent-group {
         margin-top: 10px;
       }
