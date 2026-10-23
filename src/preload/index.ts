@@ -98,13 +98,13 @@ contextBridge.exposeInMainWorld("unbiased", {
   mcpThreadSet: (threadId: string | null, enabled: string[]) =>
     ipcRenderer.invoke("mcp:thread-set", { threadId, enabled }),
   onMcpThreadApplied: (cb: (p: unknown) => void) => subscribe("mcp:thread-applied", cb),
-  skillsList: (cwd?: string | null) => ipcRenderer.invoke("skills:list", { cwd }),
+  skillsList: (cwd?: string | null, projectId?: string | null) => ipcRenderer.invoke("skills:list", { cwd, projectId }),
   skillsSetEnabled: (path: string, enabled: boolean) =>
     ipcRenderer.invoke("skills:set-enabled", { path, enabled }),
   skillsReveal: (path: string, isDir?: boolean) => ipcRenderer.invoke("skills:reveal", { path, isDir }),
   skillsChoose: () => ipcRenderer.invoke("skills:choose"),
   skillsValidate: (path: string) => ipcRenderer.invoke("skills:validate", { path }),
-  skillsInstall: (p: { path: string; name: string; scope: "global" | "project"; cwd: string | null }) =>
+  skillsInstall: (p: { path: string; name: string; scope: "global" | "project"; cwd: string | null; projectId: string | null }) =>
     ipcRenderer.invoke("skills:install", p),
   skillsRemove: (path: string, cwd: string | null) => ipcRenderer.invoke("skills:remove", { path, cwd }),
   skillsFetch: (url: string) => ipcRenderer.invoke("skills:fetch", { url }),

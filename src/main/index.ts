@@ -1,3 +1,4 @@
+import { SkillOwnershipStore, installOwnedSkill } from "./skill-ownership";
 import { ScopedIdentity } from "./scoped-identity";
 import { ConversationLineage } from "./conversation-lineage";
 import { CloudBindings, ConversationRouter, cloudEligible, keyFingerprint, type SignIn } from "./cloud-binding";
@@ -259,7 +260,9 @@ function requireLocalConversation(operation:string): void {
 function pinTurnEnvironment(thread: string): void {
   const m = environmentFor(thread);
   if (m) {
-    if (m.skills.some(skill => skill.enabled)) throw new Error("SCOPED_SKILL_ACTIVATION_UNSUPPORTED: scoped skills are saved but this pinned engine cannot activate them safely; disable them to run with existing local skills");
+    // The portable skill editor is retired. Its saved artifacts remain inert;
+    // only skills installed through the normal Skills flow are executable.
+    // They must not block local turns after their controls have been removed.
     // Persisted layers are read at each boundary; no shared-engine restart.
     const previous = turnEnvironments.snapshot(thread);
     if (!previous || JSON.stringify(previous) !== JSON.stringify(m)) {
@@ -10925,7 +10928,17 @@ app.whenReady().then(async () => {
     });
   });
 
-  ipcMain.handle("skills:list", async (_e, payload?: { cwd?: string | null }) => {
+  const skillOwnership = new SkillOwnershipStore(join(app.getPath("userData"), "skill-ownership.json"));
+  function skillProject(cwd: string | null, projectId?: string | null): ProjectRecord | null {
+    if (!cwd) return null;
+    const folder = loadWorktrees()[cwd]?.project ?? cwd;
+    const projects = loadProjects();
+    if (projectId) return projects.find(project => project.id === projectId && project.folders.includes(folder)) ?? null;
+    const current = threadProject(panes.main.threadId, cwd);
+    return current?.folders.includes(folder) ? current : null;
+  }
+
+  ipcMain.handle("skills:list", async (_e, payload?: { cwd?: string | null; projectId?: string | null }) => {
     // cwds drives the PROJECT tier. codex does not walk up parent directories,
     // so the path passed here must be the exact folder holding .codex/skills —
     // normally the conversation's cwd. Verified: a thread opened in
@@ -10939,7 +10952,13 @@ app.whenReady().then(async () => {
       const groups = Array.isArray(res?.data) ? res.data : [];
       // One cwd in, so one group out; flatten rather than make the renderer
       // handle a shape it never sees.
-      const skills = groups.flatMap((g) => (Array.isArray(g.skills) ? g.skills : []));
+      const projects = loadProjects();
+      const skills = groups.flatMap((g) => (Array.isArray(g.skills) ? g.skills : [])).map(raw => {
+        const skill = raw as { path: string; scope: string };
+        const ownership = skillOwnership.ownership(skill.path, projects, [globalSkillsDir(), bundledSkillsDir()], skill.scope);
+        const project = ownership.scope === "project" ? projects.find(project => project.id === ownership.projectId) : null;
+        return { ...skill, ownership, projectName: project?.name ?? null };
+      });
       return {
         skills,
         cwd,
@@ -11418,39 +11437,24 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(
     "skills:install",
-    (_e, payload: { path?: string; name?: string; scope?: "global" | "project"; cwd?: string | null }) => {
+    (_e, payload: { path?: string; name?: string; scope?: "global" | "project"; cwd?: string | null; projectId?: string | null }) => {
+      if (payload?.scope !== "project" && payload?.scope !== "global") return { ok: false, error: "Choose this project or everywhere." };
       const src = payload?.path;
       const name = (payload?.name ?? "").trim();
       if (!src || !isAbsolute(src)) return { ok: false, error: "Choose a folder or a SKILL.md file." };
       if (!SKILL_NAME_RE.test(name) || name.length > SKILL_NAME_MAX) {
         return { ok: false, error: "Use letters, digits, hyphens and underscores only, starting with a letter or digit." };
       }
-      let root: string;
-      if (payload.scope === "project") {
-        const cwd = payload.cwd;
-        if (!cwd || !isAbsolute(cwd)) return { ok: false, error: "Open a project first to add a skill to it." };
-        // codex scans exactly <cwd>/.codex/skills and does not walk up, so this
-        // path is the engine's, not a naming choice of ours.
-        root = join(cwd, ".codex", "skills");
-      } else {
-        root = globalSkillsDir();
-      }
-      const dest = join(root, name);
-      if (existsSync(dest)) {
-        return { ok: false, error: `A skill named "${name}" is already there. Rename it or remove the existing one.` };
-      }
+      const project = payload.scope === "project" ? skillProject(payload.cwd ?? null, payload.projectId) : null;
+      if (payload.scope === "project" && !project) return { ok: false, error: "Choose a project before adding a project skill." };
+      const ownership = project ? { scope: "project" as const, projectId: project.id } : { scope: "global" as const };
+      const root = project ? join(payload.cwd!, ".codex", "skills") : globalSkillsDir();
       try {
-        mkdirSync(root, { recursive: true });
-        if (statSync(src).isDirectory()) {
-          cpSync(src, dest, { recursive: true });
-        } else {
-          mkdirSync(dest, { recursive: true });
-          cpSync(src, join(dest, "SKILL.md"));
-        }
+        const manifest = installOwnedSkill(src, root, name, ownership, skillOwnership);
+        return { ok: true, path: manifest, root, ownership };
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
-      return { ok: true, path: join(dest, "SKILL.md"), root };
     },
   );
 
@@ -11473,6 +11477,7 @@ app.whenReady().then(async () => {
     }
     try {
       rmSync(dir, { recursive: true, force: true });
+      skillOwnership.forget(manifest);
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
