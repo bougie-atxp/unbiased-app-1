@@ -16023,9 +16023,9 @@ function SkillsPanel({ cwd, projectId, onClose }: { cwd: string | null; projectI
     if (sk.ownership.scope === "project" && sk.ownership.projectId !== projectId) return sk.projectName ?? "Another project";
     if (sk.ownership.scope === "folder") return "folder skill";
     if (ours(sk)) return null;
-    if (g?.bundled && sk.path.startsWith(g.bundled)) return "included";
+    if (g?.bundled && sk.path.startsWith(g.bundled)) return "Unbiased";
     if (sk.scope === "system") return "built in";
-    return "another tool";
+    return "Shared";
   };
   const project = skills.filter(inProject);
   const global = skills.filter((sk) => sk.ownership.scope === "global");
