@@ -23,6 +23,16 @@ The packaged application includes the `agent-browser` CLI from
 Apache-2.0. Its license is included at
 `Contents/Resources/browser/licenses/agent-browser/LICENSE`.
 
+## Private Agent browser
+
+The packaged application includes a pinned
+[Chrome for Testing](https://github.com/GoogleChromeLabs/chrome-for-testing)
+distribution with Unbiased-specific macOS bundle identifiers and handler
+registrations removed. Upstream browser resources and component notices remain
+in `Contents/Resources/browser/Unbiased Browser.app`; the browser's
+`chrome://credits` page lists third-party component credits. The exact artifact
+and checksum are recorded in `build/browser.lock.json`.
+
 ## Robot Head Pal
 
 The packaged application includes an adapted version of
