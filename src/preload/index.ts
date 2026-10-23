@@ -1,3 +1,4 @@
+import type { EnvironmentManifest, SettingsScope } from "../main/environment";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { AgentStylePrefs } from "../shared/agent-style";
 import type { PalScale, PalsSettings } from "../shared/pals";
@@ -17,6 +18,15 @@ contextBridge.exposeInMainWorld("unbiased", {
     subscribe("app:menu-command", (payload) => {
       if (typeof payload === "string") cb(payload);
     }),
+  portableTarget: () => ipcRenderer.invoke("environment:target"),
+  portableResolve: (scope:SettingsScope) => ipcRenderer.invoke("environment:resolve",scope),
+  portableRead: (scope:SettingsScope) => ipcRenderer.invoke("environment:read",scope),
+  portableWrite: (p:{manifest:EnvironmentManifest;expectedRevision:number}) => ipcRenderer.invoke("environment:write",p),
+  portableInstall: (p:{scope:SettingsScope;path:string;name:string;expectedRevision:number}) => ipcRenderer.invoke("environment:install-skill",p),
+  cloudStatus: () => ipcRenderer.invoke("cloud:status"),
+  cloudPreflight: () => ipcRenderer.invoke("cloud:preflight"),
+  resolveProjectMembership: (threadId:string,projectId:string|null) => ipcRenderer.invoke("projects:resolve-membership",{threadId,projectId}),
+
   getEngineStatus: () => ipcRenderer.invoke("engine:status"),
   onEngineStatus: (cb: (status: unknown) => void) => subscribe("engine:status", cb),
 

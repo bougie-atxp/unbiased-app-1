@@ -1,3 +1,12 @@
+import { ScopedIdentity } from "./scoped-identity";
+import { ConversationLineage } from "./conversation-lineage";
+import { CloudBindings, ConversationRouter, cloudEligible, keyFingerprint, type SignIn } from "./cloud-binding";
+import { gitPreflight } from "./cloud-preflight";
+import { EnvironmentStore, TurnEnvironments } from "./environment-store";
+import { exportConnector, resolveEnvironment, validateScope, sameOwner, type Owner, type SettingsScope, type EnvironmentManifest } from "./environment";
+import { installScopedSkill } from "./scoped-skills";
+import { readJson, atomicJson } from "./atomic-store";
+import { assignMembership, membershipFor, projectRecord, readProjects, type ProjectRecord } from "./project-identity";
 import {
   app,
   BrowserWindow,
@@ -41,6 +50,7 @@ import { epochMillis } from "../shared/conversation-time";
 import { alignRunningTurnStart, chooseTranscript, initialTranscriptPage, replaceTranscriptTail, retitleTranscript, transcriptPage, type TranscriptRow } from "../shared/transcript-pages";
 import { INTERACTIVE_VISUAL_CSP, INTERACTIVE_VISUAL_SCHEME, interactiveVisualDocument, interactiveVisualId, interactiveVisualPreviewCsp, interactiveVisualPreviewDocument, isInteractiveVisualPreviewUrl, isInteractiveVisualSource } from "../shared/interactive-visual";
 import { agentInputFields, codexInputResponse, mcpInputFields, mcpInputResponse, validateUserInput, type UserInputRequest, type UserInputValue } from "../shared/user-input";
+
 import { startSecretProxy, type SecretConnector } from "./oauth-proxy";
 import { isStripeOnboardingPage } from "../shared/stripe-onboarding-url";
 import {
@@ -212,6 +222,54 @@ if (!productionBuild() && process.env.UNBIASED_DEV_USER_DATA_DIR) {
 }
 
 const engine = new EngineClient();
+// Persisted remote bindings guard every thread RPC, including restart recovery.
+const cloudBindings = new CloudBindings(join(app.getPath("userData"), "cloud-bindings"));
+const scopedIdentity = new ScopedIdentity();
+function currentScopedOwner(): Owner | null { return scopedIdentity.owner(readStoredKey()?.key ?? ""); }
+const conversationRouter = new ConversationRouter(cloudBindings, () => currentScopedOwner());
+const localEngineRequest = engine.request.bind(engine);
+engine.request = (method, params = {}) => conversationRouter.request(method, params, () => localEngineRequest(method, params));
+const environmentStore = new EnvironmentStore(join(app.getPath("userData"), "environments"));
+const turnEnvironments = new TurnEnvironments();
+function signInFile(): string { return join(app.getPath("userData"), "sign-in-provenance.json"); }
+async function verifiedOwner(): Promise<Owner> {
+  const key = readStoredKey()?.key;
+  if (!key) throw new Error("Sign in to an account before editing scoped settings");
+  return scopedIdentity.verify(key,()=>readStoredKey()?.key ?? "",async()=>{
+    const who = await whoamiValidate(key);
+    if (!who.ok || who.accessStatus !== "granted" || !who.user?.id || !who.organization?.id) throw new Error("Platform must return a validated organization and user identity");
+    return { organizationId:who.organization.id,memberId:who.user.id };
+  });
+}
+function environmentFor(thread: string): EnvironmentManifest | null {
+  const owner=currentScopedOwner();
+  if (!owner) return null;
+  const root = conversationLineage.root(rootThreadOf(thread));
+  const projectId = projectMembership(root, threadCwds.get(thread) ?? undefined).projectId;
+  const target: SettingsScope = { kind:"conversation",projectId,conversationId:root };
+  const scopes: SettingsScope[] = [{kind:"global"},...(projectId ? [{kind:"project",projectId} as const] : []),target];
+  const layers = scopes.map(scope => environmentStore.read(owner,scope)).filter((m): m is EnvironmentManifest => m !== null);
+  return layers.length ? resolveEnvironment(layers,target) : null;
+}
+function requireLocalConversation(operation:string): void {
+  const thread=panes.main.threadId;const binding=thread ? cloudBindings.read(thread) : null;
+  if(binding && binding.state!=="local")throw new Error(`${operation} is unavailable for a remote or handoff-paused conversation; no local execution was performed`);
+}
+function pinTurnEnvironment(thread: string): void {
+  const m = environmentFor(thread);
+  if (m) {
+    if (m.skills.some(skill => skill.enabled)) throw new Error("SCOPED_SKILL_ACTIVATION_UNSUPPORTED: scoped skills are saved but this pinned engine cannot activate them safely; disable them to run with existing local skills");
+    // Persisted layers are read at each boundary; no shared-engine restart.
+    const previous = turnEnvironments.snapshot(thread);
+    if (!previous || JSON.stringify(previous) !== JSON.stringify(m)) {
+      // Composite layers have independent revisions. Snapshot revision is a local generation.
+      turnEnvironments.update(thread,{...m,revision:(previous?.revision ?? 0)+1});
+    }
+  }
+  const denied = new Set(m?.connectors.filter(c => !c.enabled).map(c => c.name) ?? []);
+  if ([...enabledMcpFor(thread),...connectedConnectors(readMcpConfig().servers)].some(name => denied.has(name))) throw new Error("ENGINE_ENVIRONMENT_RELOAD_REQUIRED: an inherited connector disablement changed; turn execution is paused until a verified per-thread reload adapter is available");
+  turnEnvironments.begin(thread);
+}
 let win: BrowserWindow | null = null;
 let petWin: BrowserWindow | null = null;
 let petReadiness: PetWindowReadiness | null = null;
@@ -239,6 +297,7 @@ let lastStatus: EngineStatus = { state: "starting" };
 // Conversation panes share one engine. Side threads persist for short-term
 // recovery, but are excluded from the ordinary conversation sidebar.
 type PaneId = string;
+const conversationLineage = new ConversationLineage();
 const panes: Record<string, { threadId: string | null; turnId: string | null }> = {
   main: { threadId: null, turnId: null },
 };
@@ -4376,7 +4435,7 @@ function worktreesFile(): string {
   return join(app.getPath("userData"), "worktrees.json");
 }
 
-function loadWorktrees(): Record<string, { project: string; branch: string }> {
+function loadWorktrees(): Record<string, { project: string; branch: string; checkoutId?: string; repositoryId?: string | null; sourceId?: string }> {
   try {
     const parsed = JSON.parse(readFileSync(worktreesFile(), "utf8"));
     return parsed && typeof parsed === "object" ? parsed : {};
@@ -4462,8 +4521,9 @@ async function createWorktree(project: string, seed?: string): Promise<string | 
     return null;
   }
   const map = loadWorktrees();
-  map[dir] = { project, branch };
-  writeFileSync(worktreesFile(), JSON.stringify(map, null, 2) + "\n");
+  const attachment = loadProjects().flatMap(p=>p.sources).find(source=>source.path===project);
+  map[dir] = { project, branch, checkoutId:randomUUID(), repositoryId:attachment?.repositoryId, sourceId:attachment?.id };
+  atomicJson(worktreesFile(),map);
   return dir;
 }
 
@@ -4669,10 +4729,11 @@ async function applyThreadMcp(threadId: string): Promise<void> {
 /** Connected catalogue entries are app-wide; manual servers remain per-chat. */
 function mcpOverrideFor(threadId: string | null): Record<string, unknown> {
   const servers = readMcpConfig().servers;
-  return mcpConfigOverride(
-    overridableServerNames(servers),
-    new Set([...enabledMcpFor(threadId), ...connectedConnectors(servers)]),
-  );
+  const enabled = new Set([...enabledMcpFor(threadId), ...connectedConnectors(servers)]);
+  const environment = threadId ? turnEnvironments.snapshot(threadId) ?? environmentFor(threadId) : null;
+  for (const connector of environment?.connectors ?? []) if (!connector.enabled) enabled.delete(connector.name);
+  return mcpConfigOverride(overridableServerNames(servers), enabled);
+
 }
 
 // Re-declare everything a thread/start would. Tools are declared per
@@ -4711,50 +4772,26 @@ function resumeParamsFor(id: string): Record<string, unknown> {
 // falls in ANY of them group under it), a primary folder (the cwd new chats
 // start in), and an icon/color identity. Legacy projects.json was a bare
 // path array — migrated on load.
-type ProjectRecord = {
-  name: string;
-  folders: string[];
-  primary: string;
-  icon: string;
-  color: string | null;
-};
-
-function recordFromPath(path: string): ProjectRecord {
-  return {
-    name: path.split("/").filter(Boolean).pop() ?? path,
-    folders: [path],
-    primary: path,
-    icon: "folder",
-    color: null,
-  };
-}
-
-function loadProjects(): ProjectRecord[] {
-  try {
-    const parsed = JSON.parse(readFileSync(projectsFile(), "utf8"));
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((p) => {
-        if (typeof p === "string") return recordFromPath(p); // legacy entry
-        if (p && typeof p === "object" && Array.isArray(p.folders) && p.folders.length > 0) {
-          return {
-            name: typeof p.name === "string" && p.name ? p.name : recordFromPath(p.folders[0]).name,
-            folders: p.folders.filter((f: unknown) => typeof f === "string"),
-            primary: typeof p.primary === "string" && p.folders.includes(p.primary) ? p.primary : p.folders[0],
-            icon: typeof p.icon === "string" ? p.icon : "folder",
-            color: typeof p.color === "string" ? p.color : null,
-          } as ProjectRecord;
-        }
-        return null;
-      })
-      .filter((p): p is ProjectRecord => p !== null && p.folders.length > 0);
-  } catch {
-    return [];
+function recordFromPath(path: string): ProjectRecord { return projectRecord(path); }
+function loadProjects(): ProjectRecord[] { return readProjects(projectsFile()); }
+function saveProjects(projects: ProjectRecord[]): void { atomicJson(projectsFile(), projects); }
+function membershipFile(): string { return join(app.getPath("userData"), "conversation-projects.json"); }
+async function allLegacyThreads(): Promise<WireThread[]> {
+  const threads:WireThread[]=[];
+  for (const archived of [false,true]) {
+    let cursor:string|undefined;const seen=new Set<string>();
+    do {
+      const page=await engine.request("thread/list",{limit:100,archived,...(cursor?{cursor}:{})}) as {data?:WireThread[];nextCursor?:string|null};
+      threads.push(...(page.data ?? []));cursor=page.nextCursor ?? undefined;
+      if(cursor){if(seen.has(cursor))throw new Error("Thread pagination did not advance; project metadata was not changed");seen.add(cursor)}
+    }while(cursor);
   }
+  return threads;
 }
 
-function saveProjects(projects: ProjectRecord[]): void {
-  writeFileSync(projectsFile(), JSON.stringify(projects, null, 2) + "\n");
+function projectMembership(id: string, cwd?: string) {
+  const legacy = loadThreadProjects()[id];
+  return membershipFor(membershipFile(), id, loadProjects(), legacy ?? cwd, loadWorktrees());
 }
 
 function rememberProject(path: string): void {
@@ -4988,6 +5025,7 @@ function thumbDataUrl(image: NativeImage, max = 112): string {
 }
 
 function pushStatus(status: EngineStatus): void {
+  if(status.state === "exited")turnEnvironments.reset();
   lastStatus = status;
   if (status.state === "exited") {
     if (petSettleTimer) clearTimeout(petSettleTimer);
@@ -5210,6 +5248,7 @@ type WhoamiResult =
       workload: { id: string; name: string };
       keyName: string;
       accessStatus: string;
+      user?: { id: string };
       // Present only once the platform's whoami is extended to return it.
       paretoRolloutPercent?: number | null;
     }
@@ -5231,6 +5270,7 @@ async function whoamiValidate(key: string): Promise<WhoamiResult> {
     const body = (await res.json()) as Record<string, unknown>;
     return {
       ok: true,
+      user: body.user as { id: string } | undefined,
       organization: body.organization as { id: string; name: string },
       workload: body.workload as { id: string; name: string },
       keyName: String(body.keyName ?? ""),
@@ -6983,6 +7023,9 @@ function wireNotifications(): void {
             const stashedNickname = pendingNicknames.get(promptKey);
             if (stashedNickname !== undefined) pendingNicknames.delete(promptKey);
             const name = existing?.name && existing.name !== taskName ? existing.name : (stashedNickname ?? taskName);
+            conversationLineage.register(p.agentThreadId,threadId);
+            const parentMembership = projectMembership(threadId,threadCwds.get(threadId) ?? undefined);
+            assignMembership(membershipFile(),p.agentThreadId,parentMembership.projectId);
             subAgents.set(p.agentThreadId, {
               parent: threadId,
               path: p.agentPath,
@@ -7259,6 +7302,7 @@ function wireNotifications(): void {
         break;
       }
       case "turn/completed": {
+        if (threadId) turnEnvironments.end(threadId);
         const turn = params.turn as
           | { status?: string; usage?: unknown; error?: { message?: string; additionalDetails?: string | null } | null }
           | undefined;
@@ -7485,6 +7529,13 @@ function wireNotifications(): void {
     "server-request",
     (msg: { id: number | string; method: string; params?: Record<string, unknown> }) => {
       const params = msg.params ?? {};
+      if (typeof params.threadId === "string") {
+        const binding = cloudBindings.read(params.threadId);
+        if (binding && binding.state !== "local") {
+          engine.respond(msg.id, { contentItems: [{ type:"inputText", text:"Conversation execution is remote or paused for handoff" }], success:false, decision:"decline" });
+          return;
+        }
+      }
       // Route an approval to the owning pane, or hold it if the thread is
       // backgrounded — the engine waits on the request, and it replays when
       // the conversation is reopened. Auto-declining here would silently
@@ -8509,6 +8560,7 @@ async function startEngine(): Promise<void> {
     engineWired = true;
   }
   engine.stop();
+  turnEnvironments.reset();
   resetSubAgentState();
   engine.start(bin, {
     UNBIASED_API_KEY: stored.key,
@@ -8557,7 +8609,10 @@ app.whenReady().then(async () => {
   } catch (error) {
     if (existsSync(sideChatRecentsFile())) console.warn("[side-chat] could not load recovery index:", error);
   }
-  for (const record of sideChatRecents.all()) threadCwds.set(record.threadId, record.cwd);
+  for (const record of sideChatRecents.all()) {
+    threadCwds.set(record.threadId, record.cwd);
+    conversationLineage.register(record.threadId, record.parentThreadId);
+  }
   void pruneSideChatRecents();
   app.on("before-quit", resetSidePanes);
   const sideChatHeartbeat = setInterval(() => {
@@ -8667,6 +8722,70 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn("[memory] could not scope old plain-chat notes:", error);
   }
+  ipcMain.handle("cloud:status", async () => {
+    const key = readStoredKey()?.key ?? "";
+    const auth = readJson<SignIn | null>(signInFile(),null);
+    const eligible = cloudEligible(auth,key);
+    return { eligible, available:false, reason: eligible ? "Cloud connection is awaiting the Relay handoff and environment APIs." : "Use platform browser sign-in to become eligible for cloud connection.", binding:panes.main.threadId ? cloudBindings.read(panes.main.threadId) : null };
+  });
+  ipcMain.handle("cloud:preflight", async () => {
+    const owner = await verifiedOwner();
+    const auth = readJson<SignIn | null>(signInFile(),null);
+    if (!cloudEligible(auth,readStoredKey()?.key ?? "") || !auth?.owner || !sameOwner(owner,auth.owner)) throw new Error("Platform browser sign-in required");
+    const thread = panes.main.threadId;
+    if (!thread) throw new Error("Start a conversation first");
+    const membership = projectMembership(thread, mainCwd ?? undefined);
+    const project = loadProjects().find(p => p.id === membership.projectId);
+    if (!project) throw new Error("Choose an unambiguous project before preparing repositories");
+    const worktree=mainCwd ? loadWorktrees()[mainCwd] : undefined;
+    if (worktree && mainCwd && !worktree.checkoutId) {
+      const all=loadWorktrees(); all[mainCwd]={...worktree,checkoutId:randomUUID()};atomicJson(worktreesFile(),all);worktree.checkoutId=all[mainCwd].checkoutId;
+    }
+    const handoffProject=worktree && mainCwd ? {...project,sources:project.sources.map(source=>source.path===worktree.project ? {...source,path:mainCwd!,checkoutId:worktree.checkoutId!} : source)} : project;
+    return { repositories:await gitPreflight(handoffProject), available:false, reason:"Relay handoff/environment endpoints are not connected; no files were uploaded." };
+  });
+  ipcMain.handle("environment:read", async (_e,scope: SettingsScope) => environmentStore.read(await verifiedOwner(),validateScope(scope)));
+  ipcMain.handle("environment:resolve", async (_e,input:SettingsScope) => {
+    const owner=await verifiedOwner();const target=validateScope(input);
+    const scopes:SettingsScope[]=[{kind:"global"}];
+    if (target.kind !== "global" && target.projectId) scopes.push({kind:"project",projectId:target.projectId});
+    if (target.kind === "conversation") scopes.push(target);
+    const layers=scopes.map(scope=>environmentStore.read(owner,scope)).filter((m):m is EnvironmentManifest=>m!==null);
+    return layers.length ? resolveEnvironment(layers,target) : null;
+  });
+  ipcMain.handle("environment:write", async (_e,p: { manifest:EnvironmentManifest; expectedRevision:number }) => {
+    const owner=await verifiedOwner(); if (!sameOwner(owner,p.manifest.owner)) throw new Error("Owner mismatch");
+    const scope=validateScope(p.manifest.scope);
+    if (scope.kind === "conversation") {
+      const binding=cloudBindings.read(scope.conversationId);
+      if (binding && binding.state !== "local") { await conversationRouter.environment(scope.conversationId,p.manifest,p.expectedRevision); return {ok:true}; }
+    }
+    if (cloudBindings.affected(owner,scope).length) throw new Error("REMOTE_ENVIRONMENT_CAS_REQUIRED: shared scope affects cloud-bound conversations; no local-only write was made");
+    // Project/global remote synchronization needs Relay CAS; never acknowledge only a local write.
+    const saved=environmentStore.write(p.manifest,p.expectedRevision);
+    return {ok:true,manifest:saved,activation:"next-turn-policy-only",note:"Scoped skill activation and connector creation require a verified engine adapter; availability never enables tools."};
+  });
+  ipcMain.handle("environment:install-skill", async (_e,p: {scope:SettingsScope;path:string;name:string;expectedRevision:number}) => {
+    const owner=await verifiedOwner();const scope=validateScope(p.scope);
+    if (scope.kind === "conversation" && cloudBindings.read(scope.conversationId)?.state !== undefined && cloudBindings.read(scope.conversationId)?.state !== "local") throw new Error("Remote environment adapter required");
+    if (cloudBindings.affected(owner,scope).length) throw new Error("REMOTE_ENVIRONMENT_CAS_REQUIRED");
+    return installScopedSkill(join(app.getPath("userData"),"environment-artifacts"),environmentStore,owner,scope,p.path,p.name,p.expectedRevision);
+  });
+  ipcMain.handle("environment:export-connectors", async (_e,p:{names:string[];scope:SettingsScope}) => {
+    await verifiedOwner();const scope=validateScope(p.scope);
+    if (!Array.isArray(p.names) || p.names.length>100) throw new Error("Choose at most 100 connector names");
+    const config=readMcpConfig();if(config.error)throw new Error(config.error);
+    return p.names.map(name=>{
+      const raw=config.servers.find(server=>server.name===name);if(!raw)throw new Error(`Unknown connector ${name}`);
+      try {return exportConnector(raw,name,scope)}catch(error){throw new Error(`${name}: ${String(error)}. Keep this connector local or register a safe portable definition and opaque credential reference.`)}
+    });
+  });
+  ipcMain.handle("environment:target", async () => {
+    const owner=await verifiedOwner();const thread=panes.main.threadId;
+    const membership=thread ? projectMembership(thread,mainCwd ?? undefined) : null;
+    return {owner,conversationId:thread,projectId:membership?.projectId ?? null,projectResolution:membership?.resolution ?? "regular",projects:loadProjects().map(p=>({id:p.id,name:p.name}))};
+  });
+
   ipcMain.handle("engine:status", () => lastStatus);
 
   // ── Auth IPC ────────────────────────────────────────────────────────
@@ -8728,7 +8847,7 @@ app.whenReady().then(async () => {
   // Validate, persist (unless the key comes from the environment), then
   // (re)start the engine with it. Returns the whoami identity. The one path
   // to a signed-in engine, whether the key was pasted or issued by the browser flow.
-  async function completeSignIn(key: string): Promise<WhoamiResult> {
+  async function completeSignIn(key: string, provenance: "platform_device" | "api_key" = "api_key"): Promise<WhoamiResult> {
     const who = await whoamiValidate(key);
     if (!who.ok) return who;
     // Only persist a user-entered key; an env key is the environment's to own.
@@ -8740,6 +8859,10 @@ app.whenReady().then(async () => {
         return { ok: false, error: `Couldn't save credentials: ${String(err)}` };
       }
     }
+    scopedIdentity.clear();
+    const owner=who.user?.id && who.organization?.id && who.accessStatus === "granted" ? {organizationId:who.organization.id,memberId:who.user.id} : null;
+    if(owner)scopedIdentity.remember(key,owner);
+    atomicJson(signInFile(), { provenance, keyFingerprint:keyFingerprint(key),owner } satisfies SignIn);
     resetKnownSecrets();
     startEngine().catch((err) => pushStatus({ state: "exited", code: null, detail: String(err) }));
     return who;
@@ -8780,7 +8903,7 @@ app.whenReady().then(async () => {
       clientId: OAUTH_CLIENT_ID,
       grant,
       signal: controller.signal,
-    }).then((token) => (token.ok ? completeSignIn(token.accessToken) : token));
+    }).then((token) => (token.ok ? completeSignIn(token.accessToken, "platform_device") : token));
     deviceFlow = { controller, result };
     return {
       ok: true,
@@ -8812,6 +8935,8 @@ app.whenReady().then(async () => {
     // Without this the timer keeps firing against a dead engine, turning
     // every scheduled task into a "engine not running" failure row.
     stopScheduler();
+    scopedIdentity.clear();
+    rmSync(signInFile(),{force:true});
     pushStatus({ state: "exited", code: null, detail: "signed out" });
     const envKey = !!process.env.UNBIASED_API_KEY?.trim();
     // Removing the stored key is now the user's choice (Settings → Account):
@@ -8843,6 +8968,9 @@ app.whenReady().then(async () => {
         if (error) throw new Error(error);
       }
     }
+    const authScope = readJson<SignIn | null>(signInFile(),null);
+    if (authScope?.owner && authScope.keyFingerprint === keyFingerprint(readStoredKey()?.key ?? "")) await verifiedOwner();
+
     const pane = ensurePane(paneId);
     let created = false;
     if (!pane.threadId) {
@@ -8945,6 +9073,10 @@ app.whenReady().then(async () => {
         saveSideChatRecents();
         if (panes[paneId] !== pane) throw new Error("This side chat was closed while starting");
       }
+      const parent = sideParentId;
+      const membership = parent ? projectMembership(parent, startedCwd) : projectMembership(started.thread.id, startedCwd);
+      if (parent) { conversationLineage.register(started.thread.id,parent); assignMembership(membershipFile(), started.thread.id, membership.projectId); }
+
       // The choice made in the composer before the first message belongs to
       // the thread that message created.
       if (paneId === "main" && pendingNewThreadMcp) {
@@ -8996,6 +9128,9 @@ app.whenReady().then(async () => {
     if (computer) input.unshift({ type: "text", text: COMPUTER_DIRECTIVE });
     if (visualize) input.unshift({ type: "text", text: VISUALIZE_DIRECTIVE });
     if (planMode) input.unshift({ type: "text", text: PLAN_DIRECTIVE });
+    pinTurnEnvironment(pane.threadId!);
+    let turnAccepted = false;
+    try {
     const result = (await engine.request("turn/start", {
       threadId: pane.threadId,
       input,
@@ -9013,7 +9148,10 @@ app.whenReady().then(async () => {
     if (result.turn?.id && needsProjectContext && pane.threadId && projectContext) {
       projectContextSeen.set(pane.threadId, projectContext);
     }
+    turnAccepted = true;
+
     return { turnId: pane.turnId, threadId: pane.threadId, created };
+    } finally { if (!turnAccepted) turnEnvironments.end(pane.threadId!); }
   });
 
   // Client-side transcript cache: the engine's history omits things only
@@ -11394,10 +11532,16 @@ app.whenReady().then(async () => {
     return { ok: true };
   });
 
-  ipcMain.handle("chat:approve", (_e, payload: {
+  ipcMain.handle("chat:approve", async (_e, payload: {
     requestId: string;
+    threadId?: string;
     decision: "accept" | "acceptForSession" | "decline";
   }) => {
+    if (payload.threadId && cloudBindings.read(payload.threadId)?.state === "cloud") {
+      if (payload.decision === "acceptForSession") throw new Error("Cloud approval must be one-time");
+      await conversationRouter.decide(payload.threadId,payload.requestId,payload.decision === "decline" ? "deny" : "approve");
+      return {ok:true};
+    }
     const pending = pendingApprovals.get(payload.requestId);
     // Nothing is waiting on this: the turn died, most often because the app
     // was quit while the card was up. Say so rather than returning a bare
@@ -11457,6 +11601,7 @@ app.whenReady().then(async () => {
         !scheduledThreadIds.has(thread.id) && !sideThreadIds.has(thread.id),
     );
     const home = app.getPath("home");
+
     // Codex-style sections: threads group under a project only when the
     // user has explicitly opened (and not removed) that folder — the
     // projects.json list is authoritative. Everything else, including
@@ -11465,11 +11610,7 @@ app.whenReady().then(async () => {
     // projects render even with zero conversations.
     const records = loadProjects();
     const projectMap = new Map<string, ThreadSummary[]>();
-    const folderToPrimary = new Map<string, string>();
-    for (const r of records) {
-      projectMap.set(r.primary, []);
-      for (const f of r.folders) folderToPrimary.set(f, r.primary);
-    }
+    for (const r of records) projectMap.set(r.primary, []);
     // Runs from before threadSource was set carry no tag, so their threads
     // would still surface. The task records name the most recent one per task,
     // which is exactly the set currently visible in Recents. Older untagged
@@ -11484,13 +11625,17 @@ app.whenReady().then(async () => {
       // their parent project, then the thread's own cwd.
       const effectiveCwd =
         threadProjectOverrides[t.id] ?? (t.cwd && worktrees[t.cwd] ? worktrees[t.cwd].project : t.cwd);
-      const primary = effectiveCwd && effectiveCwd !== home ? folderToPrimary.get(effectiveCwd) : undefined;
+      const membership = projectMembership(t.id, effectiveCwd);
+      const primary = records.find(r => r.id === membership.projectId)?.primary;
+      Object.assign(summary, { projectId: membership.projectId, projectResolution: membership.resolution });
       const group = primary ? projectMap.get(primary) : undefined;
       if (group) group.push(summary);
       else recents.push(summary);
     }
     return {
       projects: records.map((r) => ({
+        id: r.id,
+        sources: r.sources,
         path: r.primary,
         name: r.name,
         icon: r.icon,
@@ -11561,16 +11706,11 @@ app.whenReady().then(async () => {
       Number.MAX_SAFE_INTEGER,
     );
     const record = loadProjects().find((r) => r.primary === path);
-    const folders = record?.folders ?? [path];
     // Match the sidebar's grouping exactly (threads:list): explicit
     // assignment wins, then worktree→project mapping, then the thread's own
     // cwd — so this archives precisely the chats listed under the project.
-    const worktrees = loadWorktrees();
-    const overrides = loadThreadProjects();
-    const targets = threads.filter((t) => {
-      const effective = overrides[t.id] ?? (t.cwd && worktrees[t.cwd] ? worktrees[t.cwd].project : t.cwd);
-      return !!effective && (effective === path || folders.includes(effective));
-    });
+    const targets = threads.filter(t => record && projectMembership(t.id,t.cwd).projectId === record.id);
+
     for (const t of targets) {
       await engine.request("thread/archive", { threadId: t.id });
       if (panes.main.threadId === t.id) {
@@ -11584,26 +11724,28 @@ app.whenReady().then(async () => {
 
   // Remove = forget the project in the app. Files and chats survive;
   // its chats regroup under Recents (see threads:list).
-  ipcMain.handle("project:remove", (_e, path: string) => {
+  ipcMain.handle("project:remove", async (_e, path: string) => {
+    for (const thread of await allLegacyThreads()) projectMembership(thread.id,thread.cwd);
     saveProjects(loadProjects().filter((p) => p.primary !== path));
     return { ok: true };
   });
 
   // Edit-project save: name, icon, color, folders, primary — matched by the
   // project's previous primary path.
-  ipcMain.handle("project:update", (_e, p: { path: string; record: ProjectRecord }) => {
+  ipcMain.handle("project:update", async (_e, p: { path: string; record: ProjectRecord }) => {
+    const existing=loadProjects().find(project=>project.primary===p.path);
+    if(!existing)return {ok:false,error:"Project not found"};
+    if(!p.record.folders.length)return {ok:false,error:"A project needs at least one folder"};
+    // Rename/reorder/primary edits remain local and work while the engine is offline.
+    if(existing.folders.some(folder=>!p.record.folders.includes(folder))) {
+      for (const thread of await allLegacyThreads()) projectMembership(thread.id,thread.cwd);
+    }
     const projects = loadProjects();
     const idx = projects.findIndex((r) => r.primary === p.path);
     if (idx === -1) return { ok: false, error: "Project not found" };
     const rec = p.record;
     if (!rec.folders.length) return { ok: false, error: "A project needs at least one folder" };
-    projects[idx] = {
-      name: rec.name.trim() || projects[idx].name,
-      folders: rec.folders,
-      primary: rec.folders.includes(rec.primary) ? rec.primary : rec.folders[0],
-      icon: rec.icon,
-      color: rec.color,
-    };
+    projects[idx] = projectRecord(rec, projects[idx]);
     saveProjects(projects);
     return { ok: true, record: projects[idx] };
   });
@@ -11625,10 +11767,21 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle("projects:resolve-membership", (_e, p: { threadId: string; projectId: string | null }) => {
+    if (p.projectId !== null && !loadProjects().some(r => r.id === p.projectId)) throw new Error("Project not found");
+    assignMembership(membershipFile(), p.threadId, p.projectId);
+    return { ok: true };
+  });
+
   ipcMain.handle("threads:assign-project", (_e, p: { threadId: string; projectPath: string }) => {
     const map = loadThreadProjects();
+    rememberProject(p.projectPath);
+    const candidates = loadProjects().filter(r => r.folders.includes(p.projectPath));
+    if (candidates.length !== 1) throw new Error("Ambiguous project folder; choose the explicit project in portable settings");
+    const project = candidates[0];
+    assignMembership(membershipFile(), p.threadId, project.id);
     map[p.threadId] = p.projectPath;
-    writeFileSync(threadProjectsFile(), JSON.stringify(map, null, 2) + "\n");
+    atomicJson(threadProjectsFile(), map);
     rememberProject(p.projectPath);
     return { ok: true };
   });
@@ -11667,7 +11820,7 @@ app.whenReady().then(async () => {
       if (projects.some((r) => r.primary === primary)) {
         return { path: null, name: null, error: "A project already uses that primary folder" };
       }
-      projects.unshift({ name, folders, primary, icon: p.icon ?? "folder", color: p.color ?? null });
+      projects.unshift(projectRecord({ name, folders, primary, icon: p.icon ?? "folder", color: p.color ?? null }));
       saveProjects(projects);
       pendingCwd = primary;
       mainCwd = primary;
@@ -12307,6 +12460,7 @@ app.whenReady().then(async () => {
   // the active conversation's cwd (the Codex/Claude-desktop contract —
   // the terminal sees the same files the agent works on).
   ipcMain.handle("term:create", (_e, opts: { cols?: number; rows?: number }) => {
+    requireLocalConversation("term:create");
     const cwd = mainCwd ?? pendingCwd ?? app.getPath("home");
     const shell = process.env.SHELL || "/bin/zsh";
     const id = `pty_${nextPtyId++}`;
@@ -12327,6 +12481,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("term:write", (_e, p: { id: string; data: string }) => {
+    requireLocalConversation("term:write");
     ptys.get(p.id)?.write(p.data);
   });
 
@@ -12397,11 +12552,13 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("git:checkout", async (_e, p: { path: string; branch: string; create?: boolean }) => {
+    requireLocalConversation("git:checkout");
     const r = await runGit(p.path, p.create ? ["checkout", "-b", p.branch] : ["checkout", p.branch]);
     return r.code === 0 ? { ok: true } : { ok: false, error: r.err.trim() || "Checkout failed" };
   });
 
   ipcMain.handle("git:commit-all", async (_e, p: { path: string; message: string }) => {
+    requireLocalConversation("git:commit-all");
     const add = await runGit(p.path, ["add", "-A"]);
     if (add.code !== 0) return { ok: false, error: add.err.trim() };
     const commit = await runGit(p.path, ["commit", "-m", p.message]);
@@ -12518,6 +12675,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("review:commit-push", async (_e, path: string) => {
+    requireLocalConversation("review:commit-push");
     const status = await runGit(path, ["status", "--porcelain"]);
     if (status.out.trim()) {
       const add = await runGit(path, ["add", "-A"]);
@@ -12530,6 +12688,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("review:create-pr", (_e, path: string) => {
+    requireLocalConversation("review:create-pr");
     return new Promise((resolve) => {
       execFile("gh", ["pr", "create", "--fill", "--web"], { cwd: path, timeout: 60000 }, (err, _o, stderr) => {
         resolve(err ? { ok: false, error: (stderr ?? "").trim() || "gh pr create failed (is GitHub CLI installed?)" } : { ok: true });
@@ -12540,6 +12699,7 @@ app.whenReady().then(async () => {
   // Destructive by design — only reachable through the modal that lists
   // exactly which files will be lost.
   ipcMain.handle("git:discard", async (_e, path: string) => {
+    requireLocalConversation("git:discard");
     const reset = await runGit(path, ["reset", "--hard"]);
     if (reset.code !== 0) return { ok: false, error: reset.err.trim() };
     const clean = await runGit(path, ["clean", "-fd"]);
