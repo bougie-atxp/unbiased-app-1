@@ -42,7 +42,7 @@ import { MarkdownComposer, type MarkdownComposerHandle } from "./markdown-compos
 import "./markdown-composer.css";
 import "./transcript-action-dock.css";
 import "./user-input-card.css";
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Heart, Home, LayoutGrid, MessageSquare, MessageSquarePlus, MoreHorizontal, PanelRightOpen, Pin, PinOff, Plus, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Heart, Home, LayoutGrid, MessageSquare, MoreHorizontal, Pin, PinOff, Plus, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
 import { CloseIcon } from "./close-icon";
 import { ChatLink } from "./chat-link";
 import "./chat-link.css";
@@ -11464,7 +11464,6 @@ function ChatPane({
       {selection && onAskSideChat && (
         <div
           className={pendingComment === null ? "transcript-action-dock" : undefined}
-          data-compact={(paneRef.current?.clientWidth ?? 500) < 290 || undefined}
           style={{
             position: "absolute",
             // Button pill: centered over the selection. Comment box: hung
@@ -11473,24 +11472,25 @@ function ChatPane({
             left:
               pendingComment !== null
                 ? Math.max(8, Math.min(selection.right + 16, (paneRef.current?.clientWidth ?? 400) - 310))
-                : transcriptDockLeft(selection.x, paneRef.current?.clientWidth ?? 400, (paneRef.current?.clientWidth ?? 400) < 290 ? 88 : 260),
+                : transcriptDockLeft(selection.x, paneRef.current?.clientWidth ?? 400, Math.min(220, (paneRef.current?.clientWidth ?? 400) - 16)),
+            width: pendingComment === null ? 220 : undefined,
             top: Math.max(8, selection.y - (pendingComment !== null ? 64 : 40)),
             transform: "none",
             zIndex: 10,
             display: "flex",
-            alignItems: "center",
+            alignItems: pendingComment !== null ? "center" : "stretch",
             background: pendingComment !== null ? "var(--chip)" : undefined,
             border: pendingComment !== null ? `1px solid ${colors.border}` : undefined,
             // Comment mode is a full pill, matching the in-page picker.
-            borderRadius: pendingComment !== null ? 999 : 8,
+            borderRadius: pendingComment !== null ? 999 : undefined,
             overflow: pendingComment !== null ? "hidden" : undefined,
             boxShadow: pendingComment !== null ? "0 4px 16px rgba(0,0,0,0.4)" : undefined,
           }}
         >
           {pendingComment === null ? (
             <>
-              <button onClick={() => setPendingComment("")} className="transcript-action" title="Add to Chat" aria-label="Add to Chat">
-                <MessageSquarePlus size={16} aria-hidden="true" /><span>Add to Chat</span>
+              <button onClick={() => setPendingComment("")} className="transcript-action" title="Add to chat" aria-label="Add to chat">
+                <span>Add to chat</span>
               </button>
               <button
                 onClick={() => {
@@ -11499,10 +11499,10 @@ function ChatPane({
                   window.getSelection()?.removeAllRanges();
                 }}
                 className="transcript-action"
-                title="Add to Side Chat"
-                aria-label="Add to Side Chat"
+                title="Ask in side chat"
+                aria-label="Ask in side chat"
               >
-                <PanelRightOpen size={16} aria-hidden="true" /><span>Add to Side Chat</span>
+                <span>Ask in side chat</span>
               </button>
             </>
           ) : (
@@ -11561,28 +11561,28 @@ function ChatPane({
       {hoveredLink && !selection && pendingComment === null && onAskSideChat && (
         <div
           className="transcript-action-dock"
-          data-compact={(paneRef.current?.clientWidth ?? 500) < 460 || undefined}
           onMouseEnter={cancelLinkHide}
           onMouseLeave={hideLinkSoon}
           style={{
             position: "absolute",
-            left: transcriptDockLeft(hoveredLink.x, paneRef.current?.clientWidth ?? 400, (paneRef.current?.clientWidth ?? 400) < 460 ? 124 : 420),
+            left: transcriptDockLeft(hoveredLink.x, paneRef.current?.clientWidth ?? 400, Math.min(350, (paneRef.current?.clientWidth ?? 400) - 16)),
+            width: 350,
             top: Math.max(8, hoveredLink.y - 42),
             zIndex: 10,
           }}
         >
-          <button className="transcript-action" title="Add to Chat" aria-label="Add link to Chat" onClick={() => {
+          <button className="transcript-action" title="Add to chat" aria-label="Add link to chat" onClick={() => {
             setAnnotations((list) => [...list, { text: hoveredLink.href, tag: "link" }]);
             setHoveredLink(null);
-          }}><MessageSquarePlus size={16} aria-hidden="true" /><span>Add to Chat</span></button>
-          <button className="transcript-action" title="Add to Side Chat" aria-label="Add link to Side Chat" onClick={() => {
+          }}><span>Add to chat</span></button>
+          <button className="transcript-action" title="Ask in side chat" aria-label="Ask about link in side chat" onClick={() => {
             onAskSideChat(hoveredLink.href);
             setHoveredLink(null);
-          }}><PanelRightOpen size={16} aria-hidden="true" /><span>Add to Side Chat</span></button>
+          }}><span>Ask in side chat</span></button>
           <button className="transcript-action" title="Open in default browser" aria-label="Open link in default browser" onClick={() => {
             void window.unbiased.openExternal(hoveredLink.href);
             setHoveredLink(null);
-          }}><ExternalLink size={16} aria-hidden="true" /><span>Default Browser</span></button>
+          }}><span>Default browser</span></button>
         </div>
       )}
 
