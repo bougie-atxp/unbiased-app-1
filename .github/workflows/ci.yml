@@ -93,3 +93,4 @@ jobs:
         run: |
           node node_modules/electron/install.js
           npm run smoke:browser-mirror
+          npm run smoke:transcript-actions

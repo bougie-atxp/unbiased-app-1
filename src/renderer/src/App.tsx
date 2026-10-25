@@ -10907,7 +10907,6 @@ function ChatPane({
   };
 
   function handleMouseUp() {
-    if (!onAskSideChat) return;
     if (pendingComment !== null) return; // comment input open — Esc cancels, ✓ confirms
     const sel = window.getSelection();
     const text = sel?.toString().trim() ?? "";
@@ -10945,7 +10944,7 @@ function ChatPane({
 
   function handleTranscriptMouseOver(e: React.MouseEvent<HTMLDivElement>) {
     const anchor = e.target instanceof Element ? e.target.closest("a[href]") : null;
-    if (!anchor || selection || pendingComment !== null || !onAskSideChat) return;
+    if (!anchor || selection || pendingComment !== null) return;
     const rawHref = anchor.getAttribute("href");
     if (!rawHref) return;
     let href: string;
@@ -11461,7 +11460,7 @@ function ChatPane({
           Drop to attach
         </div>
       )}
-      {selection && onAskSideChat && (
+      {selection && (
         <div
           className={pendingComment === null ? "transcript-action-dock" : undefined}
           style={{
@@ -11472,8 +11471,8 @@ function ChatPane({
             left:
               pendingComment !== null
                 ? Math.max(8, Math.min(selection.right + 16, (paneRef.current?.clientWidth ?? 400) - 310))
-                : transcriptDockLeft(selection.x, paneRef.current?.clientWidth ?? 400, Math.min(220, (paneRef.current?.clientWidth ?? 400) - 16)),
-            width: pendingComment === null ? 220 : undefined,
+                : transcriptDockLeft(selection.x, paneRef.current?.clientWidth ?? 400, Math.min(onAskSideChat ? 220 : 104, (paneRef.current?.clientWidth ?? 400) - 16)),
+            width: pendingComment === null ? (onAskSideChat ? 220 : 104) : undefined,
             top: Math.max(8, selection.y - (pendingComment !== null ? 64 : 40)),
             transform: "none",
             zIndex: 10,
@@ -11492,18 +11491,20 @@ function ChatPane({
               <button onClick={() => setPendingComment("")} className="transcript-action" title="Add to chat" aria-label="Add to chat">
                 <span>Add to chat</span>
               </button>
-              <button
-                onClick={() => {
-                  onAskSideChat(selection.text);
-                  setSelection(null);
-                  window.getSelection()?.removeAllRanges();
-                }}
-                className="transcript-action"
-                title="Ask in side chat"
-                aria-label="Ask in side chat"
-              >
-                <span>Ask in side chat</span>
-              </button>
+              {onAskSideChat && (
+                <button
+                  onClick={() => {
+                    onAskSideChat(selection.text);
+                    setSelection(null);
+                    window.getSelection()?.removeAllRanges();
+                  }}
+                  className="transcript-action"
+                  title="Ask in side chat"
+                  aria-label="Ask in side chat"
+                >
+                  <span>Ask in side chat</span>
+                </button>
+              )}
             </>
           ) : (
             <>
@@ -11558,15 +11559,15 @@ function ChatPane({
         </div>
       )}
 
-      {hoveredLink && !selection && pendingComment === null && onAskSideChat && (
+      {hoveredLink && !selection && pendingComment === null && (
         <div
           className="transcript-action-dock"
           onMouseEnter={cancelLinkHide}
           onMouseLeave={hideLinkSoon}
           style={{
             position: "absolute",
-            left: transcriptDockLeft(hoveredLink.x, paneRef.current?.clientWidth ?? 400, Math.min(350, (paneRef.current?.clientWidth ?? 400) - 16)),
-            width: 350,
+            left: transcriptDockLeft(hoveredLink.x, paneRef.current?.clientWidth ?? 400, Math.min(onAskSideChat ? 350 : 230, (paneRef.current?.clientWidth ?? 400) - 16)),
+            width: onAskSideChat ? 350 : 230,
             top: Math.max(8, hoveredLink.y - 42),
             zIndex: 10,
           }}
@@ -11575,10 +11576,12 @@ function ChatPane({
             setAnnotations((list) => [...list, { text: hoveredLink.href, tag: "link" }]);
             setHoveredLink(null);
           }}><span>Add to chat</span></button>
-          <button className="transcript-action" title="Ask in side chat" aria-label="Ask about link in side chat" onClick={() => {
-            onAskSideChat(hoveredLink.href);
-            setHoveredLink(null);
-          }}><span>Ask in side chat</span></button>
+          {onAskSideChat && (
+            <button className="transcript-action" title="Ask in side chat" aria-label="Ask about link in side chat" onClick={() => {
+              onAskSideChat(hoveredLink.href);
+              setHoveredLink(null);
+            }}><span>Ask in side chat</span></button>
+          )}
           <button className="transcript-action" title="Open in default browser" aria-label="Open link in default browser" onClick={() => {
             void window.unbiased.openExternal(hoveredLink.href);
             setHoveredLink(null);
