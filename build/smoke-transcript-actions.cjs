@@ -9,7 +9,7 @@ const deadline=setTimeout(()=>{console.error('Transcript annotation regression t
 const bundleResult=build({stdin:{resolveDir:root,loader:'tsx',contents:`
 import React from 'react';import {createRoot} from 'react-dom/client';
 import {ChatPane} from './src/renderer/src/App';
-window.qaCalls=[];
+window.qaCalls=[];window.qaKeyEvents=[];document.addEventListener('keydown',e=>window.qaKeyEvents.push({key:e.key,code:e.code,keyCode:e.keyCode,trusted:e.isTrusted,target:e.target.outerHTML?.slice(0,150)}),true);
 window.unbiased=new Proxy({}, {get:(_,key)=>{
  if(String(key).startsWith('on'))return ()=>()=>{};
  return async(...args)=>{window.qaCalls.push([key,...args]);if(key==='contextUsage')return null;if(key==='mcpThreadGet')return {enabled:[]};if(key==='liveApprovals'||key==='liveUserInputs')return [];if(key==='fileExists')return {exists:false};if(key==='favicon')return {dataUrl:null};return {};};
@@ -29,6 +29,9 @@ createRoot(document.getElementById('root')).render(<><section id="side"><ChatPan
  const css=fs.readFileSync(root+'/src/renderer/src/transcript-action-dock.css','utf8')+fs.readFileSync(root+'/src/renderer/src/chat-link.css','utf8');
  const html=`<!doctype html><style>body{margin:0;background:#111;color:#eee;font:14px system-ui;--bg:#111;--fg:#eee;--fg-msg:#ddd;--panel:#222;--panel-2:#282828;--chip:#252525;--chip-raised:#333;--border:#333;--dim:#999;--accent:#FF7764;--font-ui:system-ui;--font-code:monospace}#root{display:flex;height:680px;gap:20px}section{display:flex;flex-direction:column;width:500px;height:650px;position:relative}${css}</style><div id="root"></div><script>${bundle.replaceAll('</script','<\\/script')}</script>`;
  fs.writeFileSync('/tmp/unbiased-side-annotation.html',html);await win.loadFile('/tmp/unbiased-side-annotation.html');
+ // Map the CI window so trusted browser keyboard input reaches its widget.
+ // showInactive does not take focus away from another application.
+ if(process.env.CI)win.showInactive();
  win.webContents.debugger.attach('1.3');
  await win.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled',{enabled:true});
  await new Promise(r=>setTimeout(r,700));
@@ -36,7 +39,7 @@ createRoot(document.getElementById('root')).render(<><section id="side"><ChatPan
  const pause=()=>new Promise(r=>setTimeout(r,100));
  const until=async(check,message)=>{
    for(let attempt=0;attempt<30;attempt++){if(await check())return;await pause();}
-   const diagnostics=await win.webContents.executeJavaScript("({activeElement:document.activeElement?.outerHTML,mainText:document.querySelector('#main').innerText})");
+   const diagnostics=await win.webContents.executeJavaScript("({keys:window.qaKeyEvents,activeElement:document.activeElement?.outerHTML,mainText:document.querySelector('#main').innerText})");
    assert.fail(message+JSON.stringify(diagnostics));
  };
  const annotationCount=id=>win.webContents.executeJavaScript(`document.querySelectorAll('#${id} button[aria-label="Remove annotation"]').length`);
