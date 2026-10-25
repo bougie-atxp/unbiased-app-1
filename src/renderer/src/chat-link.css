@@ -1,5 +1,5 @@
 .u-chat-link {
-  color: var(--link, #78b4e4);
+  color: var(--link, #FF7764);
   font: inherit;
   letter-spacing: inherit;
   text-decoration: none;
@@ -13,7 +13,7 @@
 .u-chat-link:focus-visible { text-decoration: underline; }
 
 .u-chat-link:focus-visible {
-  outline-color: var(--link, #78b4e4);
+  outline-color: var(--link, #FF7764);
 }
 
 .u-chat-link-icon {

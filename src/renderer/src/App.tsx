@@ -1093,8 +1093,8 @@ function themeVars(t: ThemeConfig): Record<string, string> {
     "--bg": t.surface,
     "--fg": t.ink,
     "--accent": t.accent,
-    // Navigation blue remains readable on both light and dark custom surfaces.
-    "--link": contrastRatio(t.surface, "#78b4e4") >= contrastRatio(t.surface, "#0969da") ? "#78b4e4" : "#0969da",
+    // Match the lighter coral used by the dotted project heading.
+    "--link": "#FF7764",
     "--accent-fg": bestInkOn(t.accent),
     "--nav-bg": m(0.05),
     "--code-bg": mixHex(t.surface, "#000000", 0.3),
