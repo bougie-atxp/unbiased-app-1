@@ -11091,14 +11091,18 @@ function ChatPane({
   }
 
   // Escape dismisses the annotate flow at any stage — button pill or
-  // comment box, focused or not.
+  // comment box, focused or not. Capture it before another pane can treat it
+  // as a composer/interrupt shortcut and strand the pending attachment.
   useEffect(() => {
     if (!selection) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") cancelAnnotation();
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancelAnnotation();
     }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection]);
 
