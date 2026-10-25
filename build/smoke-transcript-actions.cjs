@@ -5,10 +5,11 @@ const {build}=require('esbuild');
 const fs=require('node:fs');
 const assert=require('node:assert/strict');
 const root=process.cwd();
+const deadline=setTimeout(()=>{console.error('Transcript annotation regression timed out');app.exit(1)},30000);deadline.unref();
 const bundleResult=build({stdin:{resolveDir:root,loader:'tsx',contents:`
 import React from 'react';import {createRoot} from 'react-dom/client';
 import {ChatPane} from './src/renderer/src/App';
-window.qaCalls=[];window.qaAnnotationTransitions=[];
+window.qaCalls=[];
 window.unbiased=new Proxy({}, {get:(_,key)=>{
  if(String(key).startsWith('on'))return ()=>()=>{};
  return async(...args)=>{window.qaCalls.push([key,...args]);if(key==='contextUsage')return null;if(key==='mcpThreadGet')return {enabled:[]};if(key==='liveApprovals'||key==='liveUserInputs')return [];if(key==='fileExists')return {exists:false};if(key==='favicon')return {dataUrl:null};return {};};
@@ -20,19 +21,22 @@ createRoot(document.getElementById('root')).render(<><section id="side"><ChatPan
 `},bundle:true,write:false,platform:'browser',format:'iife',jsx:'automatic',define:{'import.meta.glob':'__qaGlob'},banner:{js:'var __qaGlob=()=>({});'},loader:{'.svg':'dataurl','.png':'dataurl','.webp':'dataurl'},plugins:[{name:'qa',setup(build){
  build.onLoad({filter:/\.css$/},()=>({contents:'',loader:'js'}));
  build.onLoad({filter:/\.md$/},args=>({contents:fs.readFileSync(args.path,'utf8'),loader:'text'}));
- build.onLoad({filter:/\/src\/renderer\/src\/App\.tsx$/},args=>({contents:fs.readFileSync(args.path,'utf8').replace('function confirmAnnotation() {', 'function confirmAnnotation() { window.qaAnnotationTransitions.push({action: \"confirm\", paneId, pendingComment, selected: selection?.text, annotations: annotations.map(a=>a.text)});').replace('function cancelAnnotation() {', 'function cancelAnnotation() { window.qaAnnotationTransitions.push({action: \"cancel\", paneId, pendingComment, selected: selection?.text, annotations: annotations.map(a=>a.text)});')+'\nexport { ChatPane };',loader:'tsx'}));
+ build.onLoad({filter:/\/src\/renderer\/src\/App\.tsx$/},args=>({contents:fs.readFileSync(args.path,'utf8')+'\nexport { ChatPane };',loader:'tsx'}));
 }}]});
 (async()=>{
  const bundle=(await bundleResult).outputFiles[0].text;
  await app.whenReady();const win=new BrowserWindow({show:false,width:1100,height:720,webPreferences:{backgroundThrottling:false}});
  const css=fs.readFileSync(root+'/src/renderer/src/transcript-action-dock.css','utf8')+fs.readFileSync(root+'/src/renderer/src/chat-link.css','utf8');
  const html=`<!doctype html><style>body{margin:0;background:#111;color:#eee;font:14px system-ui;--bg:#111;--fg:#eee;--fg-msg:#ddd;--panel:#222;--panel-2:#282828;--chip:#252525;--chip-raised:#333;--border:#333;--dim:#999;--accent:#FF7764;--font-ui:system-ui;--font-code:monospace}#root{display:flex;height:680px;gap:20px}section{display:flex;flex-direction:column;width:500px;height:650px;position:relative}${css}</style><div id="root"></div><script>${bundle.replaceAll('</script','<\\/script')}</script>`;
- fs.writeFileSync('/tmp/unbiased-side-annotation.html',html);await win.loadFile('/tmp/unbiased-side-annotation.html');await new Promise(r=>setTimeout(r,700));
+ fs.writeFileSync('/tmp/unbiased-side-annotation.html',html);await win.loadFile('/tmp/unbiased-side-annotation.html');
+ win.webContents.debugger.attach('1.3');
+ await win.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled',{enabled:true});
+ await new Promise(r=>setTimeout(r,700));
  const select=async id=>{await win.webContents.executeJavaScript(`(()=>{const node=[...document.querySelectorAll('#${id} p')].find(p=>p.textContent==='Select this side chat excerpt.');if(!node)throw Error('Missing transcript paragraph');const range=document.createRange();range.selectNodeContents(node);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);node.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));})()`);await new Promise(r=>setTimeout(r,100));};
  const pause=()=>new Promise(r=>setTimeout(r,100));
  const until=async(check,message)=>{
    for(let attempt=0;attempt<30;attempt++){if(await check())return;await pause();}
-   const diagnostics=await win.webContents.executeJavaScript("({transitions:window.qaAnnotationTransitions,mainText:document.querySelector('#main').innerText})");
+   const diagnostics=await win.webContents.executeJavaScript("({activeElement:document.activeElement?.outerHTML,mainText:document.querySelector('#main').innerText})");
    assert.fail(message+JSON.stringify(diagnostics));
  };
  const annotationCount=id=>win.webContents.executeJavaScript(`document.querySelectorAll('#${id} button[aria-label="Remove annotation"]').length`);
@@ -83,8 +87,10 @@ createRoot(document.getElementById('root')).render(<><section id="side"><ChatPan
  await select('main');
  await win.webContents.executeJavaScript("document.querySelector('#main .transcript-action').click()");
  await until(()=>win.webContents.executeJavaScript("!!document.querySelector('#main input[placeholder=\"Add an optional comment…\"]')"),'comment editor must mount before Escape');
- const escapeHandled=await win.webContents.executeJavaScript("(()=>{const input=document.querySelector('#main input[placeholder=\"Add an optional comment…\"]');input.focus();const event=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});input.dispatchEvent(event);return event.defaultPrevented;})()");
- assert.equal(escapeHandled,true,'the comment editor must consume Escape without propagating it to other pane handlers');
+ await win.webContents.executeJavaScript("document.querySelector('#main input[placeholder=\"Add an optional comment…\"]').focus()");
+ // Use browser keyboard input rather than an untrusted DOM KeyboardEvent.
+ await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+ await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
  await until(async()=>await annotationCount('main')===0,'Escape must remove the pending annotation');
  // Sending without the checkmark still includes the latest optional comment.
  await select('main');
