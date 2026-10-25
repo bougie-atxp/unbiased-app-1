@@ -41,6 +41,7 @@ import { UserMessageMarkdown } from "./user-message-markdown";
 import { MarkdownComposer, type MarkdownComposerHandle } from "./markdown-composer";
 import "./markdown-composer.css";
 import "./transcript-action-dock.css";
+import { AnnotationCommentEditor } from "./annotation-comment-editor";
 import "./user-input-card.css";
 import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Heart, Home, LayoutGrid, MessageSquare, MoreHorizontal, Pin, PinOff, Plus, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
 import { CloseIcon } from "./close-icon";
@@ -9716,6 +9717,7 @@ function ChatPane({
   // That draft is already a staged, sendable annotation; confirmation only
   // finishes editing its optional comment.
   const [pendingComment, setPendingComment] = useState<string | null>(null);
+  const [annotationEditorHeight, setAnnotationEditorHeight] = useState(46);
 
   // The + button's popup menu, plus whether the clipboard held an image
   // when it was opened (drives the "Image from clipboard" item's state).
@@ -11480,7 +11482,7 @@ function ChatPane({
       )}
       {selection && (
         <div
-          className={pendingComment === null ? "transcript-action-dock" : undefined}
+          className={pendingComment === null ? "transcript-action-dock" : "annotation-comment-popup"}
           style={{
             position: "absolute",
             // Button pill: centered over the selection. Comment box: hung
@@ -11490,8 +11492,9 @@ function ChatPane({
               pendingComment !== null
                 ? Math.max(8, Math.min(selection.right + 16, (paneRef.current?.clientWidth ?? 400) - 310))
                 : transcriptDockLeft(selection.x, paneRef.current?.clientWidth ?? 400, Math.min(onAskSideChat ? 220 : 104, (paneRef.current?.clientWidth ?? 400) - 16)),
-            width: pendingComment === null ? (onAskSideChat ? 220 : 104) : undefined,
-            top: Math.max(8, selection.y - (pendingComment !== null ? 64 : 40)),
+            width: pendingComment === null ? (onAskSideChat ? 220 : 104) : 300,
+            maxWidth: "calc(100% - 16px)",
+            top: Math.max(8, selection.y - (pendingComment !== null ? annotationEditorHeight + 12 : 40)),
             transform: "none",
             zIndex: 10,
             display: "flex",
@@ -11499,7 +11502,7 @@ function ChatPane({
             background: pendingComment !== null ? "var(--chip)" : undefined,
             border: pendingComment !== null ? `1px solid ${colors.border}` : undefined,
             // Comment mode is a full pill, matching the in-page picker.
-            borderRadius: pendingComment !== null ? 999 : undefined,
+            borderRadius: pendingComment !== null ? 22 : undefined,
             overflow: pendingComment !== null ? "hidden" : undefined,
             boxShadow: pendingComment !== null ? "0 4px 16px rgba(0,0,0,0.4)" : undefined,
           }}
@@ -11525,35 +11528,13 @@ function ChatPane({
               )}
             </>
           ) : (
-            <>
-              <input
-                autoFocus
-                value={pendingComment}
-                onChange={(e) => setPendingComment(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    confirmAnnotation();
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    cancelAnnotation();
-                  }
-                }}
-                placeholder="Add an optional comment…"
-                style={{
-                  width: 240,
-                  background: "transparent",
-                  border: "none",
-                  outline: "none",
-                  color: colors.fg,
-                  fontSize: 12.5,
-                  padding: "10px 6px 10px 16px",
-                  fontFamily: "inherit",
-                }}
-              />
+            <AnnotationCommentEditor
+              value={pendingComment}
+              onChange={setPendingComment}
+              onConfirm={confirmAnnotation}
+              onCancel={cancelAnnotation}
+              onHeightChange={setAnnotationEditorHeight}
+            >
               <button
                 onClick={confirmAnnotation}
                 title="Add annotation"
@@ -11570,13 +11551,15 @@ function ChatPane({
                   alignItems: "center",
                   justifyContent: "center",
                   padding: 0,
-                  margin: "4px 5px 4px 0",
+                  position: "absolute",
+                  right: 7,
+                  bottom: 7,
                   flexShrink: 0,
                 }}
               >
                 <CheckIcon />
               </button>
-            </>
+            </AnnotationCommentEditor>
           )}
         </div>
       )}

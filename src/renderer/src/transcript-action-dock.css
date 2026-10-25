@@ -43,6 +43,62 @@
   background: var(--chip-raised);
 }
 
+.annotation-comment-editor {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 12px 16px;
+}
+
+.annotation-comment-editor[data-multiline="true"] {
+  padding-bottom: 46px;
+}
+
+.annotation-comment-field {
+  position: relative;
+  margin-right: 26px;
+}
+
+.annotation-comment-field textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 22px;
+  max-height: 154px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dim) transparent;
+}
+
+.annotation-comment-field textarea::placeholder { color: var(--dim); }
+.annotation-comment-field textarea::-webkit-scrollbar { width: 5px; }
+.annotation-comment-field textarea::-webkit-scrollbar-thumb {
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 24%, transparent);
+}
+
+.annotation-comment-field[data-fade="true"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 6px;
+  bottom: 0;
+  height: 22px;
+  background: linear-gradient(transparent, var(--chip));
+  pointer-events: none;
+}
+
 .transcript-action:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: -2px;

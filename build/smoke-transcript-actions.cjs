@@ -44,18 +44,34 @@ createRoot(document.getElementById('root')).render(<><section id="side"><ChatPan
  };
  const annotationCount=id=>win.webContents.executeJavaScript(`document.querySelectorAll('#${id} button[aria-label="Remove annotation"]').length`);
  const typeComment=async(id,text)=>{
-   await win.webContents.executeJavaScript(`(()=>{const input=document.querySelector('#${id} input[placeholder="Add an optional comment…"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(text)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+   await win.webContents.executeJavaScript(`(()=>{const input=document.querySelector('#${id} textarea[placeholder="Add an optional comment…"]');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,${JSON.stringify(text)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
    await pause();
  };
  await select('side');
  const sideLabels=await win.webContents.executeJavaScript("[...document.querySelectorAll('#side .transcript-action')].map(b=>b.textContent)");
  assert.deepEqual(sideLabels,['Add to chat']);
  await win.webContents.executeJavaScript("document.querySelector('#side .transcript-action').click()");
- assert.equal(await win.webContents.executeJavaScript("!!document.querySelector('#side input[placeholder=\"Add an optional comment…\"]')"),true);
+ assert.equal(await win.webContents.executeJavaScript("!!document.querySelector('#side textarea[placeholder=\"Add an optional comment…\"]')"),true);
  assert.equal(await annotationCount('side'),1,'Add to chat must attach the excerpt before confirming its comment');
  assert.equal(await win.webContents.executeJavaScript("document.querySelector('#side button[aria-label=\"Send\"]').disabled"),false,'an excerpt alone is immediately sendable');
  if(process.env.UNBIASED_TRANSCRIPT_ACTIONS_SCREENSHOT) fs.writeFileSync(process.env.UNBIASED_TRANSCRIPT_ACTIONS_SCREENSHOT,(await win.webContents.capturePage()).toPNG());
+ // Real layout: wrap naturally, cap at seven lines, then scroll and fade.
+ const metrics=()=>win.webContents.executeJavaScript(`(()=>{const el=document.querySelector('#side textarea[aria-label="Annotation comment"]');return {height:el.clientHeight,scroll:el.scrollHeight,line:parseFloat(getComputedStyle(el).lineHeight),fade:el.parentElement.dataset.fade};})()`);
+ const oneLine=await metrics();
+ await typeComment('side','A longer annotation that wraps naturally as more words are added to the comment. '.repeat(2));
+ const wrapped=await metrics();
+ assert.ok(wrapped.height>oneLine.height,'comment must grow with wrapped text');
+ await typeComment('side',Array.from({length:12},(_,i)=>'Comment line '+(i+1)).join('\n'));
+ const capped=await metrics();
+ assert.equal(capped.height,capped.line*7,'editor must stop growing at seven lines');
+ assert.ok(capped.scroll>capped.height,'longer comments must scroll');
+ assert.equal(capped.fade,'true','overflow must fade at the seventh line');
+ await win.webContents.executeJavaScript(`(()=>{const el=document.querySelector('#side textarea[aria-label="Annotation comment"]');el.scrollTop=el.scrollHeight;el.dispatchEvent(new Event('scroll',{bubbles:true}));})()`);
+ await pause();
+ assert.equal((await metrics()).fade,'false','fade clears at the bottom so the last line is readable');
+ if(process.env.UNBIASED_TRANSCRIPT_ACTIONS_SCREENSHOT) fs.writeFileSync(process.env.UNBIASED_TRANSCRIPT_ACTIONS_SCREENSHOT,(await win.webContents.capturePage()).toPNG());
  await typeComment('side','Explain this selection');
+ assert.equal((await metrics()).height,oneLine.height,'editor shrinks when text is shortened');
  await win.webContents.executeJavaScript("document.querySelector('#side button[title=\"Add annotation\"]')?.click()");
  await new Promise(r=>setTimeout(r,100));
  assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('#side button[aria-label=\"Remove annotation\"]').length"),1,'confirmed text attaches to the side composer');
@@ -86,11 +102,11 @@ createRoot(document.getElementById('root')).render(<><section id="side"><ChatPan
  await pause();assert.equal(await annotationCount('main'),1);
  await win.webContents.executeJavaScript("document.querySelector('#main button[aria-label=\"Remove annotation\"]').click()");
  await pause();assert.equal(await annotationCount('main'),0);
- assert.equal(await win.webContents.executeJavaScript("!!document.querySelector('#main input[placeholder=\"Add an optional comment…\"]')"),false);
+ assert.equal(await win.webContents.executeJavaScript("!!document.querySelector('#main textarea[placeholder=\"Add an optional comment…\"]')"),false);
  await select('main');
  await win.webContents.executeJavaScript("document.querySelector('#main .transcript-action').click()");
- await until(()=>win.webContents.executeJavaScript("!!document.querySelector('#main input[placeholder=\"Add an optional comment…\"]')"),'comment editor must mount before Escape');
- await win.webContents.executeJavaScript("document.querySelector('#main input[placeholder=\"Add an optional comment…\"]').focus()");
+ await until(()=>win.webContents.executeJavaScript("!!document.querySelector('#main textarea[placeholder=\"Add an optional comment…\"]')"),'comment editor must mount before Escape');
+ await win.webContents.executeJavaScript("document.querySelector('#main textarea[placeholder=\"Add an optional comment…\"]').focus()");
  // Use browser keyboard input rather than an untrusted DOM KeyboardEvent.
  await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
  await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
@@ -98,14 +114,14 @@ createRoot(document.getElementById('root')).render(<><section id="side"><ChatPan
  // Sending without the checkmark still includes the latest optional comment.
  await select('main');
  await win.webContents.executeJavaScript("document.querySelector('#main .transcript-action').click()");
- await typeComment('main','Comment still being edited');
+ await typeComment('main','Comment still being edited\nWith a second line');
  await win.webContents.executeJavaScript("document.querySelector('#main button[aria-label=\"Send\"]').click()");
  await pause();
  const sentMain=await win.webContents.executeJavaScript("window.qaCalls.find(c=>c[0]==='sendMessage'&&c[1]==='main')");
  assert.ok(sentMain,'pending annotation must be sendable before the checkmark');
- assert.match(sentMain[2],/Comment: Comment still being edited/);
+ assert.match(sentMain[2],/Comment: Comment still being edited\nWith a second line/);
  assert.equal(sentMain[2].split('> Select this side chat excerpt.').length-1,1,'confirmation/send must not duplicate the excerpt');
  assert.equal(await annotationCount('main'),0);
- assert.equal(await win.webContents.executeJavaScript("!!document.querySelector('#main input[placeholder=\"Add an optional comment…\"]')"),false,'sending closes the pending comment editor');
- console.log('PASS: real ChatPane attaches pending excerpts immediately, confirms without duplication, sends confirmed/pending comments, handles removal/Escape, and isolates side annotations.');win.destroy();app.quit();
+ assert.equal(await win.webContents.executeJavaScript("!!document.querySelector('#main textarea[placeholder=\"Add an optional comment…\"]')"),false,'sending closes the pending comment editor');
+ console.log('PASS: real ChatPane attaches pending excerpts immediately, confirms without duplication, sends confirmed/pending comments, handles removal/Escape, grows comments to seven lines with scrolling/fade, preserves multiline comments, and isolates side annotations.');win.destroy();app.quit();
 })().catch(e=>{console.error(e);app.exit(1)});
