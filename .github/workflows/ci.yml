@@ -50,6 +50,11 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Smoke test transcript annotations
+        run: |
+          node node_modules/electron/install.js
+          npm run smoke:transcript-actions
+
   browser-bundle:
     name: Browser bundle
     runs-on: macos-15
@@ -93,4 +98,3 @@ jobs:
         run: |
           node node_modules/electron/install.js
           npm run smoke:browser-mirror
-          npm run smoke:transcript-actions
