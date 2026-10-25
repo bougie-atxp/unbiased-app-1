@@ -9713,6 +9713,8 @@ function ChatPane({
   const consumedContextRef = useRef<typeof contextChip>(null);
   // null = the selection toolbar shows its buttons; a string (possibly
   // empty) = the "Add to chat" comment input is open with that draft.
+  // That draft is already a staged, sendable annotation; confirmation only
+  // finishes editing its optional comment.
   const [pendingComment, setPendingComment] = useState<string | null>(null);
 
   // The + button's popup menu, plus whether the clipboard held an image
@@ -9924,6 +9926,17 @@ function ChatPane({
   const [hoveredLink, setHoveredLink] = useState<{ href: string; x: number; y: number } | null>(null);
   const linkHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedRangeRef = useRef<Range | null>(null);
+  // Show and send the selected excerpt as soon as Add to chat is clicked.
+  // Keep the in-progress item last, so confirmation replaces this preview
+  // with one committed annotation rather than appending a duplicate.
+  const stagedAnnotations: Annotation[] = pendingComment !== null && selection
+    ? [...annotations, {
+        text: selection.text,
+        comment: pendingComment.trim() || undefined,
+        range: savedRangeRef.current ?? undefined,
+        tag: "selection",
+      }]
+    : annotations;
   const scrollRef = useRef<HTMLDivElement>(null);
   const followFrameRef = useRef<number | null>(null);
   const observedListRef = useRef<Element | null>(null);
@@ -10728,7 +10741,7 @@ function ChatPane({
 
   const lastEntry = entries[entries.length - 1];
   const showThinking = busy && !(lastEntry?.kind === "assistant" && lastEntry.text !== "");
-  const canSend = connected && (draft.trim() !== "" || annotations.length > 0 || attachments.length > 0);
+  const canSend = connected && (draft.trim() !== "" || stagedAnnotations.length > 0 || attachments.length > 0);
   // Compaction is offerable only when there IS uncompacted content: a
   // non-empty conversation whose last entry isn't already a compaction
   // divider, and nothing else in flight.
@@ -10781,8 +10794,8 @@ function ChatPane({
     const text = draft.trim();
     // Annotations alone are a sendable message — the excerpts plus their
     // comments carry the intent even without accompanying prose.
-    if ((!text && annotations.length === 0 && attachments.length === 0) || !connected) return;
-    const anns = annotations;
+    if ((!text && stagedAnnotations.length === 0 && attachments.length === 0) || !connected) return;
+    const anns = stagedAnnotations;
     const message = (
       anns.length > 0
         ? `Regarding ${anns.length === 1 ? "this excerpt" : "these excerpts"} from the conversation:\n\n` +
@@ -10802,6 +10815,7 @@ function ChatPane({
     changeAttachments([]);
     setAttachmentError(null);
     setAnnotations([]);
+    if (pendingComment !== null) cancelAnnotation();
     const msg: QueuedMsg = {
       id: nextQueueIdRef.current++,
       text,
@@ -12104,9 +12118,9 @@ function ChatPane({
               {attachmentError}
             </div>
           )}
-          {annotations.length > 0 && (
+          {stagedAnnotations.length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-              {annotations.map((a, i) => (
+              {stagedAnnotations.map((a, i) => (
                 <span
                   key={i}
                   title={a.comment ? `${a.text}\n— ${a.comment}` : a.text}
@@ -12135,7 +12149,10 @@ function ChatPane({
                     {a.comment || a.text}
                   </span>
                   <button
-                    onClick={() => setAnnotations((list) => list.filter((_, j) => j !== i))}
+                    onClick={() => {
+                      if (i === annotations.length) cancelAnnotation();
+                      else setAnnotations((list) => list.filter((_, j) => j !== i));
+                    }}
                     aria-label="Remove annotation"
                     style={{
                       background: "transparent",
