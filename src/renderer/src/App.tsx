@@ -17839,7 +17839,7 @@ function StartPage({
             >
               {projectName}
             </span>
-            ?
+            <span style={{ color: "#FF7764" }}>?</span>
           </>
         ) : (
           "What should we build?"
