@@ -30,6 +30,10 @@ createRoot(document.getElementById('root')).render(<><section id="side"><ChatPan
  fs.writeFileSync('/tmp/unbiased-side-annotation.html',html);await win.loadFile('/tmp/unbiased-side-annotation.html');await new Promise(r=>setTimeout(r,700));
  const select=async id=>{await win.webContents.executeJavaScript(`(()=>{const node=[...document.querySelectorAll('#${id} p')].find(p=>p.textContent==='Select this side chat excerpt.');if(!node)throw Error('Missing transcript paragraph');const range=document.createRange();range.selectNodeContents(node);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);node.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));})()`);await new Promise(r=>setTimeout(r,100));};
  const pause=()=>new Promise(r=>setTimeout(r,100));
+ const until=async(check,message)=>{
+   for(let attempt=0;attempt<30;attempt++){if(await check())return;await pause();}
+   assert.fail(message);
+ };
  const annotationCount=id=>win.webContents.executeJavaScript(`document.querySelectorAll('#${id} button[aria-label="Remove annotation"]').length`);
  const typeComment=async(id,text)=>{
    await win.webContents.executeJavaScript(`(()=>{const input=document.querySelector('#${id} input[placeholder="Add an optional comment…"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(text)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
@@ -77,9 +81,10 @@ createRoot(document.getElementById('root')).render(<><section id="side"><ChatPan
  assert.equal(await win.webContents.executeJavaScript("!!document.querySelector('#main input[placeholder=\"Add an optional comment…\"]')"),false);
  await select('main');
  await win.webContents.executeJavaScript("document.querySelector('#main .transcript-action').click()");
- await pause();
- await win.webContents.executeJavaScript("document.querySelector('#main input[placeholder=\"Add an optional comment…\"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");
- await pause();assert.equal(await annotationCount('main'),0);
+ await until(()=>win.webContents.executeJavaScript("!!document.querySelector('#main input[placeholder=\"Add an optional comment…\"]')"),'comment editor must mount before Escape');
+ const escapeHandled=await win.webContents.executeJavaScript("(()=>{const input=document.querySelector('#main input[placeholder=\"Add an optional comment…\"]');input.focus();const event=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});input.dispatchEvent(event);return event.defaultPrevented;})()");
+ assert.equal(escapeHandled,true,'the comment editor must consume Escape without propagating it to other pane handlers');
+ await until(async()=>await annotationCount('main')===0,'Escape must remove the pending annotation');
  // Sending without the checkmark still includes the latest optional comment.
  await select('main');
  await win.webContents.executeJavaScript("document.querySelector('#main .transcript-action').click()");

@@ -11532,7 +11532,11 @@ function ChatPane({
                     e.stopPropagation();
                     confirmAnnotation();
                   }
-                  if (e.key === "Escape") cancelAnnotation();
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    cancelAnnotation();
+                  }
                 }}
                 placeholder="Add an optional comment…"
                 style={{
