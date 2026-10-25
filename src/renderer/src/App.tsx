@@ -44,6 +44,8 @@ import "./transcript-action-dock.css";
 import "./user-input-card.css";
 import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Heart, Home, LayoutGrid, MessageSquare, MessageSquarePlus, MoreHorizontal, PanelRightOpen, Pin, PinOff, Plus, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
 import { CloseIcon } from "./close-icon";
+import { ChatLink } from "./chat-link";
+import "./chat-link.css";
 import { ConversationDrafts } from "./conversation-drafts";
 import { SettingsRoute } from "./settings-route";
 import { PalsGallery } from "./pals-gallery";
@@ -1091,6 +1093,8 @@ function themeVars(t: ThemeConfig): Record<string, string> {
     "--bg": t.surface,
     "--fg": t.ink,
     "--accent": t.accent,
+    // Navigation blue remains readable on both light and dark custom surfaces.
+    "--link": contrastRatio(t.surface, "#78b4e4") >= contrastRatio(t.surface, "#0969da") ? "#78b4e4" : "#0969da",
     "--accent-fg": bestInkOn(t.accent),
     "--nav-bg": m(0.05),
     "--code-bg": mixHex(t.surface, "#000000", 0.3),
@@ -8025,24 +8029,9 @@ function buildMdComponents(
       <CodeBlock position={props.node?.position}>{props.children}</CodeBlock>,
     a: (props: { href?: string; children?: React.ReactNode }) => {
       const host = linkHost(props.href);
-      return (
-        <a
-          href={props.href}
-          onClick={(e) => {
-            e.preventDefault();
-            const href = props.href ?? "";
-            if (/^https?:/.test(href)) openLink?.(href);
-          }}
-          // textDecoration:none is doing real work: the underline here was the
-          // UA default, and a full-width solid rule under a long link title
-          // out-weighed every other accent in the transcript. Colour carries
-          // the affordance instead.
-          style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "none" }}
-        >
-          {host ? <Favicon host={host} /> : null}
-          {props.children}
-        </a>
-      );
+      return <ChatLink href={props.href} onOpen={openLink} siteIcon={host ? <Favicon host={host} inline /> : undefined}>
+        {props.children}
+      </ChatLink>;
     },
     blockquote: (props: { children?: React.ReactNode }) => (
       <blockquote
@@ -8527,22 +8516,7 @@ function FileViewer({
     const baseDir = file.fullPath.split("/").slice(0, -1).join("/") || "/";
     return {
       a: (props: { href?: string; children?: React.ReactNode }) => (
-        <a
-          href={props.href}
-          onClick={(e) => {
-            e.preventDefault();
-            const href = props.href ?? "";
-            if (/^https?:/.test(href)) onOpenLinkRef.current?.(href);
-          }}
-          // textDecoration:none is doing real work: the underline here was the
-          // UA default, and a full-width solid rule under a long link title
-          // out-weighed every other accent in the transcript. Colour carries
-          // the affordance instead.
-          style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "none" }}
-          title="Open in browser tab"
-        >
-          {props.children}
-        </a>
+        <ChatLink href={props.href} onOpen={href => onOpenLinkRef.current?.(href)}>{props.children}</ChatLink>
       ),
       img: (props: { src?: string; alt?: string }) => (
         <MdImage src={props.src} alt={props.alt} baseDir={baseDir} />
@@ -12775,7 +12749,7 @@ function probeFavicon(host: string): Promise<string | null> {
  *
  *  The box is a fixed size from the first frame, so an icon arriving mid-turn
  *  cannot reflow a streaming message. */
-function Favicon({ host }: { host: string }) {
+function Favicon({ host, inline = false }: { host: string; inline?: boolean }) {
   const [src, setSrc] = useState<string | null>(() => faviconResolved.get(host) ?? null);
   useEffect(() => {
     // Already settled: paint it and skip the async path entirely.
@@ -12800,12 +12774,12 @@ function Favicon({ host }: { host: string }) {
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        width: 14,
-        height: 14,
-        marginRight: 4,
-        verticalAlign: "-2px",
+        width: inline ? "100%" : 14,
+        height: inline ? "100%" : 14,
+        marginRight: inline ? 0 : 4,
+        verticalAlign: inline ? "baseline" : "-2px",
         flex: "none",
-        color: "var(--dim)",
+        color: inline ? "inherit" : "var(--dim)",
       }}
     >
       {src ? (

@@ -32,6 +32,10 @@
     ],
     "extraResources": [
       {
+        "from": "resources/licenses/octicons/LICENSE",
+        "to": "licenses/octicons/LICENSE"
+      },
+      {
         "from": "LICENSE",
         "to": "licenses/unbiased/LICENSE"
       },

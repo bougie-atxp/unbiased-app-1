@@ -1,6 +1,7 @@
 import { useMemo, useRef } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ChatLink } from "./chat-link";
 
 const REMARK_PLUGINS = [remarkGfm];
 
@@ -15,15 +16,7 @@ export function UserMessageMarkdown({
   openLinkRef.current = onOpenLink;
   const components = useMemo(() => ({
     a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
-      <a
-        href={href}
-        onClick={(event) => {
-          event.preventDefault();
-          if (href && /^https?:\/\//i.test(href)) openLinkRef.current?.(href);
-        }}
-      >
-        {children}
-      </a>
+      <ChatLink href={href} onOpen={url => openLinkRef.current?.(url)}>{children}</ChatLink>
     ),
     table: ({ children }: { children?: React.ReactNode }) => (
       <div className="u-user-markdown-table"><table>{children}</table></div>
