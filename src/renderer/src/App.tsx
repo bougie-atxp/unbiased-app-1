@@ -11436,9 +11436,9 @@ function ChatPane({
               )}
             </div>
           )}
-          {/* Keep one action row per settled turn, even when interruption
-              leaves its intermediate narration visible. */}
-          {e.text && !nested && showActions && !busy && (
+          {/* Keep settled answers copyable during later turns, while hiding
+              actions on the active turn's unfinished narration. */}
+          {e.text && !nested && showActions && (!busy || block.key < (turnStartIndexRef.current ?? entries.length)) && (
             <AssistantActions text={e.text} at={e.at} />
           )}
         </div>

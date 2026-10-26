@@ -9,7 +9,7 @@ const deadline=setTimeout(()=>{console.error('Transcript annotation regression t
 const bundleResult=build({stdin:{resolveDir:root,loader:'tsx',contents:`
 import React from 'react';import {createRoot} from 'react-dom/client';
 import {ChatPane,MultiViewTile} from './src/renderer/src/App';
-window.qaCalls=[];window.qaListeners=new Map();window.qaEmit=(name,payload)=>{for(const cb of window.qaListeners.get(name)??[])cb(payload)};window.qaKeyEvents=[];document.addEventListener('keydown',e=>window.qaKeyEvents.push({key:e.key,code:e.code,keyCode:e.keyCode,trusted:e.isTrusted,target:e.target.outerHTML?.slice(0,150)}),true);
+window.qaCopied=[];Object.defineProperty(navigator,"clipboard",{value:{writeText:async text=>window.qaCopied.push(text)}});window.qaCalls=[];window.qaListeners=new Map();window.qaEmit=(name,payload)=>{for(const cb of window.qaListeners.get(name)??[])cb(payload)};window.qaKeyEvents=[];document.addEventListener('keydown',e=>window.qaKeyEvents.push({key:e.key,code:e.code,keyCode:e.keyCode,trusted:e.isTrusted,target:e.target.outerHTML?.slice(0,150)}),true);
 window.unbiased=new Proxy({}, {get:(_,key)=>{
  if(String(key).startsWith('on'))return cb=>{const listeners=window.qaListeners.get(key)??new Set();listeners.add(cb);window.qaListeners.set(key,listeners);return ()=>listeners.delete(cb)};
  return async(...args)=>{window.qaCalls.push([key,...args]);if(key==='mountThread')return {lease:'qa-lease',entries,running:!!window.qaMosaicCompacting,compacting:!!window.qaMosaicCompacting};if(key==='contextUsage')return null;if(key==='mcpThreadGet')return {enabled:[]};if(key==='liveApprovals'||key==='liveUserInputs')return [];if(key==='fileExists')return {exists:false};if(key==='favicon')return {dataUrl:null};return {};};
@@ -21,6 +21,7 @@ const main={...side,paneId:'main',onAskSideChat:text=>window.qaCalls.push(['askS
 const root=createRoot(document.getElementById('root'));
 const render=(reset=main.reset,key='main')=>root.render(<><section id="side"><ChatPane {...side}/></section><section id="main"><ChatPane key={key} {...main} reset={reset}/></section><section id="mosaic"><MultiViewTile key={window.qaMosaicKey??0} {...mosaic}/></section></>);
 window.qaRestoreMain=(seconds,nonce,key='main',compacting=false)=>render({...main.reset,nonce,compacting,resume:seconds===null?null:{running:true},runningTurnStart:0,runningTurnStartedAt:seconds===null?null:Date.now()-seconds*1000},key);
+window.qaRunningCopy=()=>render({...main.reset,nonce:20,entries:[{kind:'user',text:'Earlier question'},{kind:'assistant',text:'Earlier completed answer'},{kind:'user',text:'Current question'},{kind:'assistant',text:'Current streaming answer'}],resume:{running:true,approvals:[],userInputs:[]},runningTurnStart:3,runningTurnStartedAt:Date.now()-1000},'copy-main');
 window.qaReopenMosaic=compacting=>{window.qaMosaicCompacting=compacting;window.qaMosaicKey=(window.qaMosaicKey??0)+1;render()};
 render();
 `},bundle:true,write:false,platform:'browser',format:'iife',jsx:'automatic',define:{'import.meta.glob':'__qaGlob'},banner:{js:'var __qaGlob=()=>({});'},loader:{'.svg':'dataurl','.png':'dataurl','.webp':'dataurl'},plugins:[{name:'qa',setup(build){
@@ -51,7 +52,7 @@ render();
  const pause=()=>new Promise(r=>setTimeout(r,100));
  const until=async(check,message)=>{
    for(let attempt=0;attempt<30;attempt++){if(await check())return;await pause();}
-   const diagnostics=await win.webContents.executeJavaScript("({keys:window.qaKeyEvents,activeElement:document.activeElement?.outerHTML?.slice(0,500),mainText:document.querySelector('#main').innerText})");
+   const diagnostics=await win.webContents.executeJavaScript("({keys:window.qaKeyEvents,activeElement:document.activeElement?.outerHTML?.slice(0,500),mainText:document.querySelector('#main').innerText,copyAnswers:[...document.querySelectorAll('#main button[aria-label=\"Copy reply\"]')].map(b=>b.parentElement.parentElement.textContent)})");
    assert.fail(message+JSON.stringify(diagnostics));
  };
  const exists=selector=>win.webContents.executeJavaScript(`!!document.querySelector(${JSON.stringify(selector)})`);
@@ -214,5 +215,17 @@ render();
  await compactionEvent('completed');
  await pause();
  assert.equal(await compactedCount('main'),1,'duplicate completion must not duplicate history');
- console.log('PASS: real ChatPane attaches pending excerpts immediately, confirms without duplication, sends confirmed/pending comments, handles removal/Escape, grows comments to seven lines with scrolling/fade, preserves multiline comments, isolates side annotations, verifies Mosaic selection/attachment/send without side-chat actions, preserves running timers through replay/remount, chat switching and approval pauses, and restores compaction status across normal/Mosaic views.');win.destroy();app.quit();
+ // Finished answers stay copyable while a later turn is still streaming.
+ // Assistant actions wrap their copy button in a span; user copies are separate.
+ await win.webContents.executeJavaScript('window.qaRunningCopy()');
+ const copyCount=()=>win.webContents.executeJavaScript(`document.querySelectorAll('#main span > button[aria-label="Copy reply"]').length`);
+ await until(async()=>await copyCount()===1,'the earlier answer must retain its copy action during a running turn');
+ await click('#main span > button[aria-label="Copy reply"]');
+ assert.equal(await win.webContents.executeJavaScript('window.qaCopied.at(-1)'),'Earlier completed answer','copy must target the finished answer, not the active response');
+ await win.webContents.executeJavaScript("window.qaEmit('onDelta',{paneId:'main',delta:' — still working'})");
+ await pause();
+ assert.equal(await copyCount(),1,'streaming response must not gain a settled-answer copy action');
+ await win.webContents.executeJavaScript("window.qaEmit('onTurnCompleted',{paneId:'main',status:'completed',narrated:true})");
+ await until(async()=>await copyCount()===2,'the new answer must gain its copy action when the turn finishes');
+ console.log('PASS: real ChatPane attaches pending excerpts immediately, confirms without duplication, sends confirmed/pending comments, handles removal/Escape, grows comments to seven lines with scrolling/fade, preserves multiline comments, isolates side annotations, verifies Mosaic selection/attachment/send without side-chat actions, preserves running timers through replay/remount, chat switching and approval pauses, restores compaction status across normal/Mosaic views, and keeps older answers copyable during a live turn.');win.destroy();app.quit();
 })().catch(e=>{console.error(e);app.exit(1)});
