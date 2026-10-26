@@ -9850,6 +9850,10 @@ function ChatPane({
   }
   const [busy, setBusyState] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  // Accumulated work plus the current active segment. Refs let replay and
+  // queued sends replace the clock even when busy stays true across a render.
+  const elapsedBaseRef = useRef(0);
+  const elapsedActiveSinceRef = useRef<number | null>(null);
   // Messages queued while a turn runs; flushed one per turn completion.
   const [queue, setQueue] = useState<QueuedMsg[]>([]);
   const queueRef = useRef(queue);
@@ -10150,6 +10154,11 @@ function ChatPane({
       ? (reset.runningTurnStart ?? reset.entries.length)
       : null;
     turnStartedAtRef.current = reset.resume?.running ? (reset.runningTurnStartedAt ?? null) : null;
+    elapsedBaseRef.current = turnStartedAtRef.current === null
+      ? 0
+      : Math.max(0, (Date.now() - turnStartedAtRef.current) / 1000);
+    elapsedActiveSinceRef.current = null;
+    setElapsed(elapsedBaseRef.current);
     for (const held of reset.resume?.approvals ?? []) applyApproval(held);
     for (const request of reset.resume?.userInputs ?? []) applyUserInput(request);
     // A saved running step in an idle thread has no confirmed outcome.
@@ -10285,11 +10294,20 @@ function ChatPane({
       return;
     }
     if (awaitingApproval || awaitingInput) return; // frozen while the human decides
-    const startedAt = Date.now() - elapsed * 1000;
-    const timer = setInterval(() => setElapsed((Date.now() - startedAt) / 1000), 100);
-    return () => clearInterval(timer);
+    elapsedActiveSinceRef.current ??= Date.now();
+    const tick = () => setElapsed(elapsedBaseRef.current + Math.max(0, (Date.now() - (elapsedActiveSinceRef.current ?? Date.now())) / 1000));
+    tick();
+    const timer = setInterval(tick, 100);
+    return () => {
+      clearInterval(timer);
+      if (elapsedActiveSinceRef.current !== null) {
+        elapsedBaseRef.current += Math.max(0, (Date.now() - elapsedActiveSinceRef.current) / 1000);
+        elapsedActiveSinceRef.current = null;
+      }
+    };
+    // Replay can replace a running conversation with another running one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy, awaitingApproval, awaitingInput]);
+  }, [busy, awaitingApproval, awaitingInput, reset.nonce]);
 
   useEffect(() => {
     const offs = [
@@ -10777,6 +10795,9 @@ function ChatPane({
     setBusy(true);
     producedRef.current = false;
     turnStartedAtRef.current = Date.now();
+    elapsedBaseRef.current = 0;
+    elapsedActiveSinceRef.current = turnStartedAtRef.current;
+    setElapsed(0);
     setEntries((es) => {
       const next: Entry[] = [...es, { kind: "user", text: q.text, at: Date.now(), annotations: q.annotations, attachments: q.attachments }];
       turnStartIndexRef.current = next.length;

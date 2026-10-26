@@ -9,16 +9,19 @@ const deadline=setTimeout(()=>{console.error('Transcript annotation regression t
 const bundleResult=build({stdin:{resolveDir:root,loader:'tsx',contents:`
 import React from 'react';import {createRoot} from 'react-dom/client';
 import {ChatPane,MultiViewTile} from './src/renderer/src/App';
-window.qaCalls=[];window.qaKeyEvents=[];document.addEventListener('keydown',e=>window.qaKeyEvents.push({key:e.key,code:e.code,keyCode:e.keyCode,trusted:e.isTrusted,target:e.target.outerHTML?.slice(0,150)}),true);
+window.qaCalls=[];window.qaListeners=new Map();window.qaEmit=(name,payload)=>{for(const cb of window.qaListeners.get(name)??[])cb(payload)};window.qaKeyEvents=[];document.addEventListener('keydown',e=>window.qaKeyEvents.push({key:e.key,code:e.code,keyCode:e.keyCode,trusted:e.isTrusted,target:e.target.outerHTML?.slice(0,150)}),true);
 window.unbiased=new Proxy({}, {get:(_,key)=>{
- if(String(key).startsWith('on'))return ()=>()=>{};
+ if(String(key).startsWith('on'))return cb=>{const listeners=window.qaListeners.get(key)??new Set();listeners.add(cb);window.qaListeners.set(key,listeners);return ()=>listeners.delete(cb)};
  return async(...args)=>{window.qaCalls.push([key,...args]);if(key==='mountThread')return {lease:'qa-lease',entries,running:false};if(key==='contextUsage')return null;if(key==='mcpThreadGet')return {enabled:[]};if(key==='liveApprovals'||key==='liveUserInputs')return [];if(key==='fileExists')return {exists:false};if(key==='favicon')return {dataUrl:null};return {};};
 }});
 const entries=[{kind:'assistant',text:'Select this side chat excerpt.\\n\\nSee [example link](https://example.com/side-chat).'}];
 const side={paneId:'side:qa',connected:true,canTypeToFocus:()=>false,reset:{entries,nonce:0},emptyState:null,accessMode:'untrusted',onAccessModeChange:()=>{},planMode:false,onTogglePlanMode:()=>{}};
 const mosaic={...side,id:'qa-mosaic',columnSpan:1,fresh:false,project:null,projects:[],title:'Mosaic QA',onSelectEnvironment:async()=>{},onCreateProject:()=>{},onOpenChat:()=>{},onRemove:()=>{},onTurnLanded:()=>{}};
 const main={...side,paneId:'main',onAskSideChat:text=>window.qaCalls.push(['askSide',text])};
-createRoot(document.getElementById('root')).render(<><section id="side"><ChatPane {...side}/></section><section id="main"><ChatPane {...main}/></section><section id="mosaic"><MultiViewTile {...mosaic}/></section></>);
+const root=createRoot(document.getElementById('root'));
+const render=(reset=main.reset,key='main')=>root.render(<><section id="side"><ChatPane {...side}/></section><section id="main"><ChatPane key={key} {...main} reset={reset}/></section><section id="mosaic"><MultiViewTile {...mosaic}/></section></>);
+window.qaRestoreMain=(seconds,nonce,key='main')=>render({...main.reset,nonce,resume:seconds===null?null:{running:true},runningTurnStart:0,runningTurnStartedAt:seconds===null?null:Date.now()-seconds*1000},key);
+render();
 `},bundle:true,write:false,platform:'browser',format:'iife',jsx:'automatic',define:{'import.meta.glob':'__qaGlob'},banner:{js:'var __qaGlob=()=>({});'},loader:{'.svg':'dataurl','.png':'dataurl','.webp':'dataurl'},plugins:[{name:'qa',setup(build){
  build.onLoad({filter:/\.css$/},()=>({contents:'',loader:'js'}));
  build.onLoad({filter:/\.md$/},args=>({contents:fs.readFileSync(args.path,'utf8'),loader:'text'}));
@@ -141,5 +144,25 @@ createRoot(document.getElementById('root')).render(<><section id="side"><ChatPan
  assert.ok(sentMosaic,'Mosaic annotation must reach its own chat');
  assert.match(sentMosaic[2],/> Select this side chat excerpt\./);
  assert.match(sentMosaic[2],/Comment: Explain this Mosaic excerpt/);
- console.log('PASS: real ChatPane attaches pending excerpts immediately, confirms without duplication, sends confirmed/pending comments, handles removal/Escape, grows comments to seven lines with scrolling/fade, preserves multiline comments, isolates side annotations, and verifies Mosaic selection/attachment/send without side-chat actions.');win.destroy();app.quit();
+ // Reopening an existing turn and switching busy->busy must restore its clock.
+ const readClock=async()=>{
+   const text=await win.webContents.executeJavaScript("document.querySelector('#main').innerText");
+   const match=text.match(/(?:thinking|waiting)… (?:(\d+)m )?(\d+)s/);
+   return match?Number(match[1]??0)*60+Number(match[2]):null;
+ };
+ await win.webContents.executeJavaScript("window.qaRestoreMain(65,1)");
+ await until(async()=>{const n=await readClock();return n>=65&&n<68},'reopening a running chat must restore elapsed time');
+ await win.webContents.executeJavaScript("window.qaRestoreMain(125,2)");
+ await until(async()=>{const n=await readClock();return n>=125&&n<128},'switching between running chats must use the destination clock');
+ await win.webContents.executeJavaScript("window.qaRestoreMain(null,3)");
+ await pause();assert.equal(await readClock(),null,'idle chat must not show the previous turn clock');
+ await win.webContents.executeJavaScript("window.qaRestoreMain(75,4,'reopened')");
+ await until(async()=>{const n=await readClock();return n>=75&&n<78},'remounting the pane must preserve the original turn start');
+ await win.webContents.executeJavaScript("window.qaEmit('onApprovalRequest',{paneId:'main',requestId:'qa-approval',itemId:'qa-command',command:'echo hello',kind:'command'})");
+ await pause();const frozen=await readClock();
+ await new Promise(resolve=>setTimeout(resolve,1200));
+ assert.equal(await readClock(),frozen,'clock must stay frozen during approval');
+ await win.webContents.executeJavaScript("window.qaEmit('onApprovalCanceled',{paneId:'main',requestId:'qa-approval'})");
+ await until(async()=>await readClock()>frozen,'clock must resume after approval without losing accumulated time');
+ console.log('PASS: real ChatPane attaches pending excerpts immediately, confirms without duplication, sends confirmed/pending comments, handles removal/Escape, grows comments to seven lines with scrolling/fade, preserves multiline comments, isolates side annotations, verifies Mosaic selection/attachment/send without side-chat actions, and preserves running timers through replay/remount, chat switching and approval pauses.');win.destroy();app.quit();
 })().catch(e=>{console.error(e);app.exit(1)});
