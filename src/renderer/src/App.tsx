@@ -41,9 +41,12 @@ import { UserMessageMarkdown } from "./user-message-markdown";
 import { MarkdownComposer, type MarkdownComposerHandle } from "./markdown-composer";
 import "./markdown-composer.css";
 import "./transcript-action-dock.css";
+import { AnnotationCommentEditor } from "./annotation-comment-editor";
 import "./user-input-card.css";
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Heart, Home, LayoutGrid, MessageSquare, MessageSquarePlus, MoreHorizontal, PanelRightOpen, Pin, PinOff, Plus, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, FolderOpen, Heart, Home, LayoutGrid, MessageSquare, MoreHorizontal, Pin, PinOff, Plus, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
 import { CloseIcon } from "./close-icon";
+import { ChatLink } from "./chat-link";
+import "./chat-link.css";
 import { ConversationDrafts } from "./conversation-drafts";
 import { SettingsRoute } from "./settings-route";
 import { PalsGallery } from "./pals-gallery";
@@ -1091,6 +1094,8 @@ function themeVars(t: ThemeConfig): Record<string, string> {
     "--bg": t.surface,
     "--fg": t.ink,
     "--accent": t.accent,
+    // Match the lighter coral used by the dotted project heading.
+    "--link": "#FF7764",
     "--accent-fg": bestInkOn(t.accent),
     "--nav-bg": m(0.05),
     "--code-bg": mixHex(t.surface, "#000000", 0.3),
@@ -3258,8 +3263,18 @@ export function App() {
   // is never missing from the nav between pressing Enter and the engine
   // deciding it exists. A stand-in disappears the moment the real row lands.
   const sidebarView = useMemo(() => mergePendingThreads(sidebar, pendingThreads), [sidebar, pendingThreads]);
-  const mosaicThreads = [...sidebarView.projects.flatMap((project) => project.threads), ...sidebarView.recents];
-  const mosaicChats = multiIds.map((id) => ({ id, title: mosaicThreads.find((thread) => thread.id === id)?.title ?? "New chat" }));
+  const mosaicThreads = [
+    ...sidebarView.projects.flatMap((project) => project.threads.map((thread) => ({
+      ...thread,
+      title: `${project.name} / ${thread.title}`,
+    }))),
+    ...sidebarView.recents,
+  ];
+  const mosaicChats = multiIds.map((id) => ({
+    id,
+    title: mosaicThreads.find((thread) => thread.id === id)?.title
+      ?? (freshMultiProjects[id] ? `${freshMultiProjects[id].name} / New chat` : "New chat"),
+  }));
   const pinnedThreadIds = useMemo(() => new Set(pinnedThreads.map((t) => t.id)), [pinnedThreads]);
   const pinnedSidebarThreads = useMemo(() => {
     const listed = new Map<string, { thread: ThreadSummary; inProject: boolean }>();
@@ -4303,7 +4318,7 @@ export function App() {
               freshWork={freshMultiWork}
               drafts={multiDraftsRef.current}
               projects={sidebarView.projects}
-              threads={mosaicThreads}
+              threads={mosaicChats}
               width={windowWidth - (navOpen ? sidebarWidth : NAV_RAIL_WIDTH)}
               connected={connected}
               accessMode={accessMode}
@@ -8025,24 +8040,9 @@ function buildMdComponents(
       <CodeBlock position={props.node?.position}>{props.children}</CodeBlock>,
     a: (props: { href?: string; children?: React.ReactNode }) => {
       const host = linkHost(props.href);
-      return (
-        <a
-          href={props.href}
-          onClick={(e) => {
-            e.preventDefault();
-            const href = props.href ?? "";
-            if (/^https?:/.test(href)) openLink?.(href);
-          }}
-          // textDecoration:none is doing real work: the underline here was the
-          // UA default, and a full-width solid rule under a long link title
-          // out-weighed every other accent in the transcript. Colour carries
-          // the affordance instead.
-          style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "none" }}
-        >
-          {host ? <Favicon host={host} /> : null}
-          {props.children}
-        </a>
-      );
+      return <ChatLink href={props.href} onOpen={openLink} siteIcon={host ? <Favicon host={host} inline /> : undefined}>
+        {props.children}
+      </ChatLink>;
     },
     blockquote: (props: { children?: React.ReactNode }) => (
       <blockquote
@@ -8527,22 +8527,7 @@ function FileViewer({
     const baseDir = file.fullPath.split("/").slice(0, -1).join("/") || "/";
     return {
       a: (props: { href?: string; children?: React.ReactNode }) => (
-        <a
-          href={props.href}
-          onClick={(e) => {
-            e.preventDefault();
-            const href = props.href ?? "";
-            if (/^https?:/.test(href)) onOpenLinkRef.current?.(href);
-          }}
-          // textDecoration:none is doing real work: the underline here was the
-          // UA default, and a full-width solid rule under a long link title
-          // out-weighed every other accent in the transcript. Colour carries
-          // the affordance instead.
-          style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "none" }}
-          title="Open in browser tab"
-        >
-          {props.children}
-        </a>
+        <ChatLink href={props.href} onOpen={href => onOpenLinkRef.current?.(href)}>{props.children}</ChatLink>
       ),
       img: (props: { src?: string; alt?: string }) => (
         <MdImage src={props.src} alt={props.alt} baseDir={baseDir} />
@@ -9739,7 +9724,10 @@ function ChatPane({
   const consumedContextRef = useRef<typeof contextChip>(null);
   // null = the selection toolbar shows its buttons; a string (possibly
   // empty) = the "Add to chat" comment input is open with that draft.
+  // That draft is already a staged, sendable annotation; confirmation only
+  // finishes editing its optional comment.
   const [pendingComment, setPendingComment] = useState<string | null>(null);
+  const [annotationEditorHeight, setAnnotationEditorHeight] = useState(46);
 
   // The + button's popup menu, plus whether the clipboard held an image
   // when it was opened (drives the "Image from clipboard" item's state).
@@ -9872,6 +9860,10 @@ function ChatPane({
   }
   const [busy, setBusyState] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  // Accumulated work plus the current active segment. Refs let replay and
+  // queued sends replace the clock even when busy stays true across a render.
+  const elapsedBaseRef = useRef(0);
+  const elapsedActiveSinceRef = useRef<number | null>(null);
   // Messages queued while a turn runs; flushed one per turn completion.
   const [queue, setQueue] = useState<QueuedMsg[]>([]);
   const queueRef = useRef(queue);
@@ -9950,6 +9942,17 @@ function ChatPane({
   const [hoveredLink, setHoveredLink] = useState<{ href: string; x: number; y: number } | null>(null);
   const linkHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedRangeRef = useRef<Range | null>(null);
+  // Show and send the selected excerpt as soon as Add to chat is clicked.
+  // Keep the in-progress item last, so confirmation replaces this preview
+  // with one committed annotation rather than appending a duplicate.
+  const stagedAnnotations: Annotation[] = pendingComment !== null && selection
+    ? [...annotations, {
+        text: selection.text,
+        comment: pendingComment.trim() || undefined,
+        range: savedRangeRef.current ?? undefined,
+        tag: "selection",
+      }]
+    : annotations;
   const scrollRef = useRef<HTMLDivElement>(null);
   const followFrameRef = useRef<number | null>(null);
   const observedListRef = useRef<Element | null>(null);
@@ -10161,6 +10164,11 @@ function ChatPane({
       ? (reset.runningTurnStart ?? reset.entries.length)
       : null;
     turnStartedAtRef.current = reset.resume?.running ? (reset.runningTurnStartedAt ?? null) : null;
+    elapsedBaseRef.current = turnStartedAtRef.current === null
+      ? 0
+      : Math.max(0, (Date.now() - turnStartedAtRef.current) / 1000);
+    elapsedActiveSinceRef.current = null;
+    setElapsed(elapsedBaseRef.current);
     for (const held of reset.resume?.approvals ?? []) applyApproval(held);
     for (const request of reset.resume?.userInputs ?? []) applyUserInput(request);
     // A saved running step in an idle thread has no confirmed outcome.
@@ -10296,11 +10304,20 @@ function ChatPane({
       return;
     }
     if (awaitingApproval || awaitingInput) return; // frozen while the human decides
-    const startedAt = Date.now() - elapsed * 1000;
-    const timer = setInterval(() => setElapsed((Date.now() - startedAt) / 1000), 100);
-    return () => clearInterval(timer);
+    elapsedActiveSinceRef.current ??= Date.now();
+    const tick = () => setElapsed(elapsedBaseRef.current + Math.max(0, (Date.now() - (elapsedActiveSinceRef.current ?? Date.now())) / 1000));
+    tick();
+    const timer = setInterval(tick, 100);
+    return () => {
+      clearInterval(timer);
+      if (elapsedActiveSinceRef.current !== null) {
+        elapsedBaseRef.current += Math.max(0, (Date.now() - elapsedActiveSinceRef.current) / 1000);
+        elapsedActiveSinceRef.current = null;
+      }
+    };
+    // Replay can replace a running conversation with another running one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy, awaitingApproval, awaitingInput]);
+  }, [busy, awaitingApproval, awaitingInput, reset.nonce]);
 
   useEffect(() => {
     const offs = [
@@ -10754,7 +10771,7 @@ function ChatPane({
 
   const lastEntry = entries[entries.length - 1];
   const showThinking = busy && !(lastEntry?.kind === "assistant" && lastEntry.text !== "");
-  const canSend = connected && (draft.trim() !== "" || annotations.length > 0 || attachments.length > 0);
+  const canSend = connected && (draft.trim() !== "" || stagedAnnotations.length > 0 || attachments.length > 0);
   // Compaction is offerable only when there IS uncompacted content: a
   // non-empty conversation whose last entry isn't already a compaction
   // divider, and nothing else in flight.
@@ -10788,6 +10805,9 @@ function ChatPane({
     setBusy(true);
     producedRef.current = false;
     turnStartedAtRef.current = Date.now();
+    elapsedBaseRef.current = 0;
+    elapsedActiveSinceRef.current = turnStartedAtRef.current;
+    setElapsed(0);
     setEntries((es) => {
       const next: Entry[] = [...es, { kind: "user", text: q.text, at: Date.now(), annotations: q.annotations, attachments: q.attachments }];
       turnStartIndexRef.current = next.length;
@@ -10807,8 +10827,8 @@ function ChatPane({
     const text = draft.trim();
     // Annotations alone are a sendable message — the excerpts plus their
     // comments carry the intent even without accompanying prose.
-    if ((!text && annotations.length === 0 && attachments.length === 0) || !connected) return;
-    const anns = annotations;
+    if ((!text && stagedAnnotations.length === 0 && attachments.length === 0) || !connected) return;
+    const anns = stagedAnnotations;
     const message = (
       anns.length > 0
         ? `Regarding ${anns.length === 1 ? "this excerpt" : "these excerpts"} from the conversation:\n\n` +
@@ -10828,6 +10848,7 @@ function ChatPane({
     changeAttachments([]);
     setAttachmentError(null);
     setAnnotations([]);
+    if (pendingComment !== null) cancelAnnotation();
     const msg: QueuedMsg = {
       id: nextQueueIdRef.current++,
       text,
@@ -10933,7 +10954,6 @@ function ChatPane({
   };
 
   function handleMouseUp() {
-    if (!onAskSideChat) return;
     if (pendingComment !== null) return; // comment input open — Esc cancels, ✓ confirms
     const sel = window.getSelection();
     const text = sel?.toString().trim() ?? "";
@@ -10971,7 +10991,7 @@ function ChatPane({
 
   function handleTranscriptMouseOver(e: React.MouseEvent<HTMLDivElement>) {
     const anchor = e.target instanceof Element ? e.target.closest("a[href]") : null;
-    if (!anchor || selection || pendingComment !== null || !onAskSideChat) return;
+    if (!anchor || selection || pendingComment !== null) return;
     const rawHref = anchor.getAttribute("href");
     if (!rawHref) return;
     let href: string;
@@ -11104,14 +11124,18 @@ function ChatPane({
   }
 
   // Escape dismisses the annotate flow at any stage — button pill or
-  // comment box, focused or not.
+  // comment box, focused or not. Capture it before another pane can treat it
+  // as a composer/interrupt shortcut and strand the pending attachment.
   useEffect(() => {
     if (!selection) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") cancelAnnotation();
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancelAnnotation();
     }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection]);
 
@@ -11487,10 +11511,9 @@ function ChatPane({
           Drop to attach
         </div>
       )}
-      {selection && onAskSideChat && (
+      {selection && (
         <div
-          className={pendingComment === null ? "transcript-action-dock" : undefined}
-          data-compact={(paneRef.current?.clientWidth ?? 500) < 290 || undefined}
+          className={pendingComment === null ? "transcript-action-dock" : "annotation-comment-popup"}
           style={{
             position: "absolute",
             // Button pill: centered over the selection. Comment box: hung
@@ -11499,64 +11522,50 @@ function ChatPane({
             left:
               pendingComment !== null
                 ? Math.max(8, Math.min(selection.right + 16, (paneRef.current?.clientWidth ?? 400) - 310))
-                : transcriptDockLeft(selection.x, paneRef.current?.clientWidth ?? 400, (paneRef.current?.clientWidth ?? 400) < 290 ? 88 : 260),
-            top: Math.max(8, selection.y - (pendingComment !== null ? 64 : 40)),
+                : transcriptDockLeft(selection.x, paneRef.current?.clientWidth ?? 400, Math.min(onAskSideChat ? 220 : 104, (paneRef.current?.clientWidth ?? 400) - 16)),
+            width: pendingComment === null ? (onAskSideChat ? 220 : 104) : 300,
+            maxWidth: "calc(100% - 16px)",
+            top: Math.max(8, selection.y - (pendingComment !== null ? annotationEditorHeight + 12 : 40)),
             transform: "none",
             zIndex: 10,
             display: "flex",
-            alignItems: "center",
+            alignItems: pendingComment !== null ? "center" : "stretch",
             background: pendingComment !== null ? "var(--chip)" : undefined,
             border: pendingComment !== null ? `1px solid ${colors.border}` : undefined,
             // Comment mode is a full pill, matching the in-page picker.
-            borderRadius: pendingComment !== null ? 999 : 8,
+            borderRadius: pendingComment !== null ? 22 : undefined,
             overflow: pendingComment !== null ? "hidden" : undefined,
             boxShadow: pendingComment !== null ? "0 4px 16px rgba(0,0,0,0.4)" : undefined,
           }}
         >
           {pendingComment === null ? (
             <>
-              <button onClick={() => setPendingComment("")} className="transcript-action" title="Add to Chat" aria-label="Add to Chat">
-                <MessageSquarePlus size={16} aria-hidden="true" /><span>Add to Chat</span>
+              <button onClick={() => setPendingComment("")} className="transcript-action" title="Add to chat" aria-label="Add to chat">
+                <span>Add to chat</span>
               </button>
-              <button
-                onClick={() => {
-                  onAskSideChat(selection.text);
-                  setSelection(null);
-                  window.getSelection()?.removeAllRanges();
-                }}
-                className="transcript-action"
-                title="Add to Side Chat"
-                aria-label="Add to Side Chat"
-              >
-                <PanelRightOpen size={16} aria-hidden="true" /><span>Add to Side Chat</span>
-              </button>
+              {onAskSideChat && (
+                <button
+                  onClick={() => {
+                    onAskSideChat(selection.text);
+                    setSelection(null);
+                    window.getSelection()?.removeAllRanges();
+                  }}
+                  className="transcript-action"
+                  title="Ask in side chat"
+                  aria-label="Ask in side chat"
+                >
+                  <span>Ask in side chat</span>
+                </button>
+              )}
             </>
           ) : (
-            <>
-              <input
-                autoFocus
-                value={pendingComment}
-                onChange={(e) => setPendingComment(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    confirmAnnotation();
-                  }
-                  if (e.key === "Escape") cancelAnnotation();
-                }}
-                placeholder="Add an optional comment…"
-                style={{
-                  width: 240,
-                  background: "transparent",
-                  border: "none",
-                  outline: "none",
-                  color: colors.fg,
-                  fontSize: 12.5,
-                  padding: "10px 6px 10px 16px",
-                  fontFamily: "inherit",
-                }}
-              />
+            <AnnotationCommentEditor
+              value={pendingComment}
+              onChange={setPendingComment}
+              onConfirm={confirmAnnotation}
+              onCancel={cancelAnnotation}
+              onHeightChange={setAnnotationEditorHeight}
+            >
               <button
                 onClick={confirmAnnotation}
                 title="Add annotation"
@@ -11573,42 +11582,46 @@ function ChatPane({
                   alignItems: "center",
                   justifyContent: "center",
                   padding: 0,
-                  margin: "4px 5px 4px 0",
+                  position: "absolute",
+                  right: 7,
+                  bottom: 7,
                   flexShrink: 0,
                 }}
               >
                 <CheckIcon />
               </button>
-            </>
+            </AnnotationCommentEditor>
           )}
         </div>
       )}
 
-      {hoveredLink && !selection && pendingComment === null && onAskSideChat && (
+      {hoveredLink && !selection && pendingComment === null && (
         <div
           className="transcript-action-dock"
-          data-compact={(paneRef.current?.clientWidth ?? 500) < 460 || undefined}
           onMouseEnter={cancelLinkHide}
           onMouseLeave={hideLinkSoon}
           style={{
             position: "absolute",
-            left: transcriptDockLeft(hoveredLink.x, paneRef.current?.clientWidth ?? 400, (paneRef.current?.clientWidth ?? 400) < 460 ? 124 : 420),
+            left: transcriptDockLeft(hoveredLink.x, paneRef.current?.clientWidth ?? 400, Math.min(onAskSideChat ? 350 : 230, (paneRef.current?.clientWidth ?? 400) - 16)),
+            width: onAskSideChat ? 350 : 230,
             top: Math.max(8, hoveredLink.y - 42),
             zIndex: 10,
           }}
         >
-          <button className="transcript-action" title="Add to Chat" aria-label="Add link to Chat" onClick={() => {
+          <button className="transcript-action" title="Add to chat" aria-label="Add link to chat" onClick={() => {
             setAnnotations((list) => [...list, { text: hoveredLink.href, tag: "link" }]);
             setHoveredLink(null);
-          }}><MessageSquarePlus size={16} aria-hidden="true" /><span>Add to Chat</span></button>
-          <button className="transcript-action" title="Add to Side Chat" aria-label="Add link to Side Chat" onClick={() => {
-            onAskSideChat(hoveredLink.href);
-            setHoveredLink(null);
-          }}><PanelRightOpen size={16} aria-hidden="true" /><span>Add to Side Chat</span></button>
+          }}><span>Add to chat</span></button>
+          {onAskSideChat && (
+            <button className="transcript-action" title="Ask in side chat" aria-label="Ask about link in side chat" onClick={() => {
+              onAskSideChat(hoveredLink.href);
+              setHoveredLink(null);
+            }}><span>Ask in side chat</span></button>
+          )}
           <button className="transcript-action" title="Open in default browser" aria-label="Open link in default browser" onClick={() => {
             void window.unbiased.openExternal(hoveredLink.href);
             setHoveredLink(null);
-          }}><ExternalLink size={16} aria-hidden="true" /><span>Default Browser</span></button>
+          }}><span>Default browser</span></button>
         </div>
       )}
 
@@ -12127,9 +12140,9 @@ function ChatPane({
               {attachmentError}
             </div>
           )}
-          {annotations.length > 0 && (
+          {stagedAnnotations.length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-              {annotations.map((a, i) => (
+              {stagedAnnotations.map((a, i) => (
                 <span
                   key={i}
                   title={a.comment ? `${a.text}\n— ${a.comment}` : a.text}
@@ -12158,7 +12171,10 @@ function ChatPane({
                     {a.comment || a.text}
                   </span>
                   <button
-                    onClick={() => setAnnotations((list) => list.filter((_, j) => j !== i))}
+                    onClick={() => {
+                      if (i === annotations.length) cancelAnnotation();
+                      else setAnnotations((list) => list.filter((_, j) => j !== i));
+                    }}
                     aria-label="Remove annotation"
                     style={{
                       background: "transparent",
@@ -12775,7 +12791,7 @@ function probeFavicon(host: string): Promise<string | null> {
  *
  *  The box is a fixed size from the first frame, so an icon arriving mid-turn
  *  cannot reflow a streaming message. */
-function Favicon({ host }: { host: string }) {
+function Favicon({ host, inline = false }: { host: string; inline?: boolean }) {
   const [src, setSrc] = useState<string | null>(() => faviconResolved.get(host) ?? null);
   useEffect(() => {
     // Already settled: paint it and skip the async path entirely.
@@ -12800,12 +12816,12 @@ function Favicon({ host }: { host: string }) {
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        width: 14,
-        height: 14,
-        marginRight: 4,
-        verticalAlign: "-2px",
+        width: inline ? "100%" : 14,
+        height: inline ? "100%" : 14,
+        marginRight: inline ? 0 : 4,
+        verticalAlign: inline ? "baseline" : "-2px",
         flex: "none",
-        color: "var(--dim)",
+        color: inline ? "inherit" : "var(--dim)",
       }}
     >
       {src ? (
@@ -17865,7 +17881,7 @@ function StartPage({
             >
               {projectName}
             </span>
-            ?
+            <span style={{ color: "#FF7764" }}>?</span>
           </>
         ) : (
           "What should we build?"

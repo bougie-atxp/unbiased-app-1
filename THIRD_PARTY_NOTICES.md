@@ -39,3 +39,9 @@ The packaged application includes an adapted version of
 [robot-heads](https://github.com/fayazara/robot-heads/tree/58ebf6439a8125a769f63b22ffd35bc18834b1b5)
 by Fayaz Ahmed, licensed under MIT. Its copyright and license text are included
 at `Contents/Resources/licenses/robot-heads/LICENSE`.
+
+## Octicons
+
+The GitHub link mark comes from [GitHub Octicons](https://github.com/primer/octicons),
+licensed under MIT. Its copyright and license text ship at
+`Contents/Resources/licenses/octicons/LICENSE`.
