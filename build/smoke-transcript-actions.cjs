@@ -12,15 +12,16 @@ import {ChatPane,MultiViewTile} from './src/renderer/src/App';
 window.qaCalls=[];window.qaListeners=new Map();window.qaEmit=(name,payload)=>{for(const cb of window.qaListeners.get(name)??[])cb(payload)};window.qaKeyEvents=[];document.addEventListener('keydown',e=>window.qaKeyEvents.push({key:e.key,code:e.code,keyCode:e.keyCode,trusted:e.isTrusted,target:e.target.outerHTML?.slice(0,150)}),true);
 window.unbiased=new Proxy({}, {get:(_,key)=>{
  if(String(key).startsWith('on'))return cb=>{const listeners=window.qaListeners.get(key)??new Set();listeners.add(cb);window.qaListeners.set(key,listeners);return ()=>listeners.delete(cb)};
- return async(...args)=>{window.qaCalls.push([key,...args]);if(key==='mountThread')return {lease:'qa-lease',entries,running:false};if(key==='contextUsage')return null;if(key==='mcpThreadGet')return {enabled:[]};if(key==='liveApprovals'||key==='liveUserInputs')return [];if(key==='fileExists')return {exists:false};if(key==='favicon')return {dataUrl:null};return {};};
+ return async(...args)=>{window.qaCalls.push([key,...args]);if(key==='mountThread')return {lease:'qa-lease',entries,running:!!window.qaMosaicCompacting,compacting:!!window.qaMosaicCompacting};if(key==='contextUsage')return null;if(key==='mcpThreadGet')return {enabled:[]};if(key==='liveApprovals'||key==='liveUserInputs')return [];if(key==='fileExists')return {exists:false};if(key==='favicon')return {dataUrl:null};return {};};
 }});
 const entries=[{kind:'assistant',text:'Select this side chat excerpt.\\n\\nSee [example link](https://example.com/side-chat).'}];
 const side={paneId:'side:qa',connected:true,canTypeToFocus:()=>false,reset:{entries,nonce:0},emptyState:null,accessMode:'untrusted',onAccessModeChange:()=>{},planMode:false,onTogglePlanMode:()=>{}};
 const mosaic={...side,id:'qa-mosaic',columnSpan:1,fresh:false,project:null,projects:[],title:'Mosaic QA',onSelectEnvironment:async()=>{},onCreateProject:()=>{},onOpenChat:()=>{},onRemove:()=>{},onTurnLanded:()=>{}};
 const main={...side,paneId:'main',onAskSideChat:text=>window.qaCalls.push(['askSide',text])};
 const root=createRoot(document.getElementById('root'));
-const render=(reset=main.reset,key='main')=>root.render(<><section id="side"><ChatPane {...side}/></section><section id="main"><ChatPane key={key} {...main} reset={reset}/></section><section id="mosaic"><MultiViewTile {...mosaic}/></section></>);
-window.qaRestoreMain=(seconds,nonce,key='main')=>render({...main.reset,nonce,resume:seconds===null?null:{running:true},runningTurnStart:0,runningTurnStartedAt:seconds===null?null:Date.now()-seconds*1000},key);
+const render=(reset=main.reset,key='main')=>root.render(<><section id="side"><ChatPane {...side}/></section><section id="main"><ChatPane key={key} {...main} reset={reset}/></section><section id="mosaic"><MultiViewTile key={window.qaMosaicKey??0} {...mosaic}/></section></>);
+window.qaRestoreMain=(seconds,nonce,key='main',compacting=false)=>render({...main.reset,nonce,compacting,resume:seconds===null?null:{running:true},runningTurnStart:0,runningTurnStartedAt:seconds===null?null:Date.now()-seconds*1000},key);
+window.qaReopenMosaic=compacting=>{window.qaMosaicCompacting=compacting;window.qaMosaicKey=(window.qaMosaicKey??0)+1;render()};
 render();
 `},bundle:true,write:false,platform:'browser',format:'iife',jsx:'automatic',define:{'import.meta.glob':'__qaGlob'},banner:{js:'var __qaGlob=()=>({});'},loader:{'.svg':'dataurl','.png':'dataurl','.webp':'dataurl'},plugins:[{name:'qa',setup(build){
  build.onLoad({filter:/\.css$/},()=>({contents:'',loader:'js'}));
@@ -185,5 +186,33 @@ render();
  assert.equal(await readClock(),frozen,'clock must stay frozen during approval');
  await win.webContents.executeJavaScript("window.qaEmit('onApprovalCanceled',{paneId:'main',requestId:'qa-approval'})");
  await until(async()=>await readClock()>frozen,'clock must resume after approval without losing accumulated time');
- console.log('PASS: real ChatPane attaches pending excerpts immediately, confirms without duplication, sends confirmed/pending comments, handles removal/Escape, grows comments to seven lines with scrolling/fade, preserves multiline comments, isolates side annotations, verifies Mosaic selection/attachment/send without side-chat actions, and preserves running timers through replay/remount, chat switching and approval pauses.');win.destroy();app.quit();
+ // Compaction is restored in either view, and live phases never become
+ // completed-history markers until completion actually arrives.
+ const paneText=id=>win.webContents.executeJavaScript(`document.querySelector('#${id}').innerText`);
+ const hasCompacting=async id=>(await paneText(id)).includes('Compacting conversation…');
+ const compactedCount=async id=>((await paneText(id)).match(/context compacted — earlier turns summarized/g)??[]).length;
+ await win.webContents.executeJavaScript("window.qaReopenMosaic(true)");
+ await until(()=>hasCompacting('mosaic'),'Mosaic mount must restore in-flight compaction');
+ assert.equal(await compactedCount('mosaic'),0);
+ await win.webContents.executeJavaScript("window.qaRestoreMain(65,10,'compaction-main',true)");
+ await until(()=>hasCompacting('main'),'normal view must restore compaction after leaving Mosaic');
+ assert.equal(/(?:thinking|waiting)…/.test(await paneText('main')),false,'restored compaction must not display the regular waiting status');
+ assert.equal(await hasCompacting('side'),false,'compaction must stay within its conversation');
+ const compactionEvent=async phase=>{
+   await win.webContents.executeJavaScript(`for(const paneId of ['main','multi:qa-mosaic'])window.qaEmit('onCompaction',{paneId,phase:${JSON.stringify(phase)}})`);
+ };
+ await compactionEvent('failed');
+ await until(async()=>!(await hasCompacting('main'))&&!(await hasCompacting('mosaic')),'failed compaction must clear both status indicators');
+ assert.equal(await compactedCount('main'),0,'failed compaction must not add a completion marker');
+ await compactionEvent('started');
+ await until(async()=>await hasCompacting('main')&&await hasCompacting('mosaic'),'live compaction starts must update both views');
+ assert.equal(await compactedCount('main'),0,'starting compaction must not add a completion marker');
+ await compactionEvent('completed');
+ await until(async()=>!(await hasCompacting('main'))&&!(await hasCompacting('mosaic')),'completion must clear both status indicators');
+ assert.equal(await compactedCount('main'),1);
+ assert.equal(await compactedCount('mosaic'),1);
+ await compactionEvent('completed');
+ await pause();
+ assert.equal(await compactedCount('main'),1,'duplicate completion must not duplicate history');
+ console.log('PASS: real ChatPane attaches pending excerpts immediately, confirms without duplication, sends confirmed/pending comments, handles removal/Escape, grows comments to seven lines with scrolling/fade, preserves multiline comments, isolates side annotations, verifies Mosaic selection/attachment/send without side-chat actions, preserves running timers through replay/remount, chat switching and approval pauses, and restores compaction status across normal/Mosaic views.');win.destroy();app.quit();
 })().catch(e=>{console.error(e);app.exit(1)});

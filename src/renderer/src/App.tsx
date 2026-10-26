@@ -786,7 +786,7 @@ declare global {
         cb: (p: { paneId: PaneId; phase: "started" | "completed"; item: CommandItem }) => void,
       ) => () => void;
       onCommandOutput: (cb: (p: { paneId: PaneId; itemId: string; delta: string }) => void) => () => void;
-      onCompaction: (cb: (p: { paneId: PaneId }) => void) => () => void;
+      onCompaction: (cb: (p: { paneId: PaneId; phase?: "started" | "completed" | "failed" }) => void) => () => void;
       onTokenUsage: (
         cb: (p: { paneId: PaneId } & ContextUsage) => void,
       ) => () => void;
@@ -823,6 +823,7 @@ declare global {
         failure: string | null;
         runningTurnStart?: number | null;
         runningTurnStartedAt?: number | null;
+        compacting?: boolean;
         /** Engine-assigned sub-agent nicknames, recovered from the rollout and
          *  carried with the transcript so they cannot lose a race against it. */
         subAgentNames?: Record<string, string>;
@@ -1925,6 +1926,7 @@ export function App() {
     resume?: { running: boolean; approvals: HeldApproval[]; userInputs: UserInputRequest[] } | null;
     runningTurnStart?: number | null;
     runningTurnStartedAt?: number | null;
+    compacting?: boolean;
   }>({ entries: [], nonce: 0 });
   const mainDraftsRef = useRef<ConversationDrafts<Attachment> | null>(null);
   if (!mainDraftsRef.current) mainDraftsRef.current = new ConversationDrafts(null, 0);
@@ -2018,6 +2020,7 @@ export function App() {
   }
 
   function setSideOpenPersisted(open: boolean) {
+    if (open && !sideOpen) setSideFrac(0.5);
     setSideOpen(open);
   }
 
@@ -2053,10 +2056,8 @@ export function App() {
   }, []);
   // The main/side split is a FRACTION of the content area (not pixels), so
   // collapsing the nav or resizing the window scales both panes in ratio.
-  const [sideFrac, setSideFrac] = useState(() => {
-    const stored = Number(localStorage.getItem("sideFrac"));
-    return stored >= 0.25 && stored <= 0.7 ? stored : 0.45;
-  });
+  // Each opening starts with equal panes; resizing applies while it stays open.
+  const [sideFrac, setSideFrac] = useState(0.5);
   const draggingRef = useRef(false);
   const navDraggingRef = useRef(false);
   const navOpenRef = useRef(navOpen);
@@ -2236,7 +2237,7 @@ export function App() {
 
   // Divider drag: the fraction follows the cursor within the content area
   // (everything right of the nav), clamped so neither pane collapses into
-  // uselessness. Persisted across launches.
+  // uselessness.
   useEffect(() => {
     function onMove(e: MouseEvent) {
       if (navDraggingRef.current) {
@@ -2266,10 +2267,6 @@ export function App() {
       delete document.body.dataset.panelResizing;
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
-      setSideFrac((f) => {
-        localStorage.setItem("sideFrac", String(f));
-        return f;
-      });
     }
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -2545,6 +2542,7 @@ export function App() {
       offset: res.offset,
       runningTurnStart: res.runningTurnStart,
       runningTurnStartedAt: res.runningTurnStartedAt,
+      compacting: res.compacting,
     }));
     resetSideView();
     restoreSideView(id);
@@ -5133,7 +5131,6 @@ export function App() {
             e.preventDefault();
             const fraction = Math.min(Math.max(next, 0.25), 0.7);
             setSideFrac(fraction);
-            localStorage.setItem("sideFrac", String(fraction));
           }}
           role="separator"
           aria-label="Resize side panel"
@@ -9544,7 +9541,7 @@ function MultiViewTile({ id, columnSpan, fresh, project, work, projects, drafts,
           connected={connected}
           threadId={id}
           composerDrafts={drafts}
-          reset={{ entries: resetEntries, nonce: 0, resume: loaded?.running ? { running: true, approvals: loaded.approvals, userInputs: loaded.userInputs } : null, runningTurnStart: loaded?.runningTurnStart, runningTurnStartedAt: loaded?.runningTurnStartedAt, sessionId: loaded?.sessionId, offset: loaded?.offset }}
+          reset={{ entries: resetEntries, nonce: 0, resume: loaded?.running ? { running: true, approvals: loaded.approvals, userInputs: loaded.userInputs } : null, runningTurnStart: loaded?.runningTurnStart, runningTurnStartedAt: loaded?.runningTurnStartedAt, compacting: loaded?.compacting, sessionId: loaded?.sessionId, offset: loaded?.offset }}
           emptyState={null}
           composerHeader={fresh ? <MosaicNewChatEnvironment project={project} work={work} projects={projects} onSelect={onSelectEnvironment} onCreateProject={onCreateProject} disabled={busy} /> : undefined}
           onBusyChange={setBusy}
@@ -9610,6 +9607,7 @@ function ChatPane({
     resume?: { running: boolean; approvals: HeldApproval[]; userInputs: UserInputRequest[] } | null;
     runningTurnStart?: number | null;
     runningTurnStartedAt?: number | null;
+    compacting?: boolean;
   };
   contextChip?: string | { text: string; comment?: string; tag?: string; thumb?: string } | null;
   onContextClear?: () => void;
@@ -10177,7 +10175,7 @@ function ChatPane({
     // the id actually changes — this covers a reset where it does not.
     setCtxUsage(null);
     resetTurnPerf();
-    setCompacting(false);
+    setCompacting(!!reset.compacting);
     // A card persisted in the transcript looks exactly like a live one, so
     // anything restored has to be checked against what main is actually
     // holding. Without this, an approval whose turn died with the app still
@@ -10652,6 +10650,14 @@ function ChatPane({
       }),
       window.unbiased.onCompaction((p) => {
         if (p.paneId !== paneId) return;
+        if (p.phase === "started") {
+          setCompacting(true);
+          return;
+        }
+        if (p.phase === "failed") {
+          setCompacting(false);
+          return;
+        }
         setEntries((es) => {
           const cleaned = withoutTrailingPlaceholder(es);
           // Consecutive compactions collapse into one divider.

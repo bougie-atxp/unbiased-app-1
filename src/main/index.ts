@@ -2533,6 +2533,14 @@ function paneForThread(threadId: unknown): PaneId | null {
 // backgrounded conversation be reopened mid-turn with its busy state, the
 // partial assistant text, and any approval request the agent is blocked on.
 const runningTurns = new Map<string, string>(); // threadId → turnId
+// Compaction outlives whichever normal/Mosaic pane requested it.
+const compactingThreads = new Set<string>();
+function updateThreadCompaction(threadId: string, phase: "started" | "completed" | "failed"): void {
+  if (phase === "started") compactingThreads.add(threadId);
+  else compactingThreads.delete(threadId);
+  const paneId = paneForThread(threadId);
+  if (paneId) send("chat:compaction", { paneId, phase });
+}
 /** threadId → the last token-usage numbers seen, so a retry that re-emits them
  *  unchanged can be told from a new request. */
 const lastUsageSig = new Map<string, string>();
@@ -3754,6 +3762,7 @@ function pushStatus(status: EngineStatus): void {
   if(status.state === "exited")turnEnvironments.reset();
   lastStatus = status;
   if (status.state === "exited") {
+    for (const threadId of compactingThreads) updateThreadCompaction(threadId, "failed");
     if (petSettleTimer) clearTimeout(petSettleTimer);
     petSettleTimer = null;
     petActivity.reset();
@@ -5791,6 +5800,9 @@ function wireNotifications(): void {
         if (threadId && subAgents.has(threadId) && phase === "completed") {
           send("chat:subagent-activity", { threadId });
         }
+        if (item?.type === "contextCompaction" && threadId) {
+          updateThreadCompaction(threadId, phase === "started" ? "started" : "completed");
+        }
         if (item?.type === "contextCompaction" && phase === "completed" && threadId && !subAgents.has(threadId)) {
           completedTurnsSinceMemory.set(threadId, 0);
           scheduleAutomaticMemory(threadId, "compaction");
@@ -5866,7 +5878,6 @@ function wireNotifications(): void {
         } else if (item?.type === "contextCompaction") {
           // Mark where the model's verbatim history got summarized.
           if (phase === "completed") {
-            send("chat:compaction", { paneId });
             if (threadId) {
               const root = rootThreadOf(threadId);
               const c = checkpointCycle(root);
@@ -6021,6 +6032,7 @@ function wireNotifications(): void {
         break;
       }
       case "turn/completed": {
+        if (threadId && compactingThreads.has(threadId)) updateThreadCompaction(threadId, "failed");
         if (threadId) turnEnvironments.end(threadId);
         const turn = params.turn as
           | { status?: string; usage?: unknown; error?: { message?: string; additionalDetails?: string | null } | null }
@@ -8503,10 +8515,14 @@ app.whenReady().then(async () => {
   ipcMain.handle("chat:compact", async (_e, paneId: PaneId) => {
     const pane = ensurePane(paneId);
     if (!pane.threadId) return { ok: false, error: "no conversation" };
+    const threadId = pane.threadId;
+    if (compactingThreads.has(threadId)) return { ok: true };
+    updateThreadCompaction(threadId, "started");
     try {
-      await engine.request("thread/compact/start", { threadId: pane.threadId });
+      await engine.request("thread/compact/start", { threadId });
       return { ok: true };
     } catch (err) {
+      updateThreadCompaction(threadId, "failed");
       return { ok: false, error: String(err) };
     }
   });
@@ -10617,7 +10633,7 @@ app.whenReady().then(async () => {
     const lease = randomUUID();
     multiMountLeases.set(id, lease);
     const running = runningTurns.has(id);
-    const alreadyLoaded = running || paneForThread(id) !== null;
+    const alreadyLoaded = running || compactingThreads.has(id) || paneForThread(id) !== null;
     const result = alreadyLoaded
       ? ((await engine.request("thread/read", { threadId: id, includeTurns: true })) as { thread: WireThread; cwd?: string })
       : ((await engine.request("thread/resume", await resumeParamsFor(id))) as { thread: WireThread; cwd?: string });
@@ -10649,6 +10665,7 @@ app.whenReady().then(async () => {
       sessionId: page.sessionId,
       runningTurnStart: page.runningTurnStart,
       runningTurnStartedAt: replay.runningTurnStartedAt,
+      compacting: compactingThreads.has(id),
       running,
       streamText: bgStream.get(id) ?? "",
       approvals: heldApprovals.get(id) ?? [],
@@ -10675,7 +10692,7 @@ app.whenReady().then(async () => {
     // A thread with a live turn is already loaded in the engine —
     // thread/read returns its history without disturbing the turn;
     // re-resuming it is what thread/resume is NOT for.
-    const result = running
+    const result = (running || compactingThreads.has(id))
       ? ((await engine.request("thread/read", { threadId: id, includeTurns: true })) as {
           thread: WireThread;
           cwd?: string;
@@ -10730,6 +10747,7 @@ app.whenReady().then(async () => {
       sessionId: page.sessionId,
       runningTurnStart: page.runningTurnStart,
       runningTurnStartedAt: replay.runningTurnStartedAt,
+      compacting: compactingThreads.has(id),
       // Carried WITH the transcript rather than pushed alongside it.
       // applyRolloutNicknames above sends a chat:subagent-renames event, but
       // that event loses a race it can never win: the renderer retitles the
