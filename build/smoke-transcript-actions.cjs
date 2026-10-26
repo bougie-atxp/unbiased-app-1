@@ -8,26 +8,27 @@ const root=process.cwd();
 const deadline=setTimeout(()=>{console.error('Transcript annotation regression timed out');app.exit(1)},30000);deadline.unref();
 const bundleResult=build({stdin:{resolveDir:root,loader:'tsx',contents:`
 import React from 'react';import {createRoot} from 'react-dom/client';
-import {ChatPane} from './src/renderer/src/App';
+import {ChatPane,MultiViewTile} from './src/renderer/src/App';
 window.qaCalls=[];window.qaKeyEvents=[];document.addEventListener('keydown',e=>window.qaKeyEvents.push({key:e.key,code:e.code,keyCode:e.keyCode,trusted:e.isTrusted,target:e.target.outerHTML?.slice(0,150)}),true);
 window.unbiased=new Proxy({}, {get:(_,key)=>{
  if(String(key).startsWith('on'))return ()=>()=>{};
- return async(...args)=>{window.qaCalls.push([key,...args]);if(key==='contextUsage')return null;if(key==='mcpThreadGet')return {enabled:[]};if(key==='liveApprovals'||key==='liveUserInputs')return [];if(key==='fileExists')return {exists:false};if(key==='favicon')return {dataUrl:null};return {};};
+ return async(...args)=>{window.qaCalls.push([key,...args]);if(key==='mountThread')return {lease:'qa-lease',entries,running:false};if(key==='contextUsage')return null;if(key==='mcpThreadGet')return {enabled:[]};if(key==='liveApprovals'||key==='liveUserInputs')return [];if(key==='fileExists')return {exists:false};if(key==='favicon')return {dataUrl:null};return {};};
 }});
 const entries=[{kind:'assistant',text:'Select this side chat excerpt.\\n\\nSee [example link](https://example.com/side-chat).'}];
 const side={paneId:'side:qa',connected:true,canTypeToFocus:()=>false,reset:{entries,nonce:0},emptyState:null,accessMode:'untrusted',onAccessModeChange:()=>{},planMode:false,onTogglePlanMode:()=>{}};
+const mosaic={...side,id:'qa-mosaic',columnSpan:1,fresh:false,project:null,projects:[],title:'Mosaic QA',onSelectEnvironment:async()=>{},onCreateProject:()=>{},onOpenChat:()=>{},onRemove:()=>{},onTurnLanded:()=>{}};
 const main={...side,paneId:'main',onAskSideChat:text=>window.qaCalls.push(['askSide',text])};
-createRoot(document.getElementById('root')).render(<><section id="side"><ChatPane {...side}/></section><section id="main"><ChatPane {...main}/></section></>);
+createRoot(document.getElementById('root')).render(<><section id="side"><ChatPane {...side}/></section><section id="main"><ChatPane {...main}/></section><section id="mosaic"><MultiViewTile {...mosaic}/></section></>);
 `},bundle:true,write:false,platform:'browser',format:'iife',jsx:'automatic',define:{'import.meta.glob':'__qaGlob'},banner:{js:'var __qaGlob=()=>({});'},loader:{'.svg':'dataurl','.png':'dataurl','.webp':'dataurl'},plugins:[{name:'qa',setup(build){
  build.onLoad({filter:/\.css$/},()=>({contents:'',loader:'js'}));
  build.onLoad({filter:/\.md$/},args=>({contents:fs.readFileSync(args.path,'utf8'),loader:'text'}));
- build.onLoad({filter:/\/src\/renderer\/src\/App\.tsx$/},args=>({contents:fs.readFileSync(args.path,'utf8')+'\nexport { ChatPane };',loader:'tsx'}));
+ build.onLoad({filter:/\/src\/renderer\/src\/App\.tsx$/},args=>({contents:fs.readFileSync(args.path,'utf8')+'\nexport { ChatPane, MultiViewTile };',loader:'tsx'}));
 }}]});
 (async()=>{
  const bundle=(await bundleResult).outputFiles[0].text;
- await app.whenReady();const win=new BrowserWindow({show:false,width:1100,height:720,webPreferences:{backgroundThrottling:false}});
+ await app.whenReady();const win=new BrowserWindow({show:false,width:1500,height:720,webPreferences:{backgroundThrottling:false}});
  const css=fs.readFileSync(root+'/src/renderer/src/transcript-action-dock.css','utf8')+fs.readFileSync(root+'/src/renderer/src/chat-link.css','utf8');
- const html=`<!doctype html><style>body{margin:0;background:#111;color:#eee;font:14px system-ui;--bg:#111;--fg:#eee;--fg-msg:#ddd;--panel:#222;--panel-2:#282828;--chip:#252525;--chip-raised:#333;--border:#333;--dim:#999;--accent:#FF7764;--font-ui:system-ui;--font-code:monospace}#root{display:flex;height:680px;gap:20px}section{display:flex;flex-direction:column;width:500px;height:650px;position:relative}${css}</style><div id="root"></div><script>${bundle.replaceAll('</script','<\\/script')}</script>`;
+ const html=`<!doctype html><style>body{margin:0;background:#111;color:#eee;font:14px system-ui;--bg:#111;--fg:#eee;--fg-msg:#ddd;--panel:#222;--panel-2:#282828;--chip:#252525;--chip-raised:#333;--border:#333;--dim:#999;--accent:#FF7764;--font-ui:system-ui;--font-code:monospace}#root{display:flex;height:680px;gap:20px}#root>section{display:flex;flex-direction:column;width:480px;height:650px;position:relative}#root>#mosaic{display:grid;grid-template-rows:minmax(0,1fr)}${css}</style><div id="root"></div><script>${bundle.replaceAll('</script','<\\/script')}</script>`;
  fs.writeFileSync('/tmp/unbiased-side-annotation.html',html);await win.loadFile('/tmp/unbiased-side-annotation.html');
  // Map the CI window so trusted browser keyboard input reaches its widget.
  // showInactive does not take focus away from another application.
@@ -123,5 +124,22 @@ createRoot(document.getElementById('root')).render(<><section id="side"><ChatPan
  assert.equal(sentMain[2].split('> Select this side chat excerpt.').length-1,1,'confirmation/send must not duplicate the excerpt');
  assert.equal(await annotationCount('main'),0);
  assert.equal(await win.webContents.executeJavaScript("!!document.querySelector('#main textarea[placeholder=\"Add an optional comment…\"]')"),false,'sending closes the pending comment editor');
- console.log('PASS: real ChatPane attaches pending excerpts immediately, confirms without duplication, sends confirmed/pending comments, handles removal/Escape, grows comments to seven lines with scrolling/fade, preserves multiline comments, and isolates side annotations.');win.destroy();app.quit();
+ // Exercise the actual Mosaic tile, including thread mounting and clipping.
+ await select('mosaic');
+ assert.deepEqual(await win.webContents.executeJavaScript("[...document.querySelectorAll('#mosaic .transcript-action')].map(b=>b.textContent)"),['Add to chat'],'Mosaic selection offers only Add to chat');
+ const visible=await win.webContents.executeJavaScript(`(()=>{const button=document.querySelector('#mosaic .transcript-action');const r=button.getBoundingClientRect();return button.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()`);
+ assert.equal(visible,true,'Mosaic Add to chat must be visible and clickable inside the tile');
+ await win.webContents.executeJavaScript("document.querySelector('#mosaic .transcript-action').click()");
+ await pause();
+ assert.equal(await annotationCount('mosaic'),1,'Mosaic attaches the excerpt immediately to its own composer');
+ assert.equal(await annotationCount('main'),0);
+ assert.equal(await annotationCount('side'),0);
+ await typeComment('mosaic','Explain this Mosaic excerpt');
+ await win.webContents.executeJavaScript("document.querySelector('#mosaic button[aria-label=\"Send\"]').click()");
+ await pause();
+ const sentMosaic=await win.webContents.executeJavaScript("window.qaCalls.find(c=>c[0]==='sendMessage'&&c[1]==='multi:qa-mosaic')");
+ assert.ok(sentMosaic,'Mosaic annotation must reach its own chat');
+ assert.match(sentMosaic[2],/> Select this side chat excerpt\./);
+ assert.match(sentMosaic[2],/Comment: Explain this Mosaic excerpt/);
+ console.log('PASS: real ChatPane attaches pending excerpts immediately, confirms without duplication, sends confirmed/pending comments, handles removal/Escape, grows comments to seven lines with scrolling/fade, preserves multiline comments, isolates side annotations, and verifies Mosaic selection/attachment/send without side-chat actions.');win.destroy();app.quit();
 })().catch(e=>{console.error(e);app.exit(1)});
