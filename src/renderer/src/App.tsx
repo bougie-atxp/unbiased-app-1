@@ -2018,6 +2018,7 @@ export function App() {
   }
 
   function setSideOpenPersisted(open: boolean) {
+    if (open && !sideOpen) setSideFrac(0.5);
     setSideOpen(open);
   }
 
@@ -2053,10 +2054,8 @@ export function App() {
   }, []);
   // The main/side split is a FRACTION of the content area (not pixels), so
   // collapsing the nav or resizing the window scales both panes in ratio.
-  const [sideFrac, setSideFrac] = useState(() => {
-    const stored = Number(localStorage.getItem("sideFrac"));
-    return stored >= 0.25 && stored <= 0.7 ? stored : 0.45;
-  });
+  // Each opening starts with equal panes; resizing applies while it stays open.
+  const [sideFrac, setSideFrac] = useState(0.5);
   const draggingRef = useRef(false);
   const navDraggingRef = useRef(false);
   const navOpenRef = useRef(navOpen);
@@ -2236,7 +2235,7 @@ export function App() {
 
   // Divider drag: the fraction follows the cursor within the content area
   // (everything right of the nav), clamped so neither pane collapses into
-  // uselessness. Persisted across launches.
+  // uselessness.
   useEffect(() => {
     function onMove(e: MouseEvent) {
       if (navDraggingRef.current) {
@@ -2266,10 +2265,6 @@ export function App() {
       delete document.body.dataset.panelResizing;
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
-      setSideFrac((f) => {
-        localStorage.setItem("sideFrac", String(f));
-        return f;
-      });
     }
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -5133,7 +5128,6 @@ export function App() {
             e.preventDefault();
             const fraction = Math.min(Math.max(next, 0.25), 0.7);
             setSideFrac(fraction);
-            localStorage.setItem("sideFrac", String(fraction));
           }}
           role="separator"
           aria-label="Resize side panel"
