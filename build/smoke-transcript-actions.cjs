@@ -33,28 +33,49 @@ render();
  const css=fs.readFileSync(root+'/src/renderer/src/transcript-action-dock.css','utf8')+fs.readFileSync(root+'/src/renderer/src/chat-link.css','utf8');
  const html=`<!doctype html><style>body{margin:0;background:#111;color:#eee;font:14px system-ui;--bg:#111;--fg:#eee;--fg-msg:#ddd;--panel:#222;--panel-2:#282828;--chip:#252525;--chip-raised:#333;--border:#333;--dim:#999;--accent:#FF7764;--font-ui:system-ui;--font-code:monospace}#root{display:flex;height:680px;gap:20px}#root>section{display:flex;flex-direction:column;width:480px;height:650px;position:relative}#root>#mosaic{display:grid;grid-template-rows:minmax(0,1fr)}${css}</style><div id="root"></div><script>${bundle.replaceAll('</script','<\\/script')}</script>`;
  fs.writeFileSync('/tmp/unbiased-side-annotation.html',html);await win.loadFile('/tmp/unbiased-side-annotation.html');
+ // Electron otherwise replaces renderer exceptions with a generic IPC error.
+ // Preserve the failing expression and original stack for CI diagnostics.
+ const evaluate=win.webContents.executeJavaScript.bind(win.webContents);
+ win.webContents.executeJavaScript=async(source,...args)=>{
+   const result=await evaluate(`(async()=>{try{return {ok:true,value:await (0,eval)(${JSON.stringify(source)})}}catch(error){return {ok:false,error:error.stack??String(error)}}})()`,...args);
+   if(!result.ok)throw new Error(result.error+'\nRenderer expression: '+source);
+   return result.value;
+ };
  // Map the CI window so trusted browser keyboard input reaches its widget.
  // showInactive does not take focus away from another application.
  if(process.env.CI)win.showInactive();
  win.webContents.debugger.attach('1.3');
  await win.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled',{enabled:true});
- await new Promise(r=>setTimeout(r,700));
- const select=async id=>{await win.webContents.executeJavaScript(`(()=>{const node=[...document.querySelectorAll('#${id} p')].find(p=>p.textContent==='Select this side chat excerpt.');if(!node)throw Error('Missing transcript paragraph');const range=document.createRange();range.selectNodeContents(node);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);node.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));})()`);await new Promise(r=>setTimeout(r,100));};
+
  const pause=()=>new Promise(r=>setTimeout(r,100));
  const until=async(check,message)=>{
    for(let attempt=0;attempt<30;attempt++){if(await check())return;await pause();}
-   const diagnostics=await win.webContents.executeJavaScript("({keys:window.qaKeyEvents,activeElement:document.activeElement?.outerHTML,mainText:document.querySelector('#main').innerText})");
+   const diagnostics=await win.webContents.executeJavaScript("({keys:window.qaKeyEvents,activeElement:document.activeElement?.outerHTML?.slice(0,500),mainText:document.querySelector('#main').innerText})");
    assert.fail(message+JSON.stringify(diagnostics));
+ };
+ const exists=selector=>win.webContents.executeJavaScript(`!!document.querySelector(${JSON.stringify(selector)})`);
+ const click=async selector=>{
+   await until(()=>exists(selector),'control must mount before clicking: '+selector);
+   await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).click()`);
+ };
+ const select=async id=>{
+   await until(()=>win.webContents.executeJavaScript(`[...document.querySelectorAll('#${id} p')].some(p=>p.textContent==='Select this side chat excerpt.')`),'transcript must mount before selecting in '+id);
+   await until(async()=>{
+   await win.webContents.executeJavaScript(`(()=>{const node=[...document.querySelectorAll('#${id} p')].find(p=>p.textContent==='Select this side chat excerpt.');const range=document.createRange();range.selectNodeContents(node);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);node.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));})()`);
+   return exists('#'+id+' .transcript-action');
+   },'selection toolbar must mount in '+id);
  };
  const annotationCount=id=>win.webContents.executeJavaScript(`document.querySelectorAll('#${id} button[aria-label="Remove annotation"]').length`);
  const typeComment=async(id,text)=>{
+   await until(()=>exists('#'+id+' textarea[aria-label="Annotation comment"]'),'comment editor must mount in '+id);
    await win.webContents.executeJavaScript(`(()=>{const input=document.querySelector('#${id} textarea[placeholder="Add an optional comment…"]');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,${JSON.stringify(text)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
    await pause();
  };
  await select('side');
  const sideLabels=await win.webContents.executeJavaScript("[...document.querySelectorAll('#side .transcript-action')].map(b=>b.textContent)");
  assert.deepEqual(sideLabels,['Add to chat']);
- await win.webContents.executeJavaScript("document.querySelector('#side .transcript-action').click()");
+ await click('#side .transcript-action');
+ await until(()=>exists('#side textarea[aria-label="Annotation comment"]'),'Add to chat must open the side comment editor');
  assert.equal(await win.webContents.executeJavaScript("!!document.querySelector('#side textarea[placeholder=\"Add an optional comment…\"]')"),true);
  assert.equal(await annotationCount('side'),1,'Add to chat must attach the excerpt before confirming its comment');
  assert.equal(await win.webContents.executeJavaScript("document.querySelector('#side button[aria-label=\"Send\"]').disabled"),false,'an excerpt alone is immediately sendable');
@@ -76,8 +97,8 @@ render();
  if(process.env.UNBIASED_TRANSCRIPT_ACTIONS_SCREENSHOT) fs.writeFileSync(process.env.UNBIASED_TRANSCRIPT_ACTIONS_SCREENSHOT,(await win.webContents.capturePage()).toPNG());
  await typeComment('side','Explain this selection');
  assert.equal((await metrics()).height,oneLine.height,'editor shrinks when text is shortened');
- await win.webContents.executeJavaScript("document.querySelector('#side button[title=\"Add annotation\"]')?.click()");
- await new Promise(r=>setTimeout(r,100));
+ await click('#side button[title="Add annotation"]');
+ await until(async()=>!(await exists('#side textarea[aria-label="Annotation comment"]')),'confirmation must close the comment editor');
  assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('#side button[aria-label=\"Remove annotation\"]').length"),1,'confirmed text attaches to the side composer');
  await select('main');
  const mainLabels=await win.webContents.executeJavaScript("[...document.querySelectorAll('#main .transcript-action')].map(b=>b.textContent)");assert.deepEqual(mainLabels,['Add to chat','Ask in side chat']);
@@ -87,12 +108,12 @@ render();
  await new Promise(r=>setTimeout(r,100));
  const linkLabels=await win.webContents.executeJavaScript("[...document.querySelectorAll('#side .transcript-action')].map(b=>b.textContent)");
  assert.deepEqual(linkLabels,['Add to chat','Default browser']);
- await win.webContents.executeJavaScript("document.querySelector('#side .transcript-action').click()");
+ await click('#side .transcript-action');
  await new Promise(r=>setTimeout(r,100));
  assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('#side button[aria-label=\"Remove annotation\"]').length"),2,'link attaches to the same side composer');
  assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('#main button[aria-label=\"Remove annotation\"]').length"),0,'side annotations must not appear in main');
  // Confirmed annotations, including comments, reach the actual IPC boundary.
- await win.webContents.executeJavaScript("document.querySelector('#side button[aria-label=\"Send\"]').click()");
+ await click('#side button[aria-label="Send"]');
  await pause();
  const sentSide=await win.webContents.executeJavaScript("window.qaCalls.find(c=>c[0]==='sendMessage'&&c[1]==='side:qa')");
  assert.ok(sentSide,'side annotation message must be sent');
@@ -102,13 +123,13 @@ render();
  assert.equal(await annotationCount('side'),0);
  // Pending removal and Escape cancel only the in-progress attachment.
  await select('main');
- await win.webContents.executeJavaScript("document.querySelector('#main .transcript-action').click()");
+ await click('#main .transcript-action');
  await pause();assert.equal(await annotationCount('main'),1);
- await win.webContents.executeJavaScript("document.querySelector('#main button[aria-label=\"Remove annotation\"]').click()");
+ await click('#main button[aria-label="Remove annotation"]');
  await pause();assert.equal(await annotationCount('main'),0);
  assert.equal(await win.webContents.executeJavaScript("!!document.querySelector('#main textarea[placeholder=\"Add an optional comment…\"]')"),false);
  await select('main');
- await win.webContents.executeJavaScript("document.querySelector('#main .transcript-action').click()");
+ await click('#main .transcript-action');
  await until(()=>win.webContents.executeJavaScript("!!document.querySelector('#main textarea[placeholder=\"Add an optional comment…\"]')"),'comment editor must mount before Escape');
  await win.webContents.executeJavaScript("document.querySelector('#main textarea[placeholder=\"Add an optional comment…\"]').focus()");
  // Use browser keyboard input rather than an untrusted DOM KeyboardEvent.
@@ -117,9 +138,9 @@ render();
  await until(async()=>await annotationCount('main')===0,'Escape must remove the pending annotation');
  // Sending without the checkmark still includes the latest optional comment.
  await select('main');
- await win.webContents.executeJavaScript("document.querySelector('#main .transcript-action').click()");
+ await click('#main .transcript-action');
  await typeComment('main','Comment still being edited\nWith a second line');
- await win.webContents.executeJavaScript("document.querySelector('#main button[aria-label=\"Send\"]').click()");
+ await click('#main button[aria-label="Send"]');
  await pause();
  const sentMain=await win.webContents.executeJavaScript("window.qaCalls.find(c=>c[0]==='sendMessage'&&c[1]==='main')");
  assert.ok(sentMain,'pending annotation must be sendable before the checkmark');
@@ -132,13 +153,13 @@ render();
  assert.deepEqual(await win.webContents.executeJavaScript("[...document.querySelectorAll('#mosaic .transcript-action')].map(b=>b.textContent)"),['Add to chat'],'Mosaic selection offers only Add to chat');
  const visible=await win.webContents.executeJavaScript(`(()=>{const button=document.querySelector('#mosaic .transcript-action');const r=button.getBoundingClientRect();return button.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()`);
  assert.equal(visible,true,'Mosaic Add to chat must be visible and clickable inside the tile');
- await win.webContents.executeJavaScript("document.querySelector('#mosaic .transcript-action').click()");
+ await click('#mosaic .transcript-action');
  await pause();
  assert.equal(await annotationCount('mosaic'),1,'Mosaic attaches the excerpt immediately to its own composer');
  assert.equal(await annotationCount('main'),0);
  assert.equal(await annotationCount('side'),0);
  await typeComment('mosaic','Explain this Mosaic excerpt');
- await win.webContents.executeJavaScript("document.querySelector('#mosaic button[aria-label=\"Send\"]').click()");
+ await click('#mosaic button[aria-label="Send"]');
  await pause();
  const sentMosaic=await win.webContents.executeJavaScript("window.qaCalls.find(c=>c[0]==='sendMessage'&&c[1]==='multi:qa-mosaic')");
  assert.ok(sentMosaic,'Mosaic annotation must reach its own chat');
@@ -155,7 +176,7 @@ render();
  await win.webContents.executeJavaScript("window.qaRestoreMain(125,2)");
  await until(async()=>{const n=await readClock();return n>=125&&n<128},'switching between running chats must use the destination clock');
  await win.webContents.executeJavaScript("window.qaRestoreMain(null,3)");
- await pause();assert.equal(await readClock(),null,'idle chat must not show the previous turn clock');
+ await until(async()=>await readClock()===null,'idle chat must not show the previous turn clock');
  await win.webContents.executeJavaScript("window.qaRestoreMain(75,4,'reopened')");
  await until(async()=>{const n=await readClock();return n>=75&&n<78},'remounting the pane must preserve the original turn start');
  await win.webContents.executeJavaScript("window.qaEmit('onApprovalRequest',{paneId:'main',requestId:'qa-approval',itemId:'qa-command',command:'echo hello',kind:'command'})");
