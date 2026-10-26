@@ -3263,8 +3263,18 @@ export function App() {
   // is never missing from the nav between pressing Enter and the engine
   // deciding it exists. A stand-in disappears the moment the real row lands.
   const sidebarView = useMemo(() => mergePendingThreads(sidebar, pendingThreads), [sidebar, pendingThreads]);
-  const mosaicThreads = [...sidebarView.projects.flatMap((project) => project.threads), ...sidebarView.recents];
-  const mosaicChats = multiIds.map((id) => ({ id, title: mosaicThreads.find((thread) => thread.id === id)?.title ?? "New chat" }));
+  const mosaicThreads = [
+    ...sidebarView.projects.flatMap((project) => project.threads.map((thread) => ({
+      ...thread,
+      title: `${project.name} / ${thread.title}`,
+    }))),
+    ...sidebarView.recents,
+  ];
+  const mosaicChats = multiIds.map((id) => ({
+    id,
+    title: mosaicThreads.find((thread) => thread.id === id)?.title
+      ?? (freshMultiProjects[id] ? `${freshMultiProjects[id].name} / New chat` : "New chat"),
+  }));
   const pinnedThreadIds = useMemo(() => new Set(pinnedThreads.map((t) => t.id)), [pinnedThreads]);
   const pinnedSidebarThreads = useMemo(() => {
     const listed = new Map<string, { thread: ThreadSummary; inProject: boolean }>();
@@ -4308,7 +4318,7 @@ export function App() {
               freshWork={freshMultiWork}
               drafts={multiDraftsRef.current}
               projects={sidebarView.projects}
-              threads={mosaicThreads}
+              threads={mosaicChats}
               width={windowWidth - (navOpen ? sidebarWidth : NAV_RAIL_WIDTH)}
               connected={connected}
               accessMode={accessMode}
