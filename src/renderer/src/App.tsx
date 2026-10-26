@@ -786,7 +786,7 @@ declare global {
         cb: (p: { paneId: PaneId; phase: "started" | "completed"; item: CommandItem }) => void,
       ) => () => void;
       onCommandOutput: (cb: (p: { paneId: PaneId; itemId: string; delta: string }) => void) => () => void;
-      onCompaction: (cb: (p: { paneId: PaneId }) => void) => () => void;
+      onCompaction: (cb: (p: { paneId: PaneId; phase?: "started" | "completed" | "failed" }) => void) => () => void;
       onTokenUsage: (
         cb: (p: { paneId: PaneId } & ContextUsage) => void,
       ) => () => void;
@@ -823,6 +823,7 @@ declare global {
         failure: string | null;
         runningTurnStart?: number | null;
         runningTurnStartedAt?: number | null;
+        compacting?: boolean;
         /** Engine-assigned sub-agent nicknames, recovered from the rollout and
          *  carried with the transcript so they cannot lose a race against it. */
         subAgentNames?: Record<string, string>;
@@ -1925,6 +1926,7 @@ export function App() {
     resume?: { running: boolean; approvals: HeldApproval[]; userInputs: UserInputRequest[] } | null;
     runningTurnStart?: number | null;
     runningTurnStartedAt?: number | null;
+    compacting?: boolean;
   }>({ entries: [], nonce: 0 });
   const mainDraftsRef = useRef<ConversationDrafts<Attachment> | null>(null);
   if (!mainDraftsRef.current) mainDraftsRef.current = new ConversationDrafts(null, 0);
@@ -2540,6 +2542,7 @@ export function App() {
       offset: res.offset,
       runningTurnStart: res.runningTurnStart,
       runningTurnStartedAt: res.runningTurnStartedAt,
+      compacting: res.compacting,
     }));
     resetSideView();
     restoreSideView(id);
@@ -9538,7 +9541,7 @@ function MultiViewTile({ id, columnSpan, fresh, project, work, projects, drafts,
           connected={connected}
           threadId={id}
           composerDrafts={drafts}
-          reset={{ entries: resetEntries, nonce: 0, resume: loaded?.running ? { running: true, approvals: loaded.approvals, userInputs: loaded.userInputs } : null, runningTurnStart: loaded?.runningTurnStart, runningTurnStartedAt: loaded?.runningTurnStartedAt, sessionId: loaded?.sessionId, offset: loaded?.offset }}
+          reset={{ entries: resetEntries, nonce: 0, resume: loaded?.running ? { running: true, approvals: loaded.approvals, userInputs: loaded.userInputs } : null, runningTurnStart: loaded?.runningTurnStart, runningTurnStartedAt: loaded?.runningTurnStartedAt, compacting: loaded?.compacting, sessionId: loaded?.sessionId, offset: loaded?.offset }}
           emptyState={null}
           composerHeader={fresh ? <MosaicNewChatEnvironment project={project} work={work} projects={projects} onSelect={onSelectEnvironment} onCreateProject={onCreateProject} disabled={busy} /> : undefined}
           onBusyChange={setBusy}
@@ -9604,6 +9607,7 @@ function ChatPane({
     resume?: { running: boolean; approvals: HeldApproval[]; userInputs: UserInputRequest[] } | null;
     runningTurnStart?: number | null;
     runningTurnStartedAt?: number | null;
+    compacting?: boolean;
   };
   contextChip?: string | { text: string; comment?: string; tag?: string; thumb?: string } | null;
   onContextClear?: () => void;
@@ -10171,7 +10175,7 @@ function ChatPane({
     // the id actually changes — this covers a reset where it does not.
     setCtxUsage(null);
     resetTurnPerf();
-    setCompacting(false);
+    setCompacting(!!reset.compacting);
     // A card persisted in the transcript looks exactly like a live one, so
     // anything restored has to be checked against what main is actually
     // holding. Without this, an approval whose turn died with the app still
@@ -10646,6 +10650,14 @@ function ChatPane({
       }),
       window.unbiased.onCompaction((p) => {
         if (p.paneId !== paneId) return;
+        if (p.phase === "started") {
+          setCompacting(true);
+          return;
+        }
+        if (p.phase === "failed") {
+          setCompacting(false);
+          return;
+        }
         setEntries((es) => {
           const cleaned = withoutTrailingPlaceholder(es);
           // Consecutive compactions collapse into one divider.
