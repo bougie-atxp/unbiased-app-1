@@ -6,7 +6,7 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
-## 1.13.24 — October 26, 2026
+## 1.13.24 — October 27, 2026
 
 ### Improved
 
@@ -18,6 +18,8 @@ Write for the person using the app, not the person who wrote the code.
 
 ### Fixed
 
+- **Signed-in chats use consistent authentication.** Chat requests and context compaction use your saved sign-in when no explicit API key is configured.
+- **Account settings show available features.** Removed unfinished connection controls.
 - **The Agent browser view follows your actions.** Live pages, scrolling and resizing stay in sync, and switching chats restores each chat's browser page.
 - **Browser approvals follow the current permission setting.** Switching from Ask to Full access no longer leaves browser actions using the previous setting.
 - **Working timers survive switching chats.** Reopening a running conversation resumes its original duration instead of restarting from zero.
