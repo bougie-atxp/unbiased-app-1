@@ -65,9 +65,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: circuitandchisel/unbiased-app-engine
-          # Merged engine PR #13; includes validated environment bootstrap.
-          # engine.lock still pins app-server 0.1.4.
-          ref: 3d8457174d73649a054634b0b829999e8668f5ac
+          # Merged engine PRs #14 and #15; includes command-backed sign-in
+          # and pins app-server 0.1.5 for signed-in compaction.
+          ref: c1d89df94cda866e47f7b6442b690857f3914e98
           token: ${{ steps.app-token.outputs.token }}
           path: unbiased-app-engine
 
