@@ -23,8 +23,6 @@ contextBridge.exposeInMainWorld("unbiased", {
   portableRead: (scope:SettingsScope) => ipcRenderer.invoke("environment:read",scope),
   portableWrite: (p:{manifest:EnvironmentManifest;expectedRevision:number}) => ipcRenderer.invoke("environment:write",p),
   portableInstall: (p:{scope:SettingsScope;path:string;name:string;expectedRevision:number}) => ipcRenderer.invoke("environment:install-skill",p),
-  cloudStatus: () => ipcRenderer.invoke("cloud:status"),
-  cloudPreflight: () => ipcRenderer.invoke("cloud:preflight"),
   resolveProjectMembership: (threadId:string,projectId:string|null) => ipcRenderer.invoke("projects:resolve-membership",{threadId,projectId}),
 
   getEngineStatus: () => ipcRenderer.invoke("engine:status"),

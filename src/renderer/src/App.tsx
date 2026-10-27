@@ -1,5 +1,4 @@
 import { AgentMirrorPane } from "./AgentMirrorPane";
-import { CloudReadiness, type CloudAPI } from "./CloudReadiness";
 import type { SkillOwnership } from "../../main/skill-ownership";
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
@@ -607,8 +606,6 @@ declare global {
   interface Window {
     unbiased: {
       onAppCommand: (cb: (command: string) => void) => () => void;
-      cloudStatus: CloudAPI["status"];
-      cloudPreflight: CloudAPI["preflight"];
       resolveProjectMembership: (threadId:string,projectId:string|null) => Promise<{ok:boolean}>;
 
       getEngineStatus: () => Promise<EngineStatus>;
@@ -17587,7 +17584,6 @@ function SettingsView({
         ) : tab === "account" ? (
           <div style={{ maxWidth: 760, margin: "0 auto" }}>
             <h1 style={{ fontSize: 28, fontWeight: 600, letterSpacing: "var(--track-title)", lineHeight: 1.15, margin: "0 0 28px" }}>Account</h1>
-            <CloudReadiness api={{status:window.unbiased.cloudStatus,preflight:window.unbiased.cloudPreflight}} />
             <div
               style={{
                 border: `1px solid ${colors.border}`,

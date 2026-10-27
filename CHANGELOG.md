@@ -6,6 +6,27 @@ Format matters: `## <version> — <date>`, then `### <section>`, then `-` bullet
 
 Write for the person using the app, not the person who wrote the code.
 
+## 1.13.24 — October 27, 2026
+
+### Improved
+
+- **The Agent browser has its own browser.** Links from other apps keep opening in your everyday browser instead of an invisible automation window. Sign in again inside the Agent browser where needed.
+- **Chat links are clearer.** GitHub links have crisp icons and shorter labels, with text that matches the surrounding reply.
+- **Annotations are easier to write.** Add to chat attaches the excerpt immediately, and optional comments grow to seven lines before scrolling. Both side chats and Mosaic support adding excerpts to their own chat.
+- **Mosaic titles include the project.** Each project chat shows Project / Conversation title.
+- **Side panels open with an equal split.** The main chat and side panel each take half the available space after the sidebar, and you can still resize them.
+
+### Fixed
+
+- **Signed-in chats use consistent authentication.** Chat requests and context compaction use your saved sign-in when no explicit API key is configured.
+- **Account settings show available features.** Removed unfinished connection controls.
+- **The Agent browser view follows your actions.** Live pages, scrolling and resizing stay in sync, and switching chats restores each chat's browser page.
+- **Browser approvals follow the current permission setting.** Switching from Ask to Full access no longer leaves browser actions using the previous setting.
+- **Working timers survive switching chats.** Reopening a running conversation resumes its original duration instead of restarting from zero.
+- **Compacting stays visible across views.** Switching between Mosaic and normal chat keeps the compaction indicator until it finishes.
+- **Older replies stay copyable while work continues.** Starting another run no longer hides their copy buttons.
+- **Pal notifications preserve fullscreen.** Opening a notification no longer changes the app's fullscreen presentation.
+
 ## 1.13.23 — October 23, 2026
 
 ### Improved
