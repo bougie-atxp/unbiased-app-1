@@ -132,6 +132,12 @@ jobs:
         working-directory: unbiased-app
         run: npm ci
 
+      - name: prepare pinned browser client
+        working-directory: unbiased-app
+        run: node build/prepare-browser.cjs --runtime-only
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
       - name: typecheck
         working-directory: unbiased-app
         run: npm run typecheck
