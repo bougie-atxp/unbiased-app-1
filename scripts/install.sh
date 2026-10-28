@@ -9,9 +9,11 @@
 #
 # THE QUARANTINE STRIP IS THE POINT of this script. The app is ad-hoc signed,
 # not Developer ID signed + notarized, so a hand-downloaded DMG makes macOS
-# refuse to open it ("Apple could not verify…") until the user right-clicks →
-# Open. Removing com.apple.quarantine here does the same thing, once, in a way
-# the whole team can copy-paste.
+# refuse to open it ("Apple could not verify…") until the user goes through
+# System Settings > Privacy & Security > Open Anyway (right-click > Open on
+# macOS 14 and earlier). Removing com.apple.quarantine here avoids that on most
+# Macs, once, in a way the whole team can copy-paste. If macOS still objects,
+# the Open Anyway path is printed at the end.
 #
 # This file lives in unbiased-app/scripts/ (the source of truth) and is
 # pushed verbatim to the public releases repo by .github/workflows/release.yml.
@@ -62,7 +64,10 @@ trap 'rm -rf "$tmp"; [ -n "${mnt:-}" ] && hdiutil detach "$mnt" -quiet 2>/dev/nu
 
 dmg="$tmp/$(basename "$dmg_url")"
 info "download: $(basename "$dmg_url")"
-curl -fsSL --retry 3 --retry-delay 2 -o "$dmg" "$dmg_url" || die "download failed"
+# About 190 MB from GitHub. Show progress so a slow link does not look hung,
+# retry on any error, and resume a partial file instead of starting over.
+curl -fL --progress-bar --retry 5 --retry-delay 3 --retry-all-errors -C - -o "$dmg" "$dmg_url" \
+  || die "download failed (the file is about 190 MB). Run the same command again to resume, or download the .dmg from https://github.com/$REPO/releases/latest"
 
 # ── Verify ──────────────────────────────────────────────────────────────
 # A corrupted or tampered 188MB download should never reach /Applications.
@@ -115,9 +120,10 @@ mnt=""
 # ── Clear quarantine ────────────────────────────────────────────────────
 xattr -dr com.apple.quarantine "$target" 2>/dev/null || true
 if xattr "$target" 2>/dev/null | grep -q com.apple.quarantine; then
-  printf '\n\033[33mnote:\033[0m could not clear the quarantine flag. Right-click %s → Open the first time.\n' "$APP_NAME"
+  printf '\n\033[33mnote:\033[0m could not clear the quarantine flag. If macOS says it cannot verify %s: click Done, then System Settings > Privacy & Security > Open Anyway.\n' "$APP_NAME"
 fi
 
 printf '\n\033[32m✓\033[0m Unbiased %s installed to %s\n\n' "$tag" "$target"
 printf 'Launch it from Applications (or: open -a Unbiased).\n'
-printf 'On first run, paste your Unbiased API key — get one at https://platform.unbiased.ai\n\n'
+printf 'On first run, click "Sign in with your browser". There is no key to paste.\n'
+printf 'If macOS says it cannot verify Unbiased: click Done, open System Settings > Privacy & Security, scroll to Security, click Open Anyway, then open it again.\n\n'
