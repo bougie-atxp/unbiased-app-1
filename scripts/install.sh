@@ -63,7 +63,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"; [ -n "${mnt:-}" ] && hdiutil detach "$mnt" -quiet 2>/dev/null || true' EXIT
 
 # The .dmg lands in a cache folder, not in $tmp: if the download dies partway
-# (about 190 MB from GitHub), the next run resumes from the bytes already on
+# (hundreds of MB from GitHub), the next run resumes from the bytes already on
 # disk instead of starting over. It is removed after a successful install.
 cache="${XDG_CACHE_HOME:-$HOME/Library/Caches}/Unbiased"
 mkdir -p "$cache"
@@ -82,13 +82,18 @@ if [ -n "$expected" ] && [ -s "$dmg" ] && [ "$(sha_of "$dmg")" = "$expected" ]; 
   info "download: $(basename "$dmg_url") already complete in $cache"
 else
   info "download: $(basename "$dmg_url")"
+  # Say how big it is up front, from the server, so nobody guesses whether a
+  # slow link is stuck. Falls back to "large" when the size is not advertised.
+  size_mb="$(curl -sIL "$dmg_url" 2>/dev/null | awk 'tolower($1)=="content-length:"{s=$2+0} END{if(s>0) printf "%d", s/1000000}')"
+  size_note="${size_mb:+about ${size_mb} MB}"; size_note="${size_note:-large}"
+  [ -n "$size_mb" ] && info "size:     about ${size_mb} MB, this can take a few minutes"
   # Show progress so a slow link does not look hung, retry on any error, and
   # resume a partial file (-C -). When the cached file is already whole the
   # server refuses the range and curl exits 33 (or 22); the checksum below
   # settles that case, so only treat it as a failure when nothing is on disk.
   curl -fL --progress-bar --retry 5 --retry-delay 3 --retry-all-errors -C - -o "$dmg" "$dmg_url" \
     || { rc=$?; { [ "$rc" -eq 33 ] || [ "$rc" -eq 22 ]; } && [ -s "$dmg" ] \
-         || die "download failed (the file is about 190 MB). Run the same command again and it resumes where it stopped, or download the .dmg from https://github.com/$REPO/releases/latest"; }
+         || die "download failed (the file is ${size_note}). Run the same command again and it resumes where it stopped, or download the .dmg from https://github.com/$REPO/releases/latest"; }
 fi
 
 # ── Verify ──────────────────────────────────────────────────────────────
